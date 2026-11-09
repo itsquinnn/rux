@@ -38,6 +38,7 @@ const RPI_ERR_NOT_FOUND: int        = -2;
 const RPI_ERR_ACCESS_DENIED: int    = -3;
 const RPI_ERR_INVALID_HANDLE: int   = -4;
 const RPI_ERR_OUT_OF_MEMORY: int    = -5;
+const RPI_ERR_UNSUPPORTED: int      = -38;
 
 fn rpi_host_dispatch(sqe: *const RaiqSubmissionEntry64) -> int {
     @silicon.sfence();
@@ -96,8 +97,25 @@ fn rpi_host_dispatch(sqe: *const RaiqSubmissionEntry64) -> int {
         return @os.clock_gettime(src, dst as *mut uint);
     } else if op == RPI_OP_SLEEP {
         return @os.nanosleep(src as *const uint, dst as *mut uint);
+    } else if op == RPI_OP_DMA_COPY {
+        copy_memory(dst as *mut byte, src as *const byte, len);
+        return len as int;
+    } else if op == RPI_OP_SEEK {
+        return syscall(8, src, dst, len) as int;
+    } else if op == RPI_OP_STAT {
+        return syscall(5, src, dst) as int;
+    } else if op == RPI_OP_RENAME {
+        return syscall(82, src, dst) as int;
+    } else if op == RPI_OP_DIRECTORY_READ {
+        return syscall(217, src, dst, len) as int;
+    } else if op == RPI_OP_RANDOM_GET {
+        return syscall(318, src, len, dst) as int;
+    } else if op == RPI_OP_PROCESS_SPAWN {
+        return syscall(59, src, dst, len) as int;
+    } else if op == RPI_OP_MEMORY_PROTECT {
+        return syscall(10, src, len, dst) as int;
     }
-    return 0;
+    return RPI_ERR_UNSUPPORTED;
 }
 
 fn rpi_alloc(bytes: uint) -> *mut u8 {
@@ -211,3 +229,4 @@ fn rpi_exit(code: uint) {
     raiq_prepare_sqe(&mut sqe, RPI_OP_EXIT, code, 0, 0, 99);
     rpi_host_dispatch(&sqe);
 }
+

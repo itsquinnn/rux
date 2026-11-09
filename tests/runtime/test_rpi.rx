@@ -1,0 +1,103 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+include "lib/os/rpi.rx";
+include "lib/os/raiq.rx";
+
+fn test_rpi_alloc_and_free() {
+    let p: *mut u8 = rpi_alloc(8192);
+    assert((p as uint) > 0, "rpi_alloc returned null");
+    p[0] = 42 as u8;
+    p[8191] = 99 as u8;
+    assert(p[0] == 42, "p[0] value mismatch");
+    assert(p[8191] == 99, "p[8191] value mismatch");
+    rpi_free(p, 8192);
+}
+
+fn test_rpi_file_roundtrip() {
+    let test_path: *const byte = "/tmp/rux_rpi_test.dat" as *const byte;
+    var write_data: [u8; 16];
+    write_data[0] = 10;
+    write_data[1] = 20;
+    write_data[2] = 30;
+    write_data[3] = 40;
+    write_data[15] = 255;
+
+    let bytes_written: int = rpi_write_file(test_path, &write_data[0], 16);
+    assert(bytes_written == 16, "rpi_write_file count mismatch");
+
+    var read_data: [u8; 16];
+    let bytes_read: int = rpi_read_file(test_path, &mut read_data[0], 16);
+    assert(bytes_read == 16, "rpi_read_file count mismatch");
+    assert(read_data[0] == 10, "read_data[0] mismatch");
+    assert(read_data[1] == 20, "read_data[1] mismatch");
+    assert(read_data[2] == 30, "read_data[2] mismatch");
+    assert(read_data[3] == 40, "read_data[3] mismatch");
+    assert(read_data[15] == 255, "read_data[15] mismatch");
+
+    let unlink_res: int = rpi_unlink(test_path);
+    assert(unlink_res == 0, "rpi_unlink failed");
+
+    let read_missing: int = rpi_read_file(test_path, &mut read_data[0], 16);
+    assert(read_missing < 0, "missing file should return error");
+}
+
+fn test_rpi_unsupported_opcode() {
+    var sqe: RaiqSubmissionEntry64;
+    raiq_prepare_sqe(&mut sqe, 9999, 0, 0, 0, 1);
+    let res: int = rpi_host_dispatch(&sqe);
+    assert(res == -38, "unsupported opcode must return RPI_ERR_UNSUPPORTED (-38)");
+}
+
+fn test_rpi_raiq_queue() {
+    var sq_buf: [RaiqSubmissionEntry64; 8];
+    var cq_buf: [RaiqCompletionEntry32; 8];
+    var dma_buf: [byte; 256];
+
+    var drv: RaiqActiveDriver = RaiqActiveDriver {
+        sq_entries: &mut sq_buf[0],
+        cq_entries: &mut cq_buf[0],
+        sq_head: 0,
+        sq_tail: 0,
+        cq_head: 0,
+        cq_tail: 0,
+        ring_size: 8,
+        ring_mask: 7,
+        dma_buf: &mut dma_buf[0],
+        dma_buf_size: 256,
+        submissions_processed: 0,
+        completions_generated: 0,
+        bytes_transferred: 0,
+        cap_faults: 0,
+    };
+
+    var src: [byte; 8];
+    var dst: [byte; 8];
+    src[0] = 77 as byte;
+    src[7] = 88 as byte;
+
+    var sqe: RaiqSubmissionEntry64;
+    raiq_prepare_sqe(&mut sqe, RPI_OP_DMA_COPY, (&src[0]) as uint, (&mut dst[0]) as uint, 8, 42);
+    let sub_rc: int = raiq_driver_submit(&mut drv, &sqe);
+    assert(sub_rc == 0, "raiq submit failed");
+
+    let nproc: uint = raiq_driver_process_entries(&mut drv);
+    assert(nproc == 1, "raiq process count mismatch");
+    assert(dst[0] == 77, "dma copy dst[0] mismatch");
+    assert(dst[7] == 88, "dma copy dst[7] mismatch");
+
+    var cqe: RaiqCompletionEntry32;
+    let poll_rc: bool = raiq_driver_poll_completion(&mut drv, &mut cqe);
+    assert(poll_rc == true, "raiq poll failed");
+    assert(cqe.user_tag == 42, "cqe user_tag mismatch");
+    assert(cqe.status == 0, "cqe status mismatch");
+    assert(cqe.transferred_bytes == 8, "cqe bytes mismatch");
+}
+
+fn main() -> int {
+    test_rpi_alloc_and_free();
+    test_rpi_file_roundtrip();
+    test_rpi_unsupported_opcode();
+    test_rpi_raiq_queue();
+    println("RPI Linux regression and functional verification: ALL PASSED");
+    return 0;
+}

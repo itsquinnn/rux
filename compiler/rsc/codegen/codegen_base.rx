@@ -508,6 +508,8 @@ fn emit_start_stub(cg: *mut CodeGen) {
         cg_emit8(cg, 49); cg_emit8(cg, 192);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 32);
         cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_writefile_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 133); cg_emit8(cg, 192); cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 184); cg_emit32(cg, 4294967295); cg_emit8(cg, 235); cg_emit8(cg, 3);
         cg_emit8(cg, 139); cg_emit8(cg, 69); cg_emit8(cg, 232);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
 
@@ -528,6 +530,8 @@ fn emit_start_stub(cg: *mut CodeGen) {
         cg_emit8(cg, 49); cg_emit8(cg, 192);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 32);
         cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_readfile_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 133); cg_emit8(cg, 192); cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 184); cg_emit32(cg, 4294967295); cg_emit8(cg, 235); cg_emit8(cg, 3);
         cg_emit8(cg, 139); cg_emit8(cg, 69); cg_emit8(cg, 232);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
 
@@ -554,6 +558,8 @@ fn emit_start_stub(cg: *mut CodeGen) {
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 32);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 249);
         cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_closehandle_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 133); cg_emit8(cg, 192); cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 184); cg_emit32(cg, 4294967295); cg_emit8(cg, 235); cg_emit8(cg, 2);
         cg_emit8(cg, 49); cg_emit8(cg, 192);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
 

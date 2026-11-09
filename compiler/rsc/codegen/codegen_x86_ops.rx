@@ -85,7 +85,7 @@ fn compile_expr_os_port(cg: *mut CodeGen, node: *mut AstNode) {
         cg.pe_exit_iat_hole2 = cg.text_size;
         cg_emit32(cg, 0);
 
-        cg_emit8(cg, 49); cg_emit8(cg, 192);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 192); cg_emit32(cg, 4294967258);
         return;
     }
 

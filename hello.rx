@@ -84,8 +84,8 @@ fn main(argc: u64, argv: **u8) -> int {
     println(sum4);
     print("8-arg call result: ");
     println(score8);
-    if sum4 != 100 || dsscore8 != 36 {
+    if sum4 != 100 || score8 != 36 {
         return 1;
-    }bs
+    }
     return 0;
 }
