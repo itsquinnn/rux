@@ -63,6 +63,16 @@ jobs:
           /tmp/rux_ci_install/bin/rux --help
           /tmp/rux_ci_install/bin/rux -e 'println("Installed rux runs cleanly!");'
 
+      - name: Build Windows PE32+ compiler artifact
+        run: |
+          ./bin/rux build compiler/rux.rx -o bin/rux.exe --target=win64
+
+      - name: Upload Windows binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rux-windows-x64
+          path: bin/rux.exe
+
   test-windows-x86_64:
     name: Test & Verify (Windows x64 Native)
     runs-on: windows-latest
@@ -71,22 +81,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download release package from GitHub Release
-        shell: pwsh
-        run: |
-          Invoke-WebRequest -Uri "https://github.com/itsquinnn/rux/releases/download/v1.0.0/rux-v1.0.0-x86_64-pc-windows-msvc.zip" -OutFile "rux_win.zip"
-          Expand-Archive -Path "rux_win.zip" -DestinationPath "rux_installed"
-          $binDir = Resolve-Path "rux_installed\rux-v1.0.0-x86_64-pc-windows-msvc\bin"
-          Add-Content $env:GITHUB_PATH $binDir
+      - name: Download Windows binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rux-windows-x64
+          path: bin
 
       - name: Test Windows Native Executable (CLI help and version)
         shell: pwsh
         run: |
-          rux.exe --help
-          rux.exe --version
+          .\bin\rux.exe --help
+          .\bin\rux.exe --version
 
       - name: Test Running Rux Program on Windows Native
         shell: pwsh
         run: |
-          rux.exe build hello.rx -o hello_win.exe --target=win64
+          .\bin\rux.exe build hello.rx -o hello_win.exe --target=win64
           .\hello_win.exe
