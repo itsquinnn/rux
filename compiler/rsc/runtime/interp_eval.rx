@@ -1,0 +1,651 @@
+fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -> i64 {
+    *out_kind = 0;
+    if n == (0 as *mut AstNode) || st.had_runtime_err == 1 {
+        return 0;
+    }
+    if n.kind == 116 {
+        return n.val as i64;
+    }
+    if n.kind == 118 {
+        let sp: *mut u8 = interp_unescape_str(st, n.hash as *u8, n.val);
+        *out_kind = 1;
+        return sp as i64;
+    }
+    if n.kind == 123 {
+        return n.hash as i64;
+    }
+    if n.kind == 117 {
+        let slot: i64 = interp_find_slot(st, n.hash);
+        if slot >= 0 {
+            *out_kind = interp_slot_kind(st, slot as u64);
+            return interp_slot_val(st, slot as u64);
+        }
+        let ce: *mut ConstEntry = parser_find_const(st.p, n.hash);
+        if ce != (0 as *mut ConstEntry) {
+            if (ce.extra & 4294967295) == 2 {
+                let csp: *mut u8 = interp_unescape_str(st, ce.val as *u8, ce.extra >> 32);
+                *out_kind = 1;
+                return csp as i64;
+            }
+            return ce.val as i64;
+        }
+        let fref: *mut AstNode = find_comptime_fn(st.p, n.hash);
+        if fref != (0 as *mut AstNode) {
+            return n.hash as i64;
+        }
+        interp_runtime_err(st, "ReferenceError", "Identifier is not defined");
+        return 0;
+    }
+    if n.kind == 131 {
+        var ck: u64 = 0;
+        let cv: i64 = interp_eval_expr(st, n.child1, &mut ck);
+        if n.is_mut > 0 {
+            if n.is_mut == 11 {
+                *out_kind = 11;
+            } else if n.val == 23 || n.hash == 631772817358541784 || n.hash == 627981701265227156 {
+                *out_kind = 1;
+            } else {
+                let csz_p: u64 = type_prim_size_from_tok(n.val as u32, n.hash);
+                *out_kind = csz_p;
+            }
+            return cv;
+        }
+        let csz: u64 = type_prim_size_from_tok(n.val as u32, n.hash);
+        let csgn: u32 = is_signed_type_hash(n.val as u32, n.hash);
+        if csz == 1 {
+            let b8: u64 = (cv as u64) & 255;
+            if csgn == 1 && (b8 & 128) != 0 { return (b8 | (0 - 256 as u64)) as i64; }
+            return b8 as i64;
+        }
+        if csz == 2 {
+            let b16: u64 = (cv as u64) & 65535;
+            if csgn == 1 && (b16 & 32768) != 0 { return (b16 | (0 - 65536 as u64)) as i64; }
+            return b16 as i64;
+        }
+        if csz == 4 {
+            let b32: u64 = (cv as u64) & 4294967295;
+            if csgn == 1 && (b32 & 2147483648) != 0 { return (b32 | (0 - 4294967296 as u64)) as i64; }
+            return b32 as i64;
+        }
+        return cv;
+    }
+    if n.kind == 112 {
+        var uk: u64 = 0;
+        if n.val == 53 {
+            let uv0: i64 = interp_eval_expr(st, n.child1, &mut uk);
+            if uv0 == 0 { return 1; }
+            return 0;
+        }
+        if n.val == 54 {
+            let uv1: i64 = interp_eval_expr(st, n.child1, &mut uk);
+            return uv1 ^ (0 - 1);
+        }
+        if n.val == 50 {
+            if n.child1 != (0 as *mut AstNode) {
+                if n.child1.kind == 117 {
+                    let asl: i64 = interp_find_slot(st, n.child1.hash);
+                    if asl >= 0 {
+                        if interp_slot_cap(st, asl as u64) > 0 {
+                            *out_kind = interp_slot_kind(st, asl as u64);
+                            return interp_slot_val(st, asl as u64);
+                        }
+                        *out_kind = 8;
+                        return (st.var_vals + ((asl as u64) * 8)) as i64;
+                    }
+                } else if n.child1.kind == 115 {
+                    var abk: u64 = 0;
+                    var aik: u64 = 0;
+                    let abase: i64 = interp_eval_expr(st, n.child1.child1, &mut abk);
+                    let aidx: i64 = interp_eval_expr(st, n.child1.child2, &mut aik);
+                    let astr: i64 = interp_stride_for_kind(abk);
+                    *out_kind = abk;
+                    return abase + (aidx * astr);
+                }
+            }
+            return interp_eval_expr(st, n.child1, out_kind);
+        }
+        if n.val == 32 {
+            let dptr: i64 = interp_eval_expr(st, n.child1, &mut uk);
+            if dptr == 0 || (dptr as u64) < 65536 {
+                interp_runtime_err(st, "TypeError", "Cannot read memory of null or invalid pointer");
+                return 0;
+            }
+            if uk == 1 { return ((dptr as *u8)[0]) as i64; }
+            if uk == 2 { return ((dptr as *u16)[0]) as i64; }
+            if uk == 4 { return ((dptr as *u32)[0]) as i64; }
+            if uk == 11 { *out_kind = 1; }
+            return ((dptr as *i64)[0]);
+        }
+        return interp_eval_expr(st, n.child1, out_kind);
+    }
+    if n.kind == 115 {
+        var bk: u64 = 0;
+        var ik: u64 = 0;
+        let base: i64 = interp_eval_expr(st, n.child1, &mut bk);
+        let idx: i64 = interp_eval_expr(st, n.child2, &mut ik);
+        let stride: i64 = interp_stride_for_kind(bk);
+        if n.child1 != (0 as *mut AstNode) && n.child1.kind == 117 {
+            let bslot: i64 = interp_find_slot(st, n.child1.hash);
+            if bslot >= 0 {
+                let cap: u64 = interp_slot_cap(st, bslot as u64);
+                if cap > 0 {
+                    if idx < 0 || ((idx as u64) * (stride as u64)) >= cap {
+                        interp_runtime_err(st, "RangeError", "Array index out of bounds");
+                        return 0;
+                    }
+                }
+            }
+        }
+        if base == 0 || (base as u64) < 65536 {
+            interp_runtime_err(st, "TypeError", "Cannot index null or invalid pointer");
+            return 0;
+        }
+        let addr: u64 = (base + (idx * stride)) as u64;
+        if stride == 1 { return ((addr as *u8)[0]) as i64; }
+        if stride == 2 { return ((addr as *u16)[0]) as i64; }
+        if stride == 4 { return ((addr as *u32)[0]) as i64; }
+        if bk == 11 { *out_kind = 1; }
+        return ((addr as *i64)[0]);
+    }
+    if n.kind == 122 {
+        var s_sz: u64 = 64;
+        if st.cg != (0 as *mut CodeGen) {
+            let si: *mut StructInfo = cg_find_struct(st.cg, n.hash);
+            if si != (0 as *mut StructInfo) && si.total_size > 0 { s_sz = si.total_size; }
+        }
+        let sbuf: *mut u8 = interp_heap_alloc(st, s_sz);
+        var fi: *mut AstNode = n.child1;
+        while fi != (0 as *mut AstNode) {
+            var fk: u64 = 0;
+            let fv: i64 = interp_eval_expr(st, fi.child1, &mut fk);
+            var foff: u64 = 0;
+            if st.cg != (0 as *mut CodeGen) {
+                foff = cg_lookup_field_offset(st.cg, n.hash, fi.hash) as u64;
+            }
+            let fp: *mut i64 = (sbuf + foff) as *mut i64;
+            fp[0] = fv;
+            fi = fi.next;
+        }
+        *out_kind = n.hash;
+        return sbuf as i64;
+    }
+    if n.kind == 114 {
+        var fbk: u64 = 0;
+        let fbase: i64 = interp_eval_expr(st, n.child1, &mut fbk);
+        if fbase == 0 {
+            if n.is_mut == 1 { return 0; }
+            interp_runtime_err(st, "TypeError", "Cannot read property of null");
+            return 0;
+        }
+        var fdisp: u64 = 0;
+        if st.cg != (0 as *mut CodeGen) {
+            fdisp = cg_lookup_field_offset(st.cg, fbk, n.hash) as u64;
+        }
+        let fp2: *i64 = ((fbase as *u8) + fdisp) as *i64;
+        return fp2[0];
+    }
+    if n.kind == 124 {
+        var ck2: u64 = 0;
+        if interp_eval_expr(st, n.child1, &mut ck2) != 0 {
+            return interp_eval_expr(st, n.child2, out_kind);
+        }
+        return interp_eval_expr(st, n.child3, out_kind);
+    }
+    if n.kind == 129 {
+        var mtk: u64 = 0;
+        let mtgt: i64 = interp_eval_expr(st, n.child1, &mut mtk);
+        var arm: *mut AstNode = n.child2;
+        while arm != (0 as *mut AstNode) {
+            if arm.val == 1 {
+                return interp_eval_expr(st, arm.child2, out_kind);
+            }
+            var pat: *mut AstNode = arm.child1;
+            while pat != (0 as *mut AstNode) {
+                var pk0: u64 = 0;
+                if interp_eval_expr(st, pat, &mut pk0) == mtgt {
+                    return interp_eval_expr(st, arm.child2, out_kind);
+                }
+                pat = pat.next;
+            }
+            arm = arm.next;
+        }
+        return 0;
+    }
+    if n.kind == 133 {
+        return interp_eval_expr(st, n.child1, out_kind);
+    }
+    if n.kind == 106 {
+        let op: u64 = n.val;
+        var lk: u64 = 0;
+        let l: i64 = interp_eval_expr(st, n.child1, &mut lk);
+        if op == 49 {
+            if l == 0 { return 0; }
+            var rk0: u64 = 0;
+            if interp_eval_expr(st, n.child2, &mut rk0) != 0 { return 1; }
+            return 0;
+        }
+        if op == 57 {
+            if l != 0 { return 1; }
+            var rk1: u64 = 0;
+            if interp_eval_expr(st, n.child2, &mut rk1) != 0 { return 1; }
+            return 0;
+        }
+        if op == 91 || op == 111 {
+            if l != 0 { *out_kind = lk; return l; }
+            return interp_eval_expr(st, n.child2, out_kind);
+        }
+        if op == 108 {
+            if l >= 0 { *out_kind = lk; return l; }
+            return interp_eval_expr(st, n.child2, out_kind);
+        }
+        var rk: u64 = 0;
+        let r: i64 = interp_eval_expr(st, n.child2, &mut rk);
+        if op == 30 {
+            if lk == 1 { *out_kind = 1; }
+            return l + r;
+        }
+        if op == 31 { return l - r; }
+        if op == 32 { return l * r; }
+        if op == 33 {
+            if r == 0 { interp_runtime_err(st, "RangeError", "Division or modulo by zero"); return 0; }
+            return l / r;
+        }
+        if op == 34 {
+            if r == 0 { interp_runtime_err(st, "RangeError", "Division or modulo by zero"); return 0; }
+            return l % r;
+        }
+        if op == 47 { return ((l as u64) << ((r as u64) & 63)) as i64; }
+        if op == 48 { return l >> (r & 63); }
+        if op == 50 { return l & r; }
+        if op == 51 { return l | r; }
+        if op == 52 { return l ^ r; }
+        if op == 41 { if l == r { return 1; } return 0; }
+        if op == 42 { if l != r { return 1; } return 0; }
+        if op == 43 { if l < r { return 1; } return 0; }
+        if op == 44 { if l > r { return 1; } return 0; }
+        if op == 45 { if l <= r { return 1; } return 0; }
+        if op == 46 { if l >= r { return 1; } return 0; }
+        return 0;
+    }
+    if n.kind == 120 {
+        var fd: u32 = 1;
+        if n.val == 2 { fd = 2; }
+        var pa: *mut AstNode = n.child1;
+        while pa != (0 as *mut AstNode) {
+            var pak: u64 = 0;
+            let pav: i64 = interp_eval_expr(st, pa, &mut pak);
+            if st.had_runtime_err == 1 { return 0; }
+            if pak == 1 && n.val != 3 {
+                if pav != 0 {
+                    let ps: *u8 = pav as *u8;
+                    let plen: u64 = str_len(ps);
+                    if plen > 0 { acrq_port_submit(1, fd, 0, ps as u64, 0, plen); }
+                }
+            } else {
+                interp_write_i64(fd, pav);
+            }
+            pa = pa.next;
+        }
+        if n.val == 1 || n.val == 2 {
+            let nl: *u8 = "\n";
+            acrq_port_submit(1, fd, 0, nl as u64, 0, 1);
+        }
+        return 0;
+    }
+    if n.kind == 119 {
+        var sk: u64 = 0;
+        let nr: u64 = interp_eval_expr(st, n.child1, &mut sk) as u64;
+        var sargs: [u64; 6];
+        var si: u64 = 0;
+        while si < 6 { sargs[si] = 0; si = si + 1; }
+        var sa: *mut AstNode = n.child2;
+        var sac: u64 = 0;
+        while sa != (0 as *mut AstNode) && sac < 6 {
+            sargs[sac] = interp_eval_expr(st, sa, &mut sk) as u64;
+            sac = sac + 1;
+            sa = sa.next;
+        }
+        return syscall(nr, sargs[0], sargs[1], sargs[2], sargs[3], sargs[4], sargs[5]);
+    }
+    if n.kind == 113 {
+        if n.hash == hash_identifier("eval", 4) {
+            var ek: u64 = 0;
+            let eptr: i64 = interp_eval_expr(st, n.child2, &mut ek);
+            return interp_eval_dynamic_str(st, eptr as *u8, out_kind);
+        }
+        if n.hash == hash_identifier("sys_exit", 8) {
+            var exk: u64 = 0;
+            let exc: i64 = interp_eval_expr(st, n.child2, &mut exk);
+            sys_exit(exc as int);
+            return 0;
+        }
+        var target_h: u64 = n.hash;
+        var arg_vals: [i64; 64];
+        var arg_kinds: [u64; 64];
+        var acnt: u64 = 0;
+        if n.child1 != (0 as *mut AstNode) && n.child1.kind == 114 {
+            var rcv_k: u64 = 0;
+            let rcv_v: i64 = interp_eval_expr(st, n.child1.child1, &mut rcv_k);
+            target_h = combine_ns_hash(rcv_k, n.child1.hash);
+            arg_vals[0] = rcv_v;
+            arg_kinds[0] = rcv_k;
+            acnt = 1;
+        } else if n.child1 != (0 as *mut AstNode) && n.child1.kind == 117 {
+            let fsl: i64 = interp_find_slot(st, n.child1.hash);
+            if fsl >= 0 {
+                let fn_cand: u64 = interp_slot_val(st, fsl as u64) as u64;
+                if find_comptime_fn(st.p, fn_cand) != (0 as *mut AstNode) {
+                    target_h = fn_cand;
+                }
+            }
+        }
+        var ca: *mut AstNode = n.child2;
+        while ca != (0 as *mut AstNode) && acnt < 64 {
+            var ak: u64 = 0;
+            arg_vals[acnt] = interp_eval_expr(st, ca, &mut ak);
+            arg_kinds[acnt] = ak;
+            acnt = acnt + 1;
+            ca = ca.next;
+        }
+        let callee: *mut AstNode = find_comptime_fn(st.p, target_h);
+        if callee == (0 as *mut AstNode) {
+            interp_runtime_err(st, "ReferenceError", "Function is not defined");
+            return 0;
+        }
+        if st.call_depth >= 1024 {
+            interp_runtime_err(st, "RangeError", "Maximum call stack size exceeded");
+            return 0;
+        }
+        let saved_base: u64 = st.frame_base;
+        let saved_top: u64 = st.var_top;
+        let saved_flow: u32 = st.flow;
+        let saved_ret: i64 = st.ret_val;
+
+        st.frame_base = st.var_top;
+        st.flow = 0;
+        st.ret_val = 0;
+        st.call_depth = st.call_depth + 1;
+
+        var p_cur: *mut AstNode = callee.child2;
+        var pi: u64 = 0;
+        while p_cur != (0 as *mut AstNode) && pi < acnt {
+            var pk2: u64 = arg_kinds[pi];
+            if p_cur.is_mut == 11 { pk2 = 11; }
+            else if p_cur.is_mut > 0 && (p_cur.val == 23 || p_cur.val == 631772817358541784) { pk2 = 1; }
+            else if p_cur.is_mut > 0 && pk2 == 0 { pk2 = 8; }
+            interp_bind_slot(st, p_cur.hash, arg_vals[pi], pk2, 0);
+            pi = pi + 1;
+            p_cur = p_cur.next;
+        }
+
+        interp_exec_stmt_list(st, callee.child1);
+        let fn_ret: i64 = st.ret_val;
+        if callee.is_mut == 1 && (callee.val == 23 || callee.val == 631772817358541784) {
+            *out_kind = 1;
+        }
+
+        st.call_depth = st.call_depth - 1;
+        st.var_top = saved_top;
+        st.frame_base = saved_base;
+        st.flow = saved_flow;
+        st.ret_val = saved_ret;
+        return fn_ret;
+    }
+    return 0;
+}
+
+fn interp_exec_stmt_list(st: *mut InterpState, stmts: *mut AstNode) {
+    var cur: *mut AstNode = stmts;
+    while cur != (0 as *mut AstNode) && st.flow == 0 && st.had_runtime_err == 0 {
+        interp_exec_stmt(st, cur);
+        cur = cur.next;
+    }
+}
+
+fn interp_exec_stmt(st: *mut InterpState, s: *mut AstNode) {
+    if s == (0 as *mut AstNode) || s.kind == 0 || st.flow != 0 || st.had_runtime_err == 1 {
+        return;
+    }
+    st.last_was_expr = 0;
+
+    if s.kind == 105 {
+        if s.id == 10 || s.id == 11 || s.id == 12 {
+            var astr: u64 = 8;
+            if s.id == 10 { astr = 1; }
+            else if s.id == 12 { astr = s.is_mut; }
+            let abuf: *mut u8 = interp_heap_alloc(st, s.val);
+            interp_bind_slot(st, s.hash, abuf as i64, astr, s.val);
+            return;
+        }
+        if s.id == 3 {
+            var ssz: u64 = 64;
+            if st.cg != (0 as *mut CodeGen) {
+                let sinfo: *mut StructInfo = cg_find_struct(st.cg, s.val);
+                if sinfo != (0 as *mut StructInfo) && sinfo.total_size > 0 { ssz = sinfo.total_size; }
+            }
+            if s.child1 != (0 as *mut AstNode) {
+                var sik: u64 = 0;
+                let siv: i64 = interp_eval_expr(st, s.child1, &mut sik);
+                interp_bind_slot(st, s.hash, siv, s.val, 0);
+            } else {
+                let sptr: *mut u8 = interp_heap_alloc(st, ssz);
+                interp_bind_slot(st, s.hash, sptr as i64, s.val, 0);
+            }
+            return;
+        }
+        var vk: u64 = 0;
+        var vv: i64 = 0;
+        if s.child1 != (0 as *mut AstNode) {
+            vv = interp_eval_expr(st, s.child1, &mut vk);
+        }
+        if s.id == 11 { vk = 11; }
+        else if s.id == 2 && (s.val == 23 || s.val == 631772817358541784) { vk = 1; }
+        else if s.id == 1 || s.id == 2 { if vk == 0 { vk = 8; } }
+        interp_bind_slot(st, s.hash, vv, vk, 0);
+        return;
+    }
+
+    if s.kind == 106 {
+        let lhs: *mut AstNode = s.child1;
+        var rk: u64 = 0;
+        if lhs == (0 as *mut AstNode) { return; }
+        if lhs.kind == 117 {
+            let rv: i64 = interp_eval_expr(st, s.child2, &mut rk);
+            let slot: i64 = interp_find_slot(st, lhs.hash);
+            if slot >= 0 {
+                var nk: u64 = interp_slot_kind(st, slot as u64);
+                if rk == 1 { nk = 1; }
+                let cap: u64 = interp_slot_cap(st, slot as u64);
+                interp_set_slot(st, slot as u64, lhs.hash, rv, nk, cap);
+            } else {
+                interp_runtime_err(st, "ReferenceError", "Assignment to undeclared variable");
+            }
+            return;
+        }
+        if lhs.kind == 115 {
+            var bk: u64 = 0;
+            var ik: u64 = 0;
+            let base: i64 = interp_eval_expr(st, lhs.child1, &mut bk);
+            let idx: i64 = interp_eval_expr(st, lhs.child2, &mut ik);
+            let rv2: i64 = interp_eval_expr(st, s.child2, &mut rk);
+            let stride: i64 = interp_stride_for_kind(bk);
+            if lhs.child1 != (0 as *mut AstNode) && lhs.child1.kind == 117 {
+                let bsl: i64 = interp_find_slot(st, lhs.child1.hash);
+                if bsl >= 0 {
+                    let bcap: u64 = interp_slot_cap(st, bsl as u64);
+                    if bcap > 0 && (idx < 0 || ((idx as u64) * (stride as u64)) >= bcap) {
+                        interp_runtime_err(st, "RangeError", "Array index out of bounds");
+                        return;
+                    }
+                }
+            }
+            if base == 0 || (base as u64) < 65536 {
+                interp_runtime_err(st, "TypeError", "Cannot write to null or invalid pointer");
+                return;
+            }
+            let waddr: u64 = (base + (idx * stride)) as u64;
+            if stride == 1 { (waddr as *mut u8)[0] = (rv2 & 255) as u8; }
+            else if stride == 2 { (waddr as *mut u16)[0] = (rv2 & 65535) as u16; }
+            else if stride == 4 { (waddr as *mut u32)[0] = (rv2 & 4294967295) as u32; }
+            else { (waddr as *mut i64)[0] = rv2; }
+            return;
+        }
+        if lhs.kind == 112 && lhs.val == 32 {
+            var pk: u64 = 0;
+            let ptr: i64 = interp_eval_expr(st, lhs.child1, &mut pk);
+            let rv3: i64 = interp_eval_expr(st, s.child2, &mut rk);
+            if ptr == 0 || (ptr as u64) < 65536 {
+                interp_runtime_err(st, "TypeError", "Cannot write memory of null or invalid pointer");
+                return;
+            }
+            if pk == 1 { (ptr as *mut u8)[0] = (rv3 & 255) as u8; }
+            else if pk == 2 { (ptr as *mut u16)[0] = (rv3 & 65535) as u16; }
+            else if pk == 4 { (ptr as *mut u32)[0] = (rv3 & 4294967295) as u32; }
+            else { (ptr as *mut i64)[0] = rv3; }
+            return;
+        }
+        if lhs.kind == 114 {
+            var sbk: u64 = 0;
+            let sbase: i64 = interp_eval_expr(st, lhs.child1, &mut sbk);
+            let rv4: i64 = interp_eval_expr(st, s.child2, &mut rk);
+            if sbase == 0 {
+                interp_runtime_err(st, "TypeError", "Cannot set property of null");
+                return;
+            }
+            var foff: u64 = 0;
+            if st.cg != (0 as *mut CodeGen) {
+                foff = cg_lookup_field_offset(st.cg, sbk, lhs.hash) as u64;
+            }
+            (((sbase as *mut u8) + foff) as *mut i64)[0] = rv4;
+            return;
+        }
+        return;
+    }
+
+    if s.kind == 107 {
+        var ck: u64 = 0;
+        if interp_eval_expr(st, s.child1, &mut ck) != 0 {
+            interp_exec_stmt_list(st, s.child2);
+        } else if s.child3 != (0 as *mut AstNode) {
+            if s.child3.kind == 107 {
+                interp_exec_stmt(st, s.child3);
+            } else {
+                interp_exec_stmt_list(st, s.child3);
+            }
+        }
+        return;
+    }
+
+    if s.kind == 108 {
+        var wk: u64 = 0;
+        while st.flow == 0 && st.had_runtime_err == 0 && interp_eval_expr(st, s.child1, &mut wk) != 0 {
+            interp_exec_stmt_list(st, s.child2);
+            if st.flow == 2 { st.flow = 0; return; }
+            if st.flow == 3 { st.flow = 0; }
+        }
+        return;
+    }
+
+    if s.kind == 125 {
+        var fk1: u64 = 0;
+        var fk2: u64 = 0;
+        var cur_i: i64 = interp_eval_expr(st, s.child1, &mut fk1);
+        let end_i: i64 = interp_eval_expr(st, s.child2, &mut fk2);
+        let fslot: u64 = interp_bind_slot(st, s.hash, cur_i, 0, 0);
+        while st.flow == 0 && st.had_runtime_err == 0 && cur_i < end_i {
+            interp_set_slot(st, fslot, s.hash, cur_i, 0, 0);
+            interp_exec_stmt_list(st, s.child3);
+            if st.flow == 2 { st.flow = 0; return; }
+            if st.flow == 3 { st.flow = 0; }
+            if st.flow == 1 { return; }
+            cur_i = interp_slot_val(st, fslot) + 1;
+        }
+        return;
+    }
+
+    if s.kind == 129 {
+        var mk: u64 = 0;
+        let mtgt: i64 = interp_eval_expr(st, s.child1, &mut mk);
+        var marm: *mut AstNode = s.child2;
+        while marm != (0 as *mut AstNode) {
+            if marm.val == 1 {
+                interp_exec_stmt_list(st, marm.child2);
+                return;
+            }
+            var mpat: *mut AstNode = marm.child1;
+            while mpat != (0 as *mut AstNode) {
+                var pk0: u64 = 0;
+                if interp_eval_expr(st, mpat, &mut pk0) == mtgt {
+                    interp_exec_stmt_list(st, marm.child2);
+                    return;
+                }
+                mpat = mpat.next;
+            }
+            marm = marm.next;
+        }
+        return;
+    }
+
+    if s.kind == 109 {
+        if s.child1 != (0 as *mut AstNode) {
+            st.ret_val = interp_eval_expr(st, s.child1, &mut st.last_kind);
+        } else {
+            st.ret_val = 0;
+            st.last_kind = 0;
+        }
+        st.last_val = st.ret_val;
+        st.flow = 1;
+        return;
+    }
+
+    if s.kind == 126 { st.flow = 2; return; }
+    if s.kind == 127 { st.flow = 3; return; }
+    if s.kind == 132 { interp_exec_stmt_list(st, s.child1); return; }
+
+    if s.kind == 110 {
+        st.last_val = interp_eval_expr(st, s.child1, &mut st.last_kind);
+        if s.child1 != (0 as *mut AstNode) && s.child1.kind != 120 {
+            st.last_was_expr = 1;
+        }
+        return;
+    }
+}
+
+fn continuum_interp_run(p: *mut Parser, cg: *mut CodeGen, entry_hash: u64, in_path: *u8, in_path_idx: u64, argc: u64, argv: *mut *mut u8) -> i64 {
+    let entry_fn: *mut AstNode = find_comptime_fn(p, entry_hash);
+    if entry_fn == (0 as *mut AstNode) {
+        return 0;
+    }
+    var st: InterpState;
+    interp_init(&mut st, p, cg, 0);
+
+    let argv_buf: *mut u64 = interp_heap_alloc(&mut st, 264) as *mut u64;
+    argv_buf[0] = in_path as u64;
+    var ca_n: u64 = 1;
+    if in_path_idx > 0 {
+        var fw_i: u64 = in_path_idx + 1;
+        while fw_i < argc && ca_n < 31 {
+            argv_buf[ca_n] = argv[fw_i] as u64;
+            ca_n = ca_n + 1;
+            fw_i = fw_i + 1;
+        }
+    }
+    argv_buf[ca_n] = 0;
+
+    var p_cur: *mut AstNode = entry_fn.child2;
+    var pi: u64 = 0;
+    while p_cur != (0 as *mut AstNode) {
+        if pi == 0 {
+            interp_bind_slot(&mut st, p_cur.hash, ca_n as i64, 0, 0);
+        } else if pi == 1 {
+            interp_bind_slot(&mut st, p_cur.hash, argv_buf as i64, 11, 0);
+        } else {
+            interp_bind_slot(&mut st, p_cur.hash, 0, 0, 0);
+        }
+        pi = pi + 1;
+        p_cur = p_cur.next;
+    }
+
+    interp_exec_stmt_list(&mut st, entry_fn.child1);
+    return st.ret_val;
+}

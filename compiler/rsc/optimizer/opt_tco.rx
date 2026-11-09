@@ -1,0 +1,28 @@
+fn opt_try_emit_tail_call(cg: *mut CodeGen, ret_expr: *mut AstNode) -> u32 {
+    if ret_expr == (0 as *mut AstNode) || ret_expr.kind != 113 { return 0; }
+    if ret_expr.child1 != (0 as *mut AstNode) && ret_expr.child1.kind == 114 { return 0; }
+    if ret_expr.hash != cg.cur_fn_hash || cg.cur_fn_hash == 0 { return 0; }
+    if cg.defer_count != 0 || cg.has_lambdas != 0 || cg.cur_fn_ret_size != 0 { return 0; }
+
+    var cur_a: *mut AstNode = ret_expr.child2;
+    var a_cnt: u32 = 0;
+    while cur_a != (0 as *mut AstNode) && a_cnt < 6 {
+        compile_expr(cg, cur_a);
+        cg_emit8(cg, 80);
+        a_cnt = a_cnt + 1;
+        cur_a = cur_a.next;
+    }
+    var pop_i: u32 = a_cnt;
+    while pop_i > 0 {
+        pop_i = pop_i - 1;
+        cg_emit8(cg, 88);
+        let p_disp: u32 = 0 - ((pop_i + 1) * 8);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 133);
+        cg_emit32(cg, p_disp);
+    }
+    cg_emit8(cg, 233);
+    let j_back: i32 = (cg.cur_fn_body_off as i32) - ((cg.text_size + 4) as i32);
+    cg_emit32(cg, j_back as u32);
+    return 1;
+}
+

@@ -1,0 +1,91 @@
+include "lib/core/types.rx";
+
+const ZIP_LOCAL_FILE_MAGIC: u32 = 0x04034B50;
+const IOS_CS_SUPERBLOB_MAGIC: u32 = 0xFADE0CC0;
+const IOS_CS_CODEDIRECTORY_MAGIC: u32 = 0xFADE0C02;
+
+fn pkg_write_le32(dst: *mut byte, off: uint, val: u32) {
+    dst[off] = (val & 255) as byte;
+    dst[off + 1] = ((val >> 8) & 255) as byte;
+    dst[off + 2] = ((val >> 16) & 255) as byte;
+    dst[off + 3] = ((val >> 24) & 255) as byte;
+}
+
+fn pkg_write_be32(dst: *mut byte, off: uint, val: u32) {
+    dst[off] = ((val >> 24) & 255) as byte;
+    dst[off + 1] = ((val >> 16) & 255) as byte;
+    dst[off + 2] = ((val >> 8) & 255) as byte;
+    dst[off + 3] = (val & 255) as byte;
+}
+
+fn pkg_crc32(data: *const byte, len: uint) -> u32 {
+    var crc: u32 = 4294967295;
+    var i: uint = 0;
+    while i < len {
+        crc = crc ^ (data[i] as u32);
+        var bit: uint = 0;
+        while bit < 8 {
+            if (crc & 1) != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc = crc >> 1;
+            }
+            bit = bit + 1;
+        }
+        i = i + 1;
+    }
+    return 4294967295 ^ crc;
+}
+
+fn apk_write_zip_entry(dst: *mut byte, filename: *const byte, fname_len: uint, payload: *const byte, payload_len: uint) -> uint {
+    pkg_write_le32(dst, 0, ZIP_LOCAL_FILE_MAGIC);
+    dst[4] = 20; dst[5] = 0;
+    dst[6] = 0;  dst[7] = 0;
+    dst[8] = 0;  dst[9] = 0;
+    dst[10] = 0; dst[11] = 0;
+    dst[12] = 0; dst[13] = 0;
+    let crc: u32 = pkg_crc32(payload, payload_len);
+    pkg_write_le32(dst, 14, crc);
+    pkg_write_le32(dst, 18, payload_len as u32);
+    pkg_write_le32(dst, 22, payload_len as u32);
+    dst[26] = (fname_len & 255) as byte;
+    dst[27] = ((fname_len >> 8) & 255) as byte;
+    dst[28] = 0; dst[29] = 0;
+
+    var i: uint = 0;
+    while i < fname_len {
+        dst[30 + i] = filename[i];
+        i = i + 1;
+    }
+    var j: uint = 0;
+    while j < payload_len {
+        dst[30 + fname_len + j] = payload[j];
+        j = j + 1;
+    }
+    return 30 + fname_len + payload_len;
+}
+
+fn apk_write_dex_header(dst: *mut byte, file_size: u32) -> uint {
+    dst[0] = 100; dst[1] = 101; dst[2] = 120; dst[3] = 10;
+    dst[4] = 48;  dst[5] = 51;  dst[6] = 53;  dst[7] = 0;
+    pkg_write_le32(dst, 32, file_size);
+    pkg_write_le32(dst, 36, 112);
+    pkg_write_le32(dst, 40, 0x12345678);
+    return 112;
+}
+
+fn ipa_write_codesign_superblob(dst: *mut byte, code_hash_64: u64) -> uint {
+    pkg_write_be32(dst, 0, IOS_CS_SUPERBLOB_MAGIC);
+    pkg_write_be32(dst, 4, 44);
+    pkg_write_be32(dst, 8, 1);
+    pkg_write_be32(dst, 12, 0);
+    pkg_write_be32(dst, 16, 20);
+    pkg_write_be32(dst, 20, IOS_CS_CODEDIRECTORY_MAGIC);
+    pkg_write_be32(dst, 24, 24);
+    pkg_write_be32(dst, 28, 0x00020400);
+    pkg_write_be32(dst, 32, 0);
+    pkg_write_be32(dst, 36, ((code_hash_64 >> 32) & 4294967295) as u32);
+    pkg_write_be32(dst, 40, (code_hash_64 & 4294967295) as u32);
+    return 44;
+}
+

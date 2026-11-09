@@ -1,0 +1,21 @@
+include "lib/core/types.rx";
+
+const RXDB_MAGIC: u32 = 0x42445852;
+
+struct RxdbHeader {
+    magic: u32,
+    version: u32,
+    total_bytes: uint,
+    root_shape_hash: uint,
+    entries_count: uint,
+}
+
+fn rxdb_header_init(hdr: *mut RxdbHeader, root_hash: uint, total_bytes: uint) {
+    hdr.magic = RXDB_MAGIC;
+    hdr.version = 1;
+    hdr.total_bytes = total_bytes;
+    hdr.root_shape_hash = root_hash;
+    hdr.entries_count = 0;
+}
+
+fn rxdb_validate(hdr: *const RxdbHeader) -> bool => hdr.magic == RXDB_MAGIC;

@@ -1,0 +1,38 @@
+package {
+    name: "quantum-router"
+    version: "2.4.0"
+    edition: "2026"
+    license: "MIT OR Apache-2.0"
+    authors: ["Antigravity Engine <agent@qumi.org>"]
+}
+
+build {
+    opt_level: 3
+    freestanding: true
+    strip_symbols: false
+    target_arch: "x86_64"
+
+    stack_size: 4MB
+    max_compilation_time: 10s
+
+    features: ["avx512", "cxl_nvram", "acrq_rings"]
+}
+
+dependencies {
+    crypto_blake3 {
+        git: "https://github.com/rux-lang/blake3.git"
+        tag: "v1.5.0"
+        hash: hex"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    }
+
+    terminal_ui {
+        path: "../libs/terminal"
+        optional: true
+    }
+}
+
+environment {
+    RUX_LOG: "trace"
+    MAX_THREADS: 32
+    DMA_RING_DEPTH: 1024_u32
+}

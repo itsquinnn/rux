@@ -1,0 +1,167 @@
+fn write_macho_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
+    var align: u64 = 4096;
+    if cg.target_arch == 10 {
+        align = 16384;
+    }
+    var text_aligned: u64 = ((cg.text_size as u64) + align - 1) & (0 - align);
+    if text_aligned == 0 { text_aligned = align; }
+    var rodata_aligned: u64 = ((cg.rodata_size as u64) + align - 1) & (0 - align);
+    if rodata_aligned == 0 { rodata_aligned = align; }
+
+    let headers_size: u64 = align;
+    let text_offset: u64 = headers_size;
+    let rodata_offset: u64 = text_offset + text_aligned;
+    let total_file_size: u64 = rodata_offset + rodata_aligned;
+
+    let file_buf: *mut u8 = uses_alloc(total_file_size);
+    if (file_buf as i64) <= 0 {
+        return -1;
+    }
+    var z: u64 = 0;
+    while z < total_file_size {
+        file_buf[z] = 0;
+        z = z + 1;
+    }
+
+    file_buf[0] = 207; file_buf[1] = 250; file_buf[2] = 237; file_buf[3] = 254;
+    if cg.target_arch == 10 {
+        file_buf[4] = 12; file_buf[5] = 0; file_buf[6] = 0; file_buf[7] = 1;
+        file_buf[8] = 0;  file_buf[9] = 0; file_buf[10] = 0; file_buf[11] = 0;
+    } else {
+        file_buf[4] = 7; file_buf[5] = 0; file_buf[6] = 0; file_buf[7] = 1;
+        file_buf[8] = 3; file_buf[9] = 0; file_buf[10] = 0; file_buf[11] = 128;
+    }
+    file_buf[12] = 2;
+    file_buf[16] = 3;
+    file_buf[20] = 248;
+    file_buf[24] = 133; file_buf[25] = 0; file_buf[26] = 32; file_buf[27] = 0;
+
+    let cmd1: u64 = 32;
+    file_buf[cmd1 + 0] = 25;
+    file_buf[cmd1 + 4] = 72;
+    file_buf[cmd1 + 8] = 95; file_buf[cmd1 + 9] = 95; file_buf[cmd1 + 10] = 80; file_buf[cmd1 + 11] = 65;
+    file_buf[cmd1 + 12] = 71; file_buf[cmd1 + 13] = 69; file_buf[cmd1 + 14] = 90; file_buf[cmd1 + 15] = 69;
+    file_buf[cmd1 + 16] = 82; file_buf[cmd1 + 17] = 79;
+    file_buf[cmd1 + 28] = 1;
+
+    let cmd2: u64 = cmd1 + 72;
+    file_buf[cmd2 + 0] = 25;
+    file_buf[cmd2 + 4] = 152;
+    file_buf[cmd2 + 8] = 95; file_buf[cmd2 + 9] = 95; file_buf[cmd2 + 10] = 84; file_buf[cmd2 + 11] = 69;
+    file_buf[cmd2 + 12] = 88; file_buf[cmd2 + 13] = 84;
+    file_buf[cmd2 + 28] = 1;
+    file_buf[cmd2 + 32] = (total_file_size & 255) as u8;
+    file_buf[cmd2 + 33] = ((total_file_size >> 8) & 255) as u8;
+    file_buf[cmd2 + 34] = ((total_file_size >> 16) & 255) as u8;
+    file_buf[cmd2 + 35] = ((total_file_size >> 24) & 255) as u8;
+    file_buf[cmd2 + 48] = (total_file_size & 255) as u8;
+    file_buf[cmd2 + 49] = ((total_file_size >> 8) & 255) as u8;
+    file_buf[cmd2 + 50] = ((total_file_size >> 16) & 255) as u8;
+    file_buf[cmd2 + 51] = ((total_file_size >> 24) & 255) as u8;
+    file_buf[cmd2 + 56] = 7;
+    file_buf[cmd2 + 60] = 7;
+    file_buf[cmd2 + 64] = 1;
+
+    let sect: u64 = cmd2 + 72;
+    file_buf[sect + 0] = 95; file_buf[sect + 1] = 95; file_buf[sect + 2] = 116; file_buf[sect + 3] = 101;
+    file_buf[sect + 4] = 120; file_buf[sect + 5] = 116;
+    file_buf[sect + 16] = 95; file_buf[sect + 17] = 95; file_buf[sect + 18] = 84; file_buf[sect + 19] = 69;
+    file_buf[sect + 20] = 88; file_buf[sect + 21] = 84;
+    file_buf[sect + 32] = (text_offset & 255) as u8;
+    file_buf[sect + 33] = ((text_offset >> 8) & 255) as u8;
+    file_buf[sect + 34] = ((text_offset >> 16) & 255) as u8;
+    file_buf[sect + 35] = ((text_offset >> 24) & 255) as u8;
+    file_buf[sect + 36] = 1;
+    file_buf[sect + 40] = (cg.text_size & 255) as u8;
+    file_buf[sect + 41] = ((cg.text_size >> 8) & 255) as u8;
+    file_buf[sect + 42] = ((cg.text_size >> 16) & 255) as u8;
+    file_buf[sect + 43] = ((cg.text_size >> 24) & 255) as u8;
+    file_buf[sect + 48] = (text_offset & 255) as u8;
+    file_buf[sect + 49] = ((text_offset >> 8) & 255) as u8;
+    file_buf[sect + 50] = ((text_offset >> 16) & 255) as u8;
+    file_buf[sect + 51] = ((text_offset >> 24) & 255) as u8;
+    file_buf[sect + 52] = 4;
+    file_buf[sect + 64] = 0; file_buf[sect + 65] = 4; file_buf[sect + 66] = 0; file_buf[sect + 67] = 128;
+
+    let cmd3: u64 = cmd2 + 152;
+    file_buf[cmd3 + 0] = 40; file_buf[cmd3 + 3] = 128;
+    file_buf[cmd3 + 4] = 24;
+    file_buf[cmd3 + 8] = (text_offset & 255) as u8;
+    file_buf[cmd3 + 9] = ((text_offset >> 8) & 255) as u8;
+    file_buf[cmd3 + 10] = ((text_offset >> 16) & 255) as u8;
+    file_buf[cmd3 + 11] = ((text_offset >> 24) & 255) as u8;
+
+    var i: u64 = 0;
+    while i < (cg.text_size as u64) {
+        file_buf[text_offset + i] = cg.text_buf[i];
+        i = i + 1;
+    }
+
+    if cg.target_arch != 10 {
+        var mrfi: u64 = 0;
+        while mrfi < cg.rodata_fixup_count {
+            let mrf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (mrfi * 16)) as *mut RodataFixup;
+            if (mrf.hole_offset + 4) <= (cg.text_size as u64) {
+                let mtpos: i64 = (rodata_offset + mrf.rodata_off) as i64;
+                let mnip: i64 = (text_offset + mrf.hole_offset + 4) as i64;
+                let mrdsp: u32 = ((mtpos - mnip) as i32) as u32;
+                let mppos: u64 = text_offset + mrf.hole_offset;
+                file_buf[mppos + 0] = (mrdsp & 255) as u8;
+                file_buf[mppos + 1] = ((mrdsp >> 8) & 255) as u8;
+                file_buf[mppos + 2] = ((mrdsp >> 16) & 255) as u8;
+                file_buf[mppos + 3] = ((mrdsp >> 24) & 255) as u8;
+            }
+            mrfi = mrfi + 1;
+        }
+    }
+
+    var mri: u32 = 0;
+    while mri < (cg.reloc_count as u32) {
+        let mhole: *mut EiaRelocHole = ((cg.relocs as *mut u8) + ((mri as u64) * 24)) as *mut EiaRelocHole;
+        let mh_pk: u64 = mhole.patch_kind & 255;
+        let mh_off: u64 = mhole.insn_offset & 4294967295;
+        if mh_pk == 1 && (mh_off + 4) <= (cg.text_size as u64) {
+            var mti: u32 = 0;
+            var mfound: u32 = 0;
+            while mti < (cg.tg_count as u32) && mfound == 0 {
+                let mtge: *mut EiaTypeGraphEntry = ((cg.type_graph as *mut u8) + ((mti as u64) * 24)) as *mut EiaTypeGraphEntry;
+                if mtge.type_sig_hash == mhole.type_sig_hash && mtge.field_hash == mhole.field_or_sym_hash {
+                    let mdisp: u32 = (mtge.byte_offset & 4294967295) as u32;
+                    let mpoff: u64 = text_offset + mh_off;
+                    if cg.target_arch == 10 {
+                        let mmovz: u32 = 3531604000 | ((mdisp & 65535) << 5);
+                        let mmovk: u32 = 4070621216 | (((mdisp >> 16) & 65535) << 5);
+                        file_buf[mpoff + 0] = (mmovz & 255) as u8;
+                        file_buf[mpoff + 1] = ((mmovz >> 8) & 255) as u8;
+                        file_buf[mpoff + 2] = ((mmovz >> 16) & 255) as u8;
+                        file_buf[mpoff + 3] = ((mmovz >> 24) & 255) as u8;
+                        file_buf[mpoff + 4] = (mmovk & 255) as u8;
+                        file_buf[mpoff + 5] = ((mmovk >> 8) & 255) as u8;
+                        file_buf[mpoff + 6] = ((mmovk >> 16) & 255) as u8;
+                        file_buf[mpoff + 7] = ((mmovk >> 24) & 255) as u8;
+                    } else {
+                        file_buf[mpoff + 0] = (mdisp & 255) as u8;
+                        file_buf[mpoff + 1] = ((mdisp >> 8) & 255) as u8;
+                        file_buf[mpoff + 2] = ((mdisp >> 16) & 255) as u8;
+                        file_buf[mpoff + 3] = ((mdisp >> 24) & 255) as u8;
+                    }
+                    mfound = 1;
+                }
+                mti = mti + 1;
+            }
+        }
+        mri = mri + 1;
+    }
+
+    i = 0;
+    while i < (cg.rodata_size as u64) {
+        file_buf[rodata_offset + i] = cg.rodata_buf[i];
+        i = i + 1;
+    }
+
+    let wr: i64 = acrq_file_write_bytes(out_path, file_buf, total_file_size, 0);
+    if wr < 0 {
+        return -2;
+    }
+    return 0;
+}

@@ -1,0 +1,63 @@
+include "bootstrap/emitter/stencils.rx";
+include "bootstrap/syntax/ast.rx";
+
+struct CodeGenerator {
+    stream: InstructionStream,
+    stencils: StencilBank,
+    entry_point_offset: uint,
+}
+
+fn codegen_init(cg: *mut CodeGenerator, code_buffer: *mut byte, capacity: uint) {
+    stream_init(&mut cg.stream, code_buffer, capacity);
+    stencil_bank_init(&mut cg.stencils);
+    cg.entry_point_offset = 0;
+}
+
+fn compile_node(cg: *mut CodeGenerator, node: *mut AstNode) {
+    if node == (0 as *mut AstNode) { return; }
+
+    if node.kind == NODE_PROGRAM {
+    var cur: *mut AstNode = node.child1;
+        while cur != (0 as *mut AstNode) {
+            compile_node(cg, cur);
+            cur = cur.next;
+        }
+        return;
+    }
+
+    if node.kind == NODE_FN {
+        cg.entry_point_offset = cg.stream.length;
+        splice_stencil(&mut cg.stencils, &mut cg.stream, 0, 0);
+
+    var stmt: *mut AstNode = node.child1;
+        while stmt != (0 as *mut AstNode) {
+            compile_node(cg, stmt);
+            stmt = stmt.next;
+        }
+
+        splice_stencil(&mut cg.stencils, &mut cg.stream, 1, 0);
+        return;
+    }
+
+    if node.kind == NODE_LIT_INT {
+        splice_stencil(&mut cg.stencils, &mut cg.stream, 2, node.value);
+        return;
+    }
+
+    if node.kind == NODE_RETURN {
+        if node.child1 != (0 as *mut AstNode) {
+            compile_node(cg, node.child1);
+        } else {
+            emit_byte(&mut cg.stream, 0x48);
+            emit_byte(&mut cg.stream, 0x31);
+            emit_byte(&mut cg.stream, 0xC0);
+        }
+        splice_stencil(&mut cg.stencils, &mut cg.stream, 1, 0);
+        return;
+    }
+
+    if node.kind == NODE_PRINTLN {
+        splice_stencil(&mut cg.stencils, &mut cg.stream, 3, 0);
+        return;
+    }
+}

@@ -1,0 +1,14 @@
+struct ReflexArc {
+    arc_id: uint,
+    src_subsystem: uint,
+    dst_subsystem: uint,
+    trigger_count: uint,
+}
+
+fn lnga_trigger_reflex_arc(
+    arc: *mut ReflexArc,
+    payload: uint
+) -> bool {
+    arc.trigger_count = arc.trigger_count + 1;
+    return true;
+}

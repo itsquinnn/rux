@@ -1,0 +1,209 @@
+fn parse_intrinsic_expr(p: *mut Parser) -> *mut AstNode {
+    if p.cur_tok.kind == 56 {
+        lex_next_token(p.lex, &mut p.cur_tok);
+    }
+    let ns_kind: u32 = p.cur_tok.kind as u32;
+    let ns_hash: u64 = p.cur_tok.hash;
+    lex_next_token(p.lex, &mut p.cur_tok);
+
+    if p.cur_tok.kind == 60 || p.cur_tok.kind == 62 {
+        if ns_hash == 16670527126968124768 {
+            return parse_inline_asm(p);
+        }
+        if ns_hash == 5836615996170063040 {
+            return parse_typeof_intrinsic(p);
+        }
+        if ns_hash == 13670278987234795581 {
+            return parse_typeinfo_intrinsic(p);
+        }
+        if ns_hash == 11452105443513253379 {
+            return parse_vtable_intrinsic(p);
+        }
+        if ns_hash == 1612158879941880943 || ns_hash == 6252641971419666738 {
+            parser_expect(p, 60);
+            while p.cur_tok.kind != 61 && p.cur_tok.kind != 0 {
+                lex_next_token(p.lex, &mut p.cur_tok);
+            }
+            parser_expect(p, 61);
+            let cn: *mut AstNode = alloc_node(p, 116);
+            cn.val = 1;
+            return cn;
+        }
+    }
+
+    parser_expect(p, 73);
+    let s_hash: u64 = p.cur_tok.hash;
+    lex_next_token(p.lex, &mut p.cur_tok);
+    parser_expect(p, 60);
+
+    var n: *mut AstNode = 0 as *mut AstNode;
+
+    if ns_hash == 5630789368295335120 {
+        n = alloc_node(p, 121);
+        if s_hash == 1464421912111979820 { n.val = 40; }
+        else if s_hash == 5153527307132513661 { n.val = 41; }
+        else if s_hash == 4052949255877956437 { n.val = 42; }
+        else if s_hash == 3820938671348852368 { n.val = 43; }
+        n.child1 = parse_expr(p);
+        if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+        n.child2 = parse_expr(p);
+        if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+        n.child3 = parse_expr(p);
+        parser_expect(p, 61);
+        return n;
+    }
+
+    if ns_kind == 28 {
+        n = alloc_node(p, 121);
+        if s_hash == 8519013864044491299 { n.val = 1; parser_expect(p, 61); }
+        else if s_hash == 11664211042330080516 { n.val = 2; parser_expect(p, 61); }
+        else if s_hash == 1398147305724557775 { n.val = 3; n.child1 = parse_expr(p); parser_expect(p, 61); }
+        else if s_hash == 7575545383668502787 { n.val = 4; parser_expect(p, 61); }
+        else if s_hash == 13880249909581317937 { n.val = 5; parser_expect(p, 61); }
+        else if s_hash == 10666874983195838204 { n.val = 6; parser_expect(p, 61); }
+        else if s_hash == 5315332399326980173 { n.val = 7; parser_expect(p, 61); }
+        else if s_hash == 13411088209811050828 {
+            n.val = 8;
+            while p.cur_tok.kind != 61 && p.cur_tok.kind != 0 {
+                let _ig: *mut AstNode = parse_expr(p);
+                if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+            }
+            parser_expect(p, 61);
+        } else if s_hash == 8809826973342108374 { n.val = 10; parser_expect(p, 61); }
+        else if s_hash == 5774561450102686817 { n.val = 11; parser_expect(p, 61); }
+        else if s_hash == 16610582217963898604 { n.val = 12; parser_expect(p, 61); }
+        else if s_hash == 11434355913608805245 { n.val = 13; parser_expect(p, 61); }
+        else if s_hash == 6740575782527371194 {
+            n.kind = 119;
+            n.child1 = parse_expr(p);
+            var last_arg: *mut AstNode = 0 as *mut AstNode;
+            while p.cur_tok.kind == 72 {
+                parser_expect(p, 72);
+                let arg: *mut AstNode = parse_expr(p);
+                if last_arg == (0 as *mut AstNode) { n.child2 = arg; } else { last_arg.next = arg; }
+                last_arg = arg;
+            }
+            parser_expect(p, 61);
+        } else {
+            while p.cur_tok.kind != 61 && p.cur_tok.kind != 0 {
+                let _ig2: *mut AstNode = parse_expr(p);
+                if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+            }
+            parser_expect(p, 61);
+        }
+        return n;
+    }
+
+    if ns_hash == 7097225890542017489 {
+        n = alloc_node(p, 120);
+        if s_hash == 7802822799825772055 || s_hash == 8602815819212105030 { n.val = 1; }
+        else if s_hash == 11087748449855155329 { n.val = 2; }
+        else if s_hash == 8724762056501082638 { n.val = 3; }
+        else { n.val = 0; }
+        var last_ta: *mut AstNode = 0 as *mut AstNode;
+        while p.cur_tok.kind != 61 && p.cur_tok.kind != 0 {
+            let ta: *mut AstNode = parse_expr(p);
+            if last_ta == (0 as *mut AstNode) { n.child1 = ta; } else { last_ta.next = ta; }
+            last_ta = ta;
+            if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+        }
+        parser_expect(p, 61);
+        return n;
+    }
+
+    if ns_hash == 626093839799967319 {
+        n = alloc_node(p, 119);
+        let nr_node: *mut AstNode = alloc_node(p, 116);
+        var nr_val: u64 = 0;
+        if s_hash == 5541207787354052101 { nr_val = 0; }
+        else if s_hash == 13347000996286213884 { nr_val = 1; }
+        else if s_hash == 17892686645580689641 { nr_val = 2; }
+        else if s_hash == 11439822092476938691 { nr_val = 3; }
+        else if s_hash == 18339137768669630126 { nr_val = 9; }
+        else if s_hash == 13036033867444662635 { nr_val = 11; }
+        else if s_hash == 18037997457878711296 { nr_val = 39; }
+        else if s_hash == 1221281132897053964  { nr_val = 41; }
+        else if s_hash == 6110042048223887801  { nr_val = 42; }
+        else if s_hash == 9106131928185084681  { nr_val = 43; }
+        else if s_hash == 16051757728983864046 { nr_val = 49; }
+        else if s_hash == 15891737647324053542 { nr_val = 50; }
+        else if s_hash == 11413930792660935138 { nr_val = 56; }
+        else if s_hash == 11938886726876781633 { nr_val = 59; }
+        else if s_hash == 16689862346184620389 { nr_val = 60; }
+        else if s_hash == 13706109861443639676 { nr_val = 61; }
+        else if s_hash == 10361506547829230387 { nr_val = 63; }
+        else if s_hash == 14785917533144696819 { nr_val = 77; }
+        else if s_hash == 13324644367338209272 { nr_val = 83; }
+        else if s_hash == 7366475742772238002  { nr_val = 87; }
+        else if s_hash == 12159523626809428515 { nr_val = 228; }
+        else if s_hash == 8234041574068199897  { nr_val = 291; }
+        else if s_hash == 1950349213382475505  { nr_val = 319; }
+        nr_node.val = nr_val;
+        n.child1 = nr_node;
+        var oa_count: u32 = 0;
+        var last_oa: *mut AstNode = 0 as *mut AstNode;
+        while p.cur_tok.kind != 61 && p.cur_tok.kind != 0 {
+            let oa: *mut AstNode = parse_expr(p);
+            if last_oa == (0 as *mut AstNode) { n.child2 = oa; } else { last_oa.next = oa; }
+            last_oa = oa;
+            oa_count = oa_count + 1;
+            if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+        }
+        parser_expect(p, 61);
+        if nr_val == 9 && oa_count == 1 {
+            let sz_arg: *mut AstNode = n.child2;
+            let a0: *mut AstNode = alloc_node(p, 116); a0.val = 0; a0.next = sz_arg;
+            let a2: *mut AstNode = alloc_node(p, 116); a2.val = 3; sz_arg.next = a2;
+            let a3: *mut AstNode = alloc_node(p, 116); a3.val = 34; a2.next = a3;
+            let a4: *mut AstNode = alloc_node(p, 116); a4.val = 0 - 1; a3.next = a4;
+            let a5: *mut AstNode = alloc_node(p, 116); a5.val = 0; a4.next = a5;
+            n.child2 = a0;
+        }
+        return n;
+    }
+
+    if ns_hash == 2703542856383132704 {
+        n = alloc_node(p, 121);
+        if s_hash == 1288300263147954871 || s_hash == hash_identifier("load_u64", 8) {
+            n.val = 30; n.child1 = parse_expr(p);
+        } else if s_hash == 4229547790844622552 || s_hash == hash_identifier("store_u64", 9) || s_hash == hash_identifier("swap_ptr", 8) {
+            n.val = 31; n.child1 = parse_expr(p);
+            if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+            n.child2 = parse_expr(p);
+        } else if s_hash == 8206005728258188046 || s_hash == hash_identifier("fetch_add_u64", 13) {
+            n.val = 32; n.child1 = parse_expr(p);
+            if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+            n.child2 = parse_expr(p);
+        } else if s_hash == 16522941451287732056 || s_hash == hash_identifier("compare_exchange_u64", 20) {
+            n.val = 33; n.child1 = parse_expr(p);
+            if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+            n.child2 = parse_expr(p);
+            if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+            n.child3 = parse_expr(p);
+        } else {
+            n.val = 30;
+            while p.cur_tok.kind != 61 && p.cur_tok.kind != 0 {
+                let _iga: *mut AstNode = parse_expr(p);
+                if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+            }
+        }
+        parser_expect(p, 61);
+        return n;
+    }
+
+    n = alloc_node(p, 121);
+    if s_hash == 4065340797370458138 {
+        n.val = 20;
+        n.child1 = parse_expr(p);
+        if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+        n.child2 = parse_expr(p);
+    } else {
+        n.val = 10;
+        while p.cur_tok.kind != 61 && p.cur_tok.kind != 0 {
+            let _ig3: *mut AstNode = parse_expr(p);
+            if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+        }
+    }
+    parser_expect(p, 61);
+    return n;
+}

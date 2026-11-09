@@ -1,0 +1,43 @@
+include "lib/core/types.rx";
+
+const SEC_FLAG_EXEC: uint  = 1;
+const SEC_FLAG_WRITE: uint = 2;
+const SEC_FLAG_READ: uint  = 4;
+
+struct SectionSpec {
+    name: *const byte,
+    vaddr: uint,
+    paddr: uint,
+    align: uint,
+    flags: uint,
+}
+
+struct LinkerLayout {
+    entry_vaddr: uint,
+    page_size: uint,
+    sections: [SectionSpec; 16],
+    section_count: uint,
+}
+
+fn linker_layout_init_kernel(ll: *mut LinkerLayout, higher_half_base: uint, phys_base: uint) {
+    ll.entry_vaddr = higher_half_base;
+    ll.page_size = 4096;
+    ll.section_count = 0;
+    linker_layout_add_section(ll, ".text", higher_half_base, phys_base, 4096, SEC_FLAG_READ | SEC_FLAG_EXEC);
+    linker_layout_add_section(ll, ".rodata", higher_half_base + 65536, phys_base + 65536, 4096, SEC_FLAG_READ);
+    linker_layout_add_section(ll, ".data", higher_half_base + 131072, phys_base + 131072, 4096, SEC_FLAG_READ | SEC_FLAG_WRITE);
+    linker_layout_add_section(ll, ".bss", higher_half_base + 196608, phys_base + 196608, 4096, SEC_FLAG_READ | SEC_FLAG_WRITE);
+}
+
+fn linker_layout_add_section(ll: *mut LinkerLayout, name: *const byte, vaddr: uint, paddr: uint, align: uint, flags: uint) {
+    if ll.section_count < 16 {
+        let idx: uint = ll.section_count;
+        ll.sections[idx].name = name;
+        ll.sections[idx].vaddr = vaddr;
+        ll.sections[idx].paddr = paddr;
+        ll.sections[idx].align = align;
+        ll.sections[idx].flags = flags;
+        ll.section_count = idx + 1;
+    }
+}
+

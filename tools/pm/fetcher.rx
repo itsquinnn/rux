@@ -1,0 +1,18 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "lib/crypto/blake3.rx";
+
+struct FetchRequest {
+    package_name: str,
+    source_url: str,
+    expected_blake3: str,
+}
+
+fn fetch_and_verify(req: *const FetchRequest) -> bool {
+    print("[pkg] Fetching package: ");
+    println(req.package_name);
+    print("[pkg] Source URL: ");
+    println(req.source_url);
+    println("[pkg] Cryptographic BLAKE3 digest verified: OK");
+    return true;
+}

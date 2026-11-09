@@ -1,0 +1,61 @@
+include "lib/core/types.rx";
+
+const XHCI_TRB_NORMAL: u32       = 1;
+const XHCI_TRB_SETUP_STAGE: u32  = 2;
+const XHCI_TRB_DATA_STAGE: u32   = 3;
+const XHCI_TRB_STATUS_STAGE: u32 = 4;
+const XHCI_TRB_LINK: u32         = 6;
+const XHCI_TRB_ENABLE_SLOT: u32  = 9;
+const XHCI_TRB_ADDRESS_DEV: u32  = 11;
+
+struct XhciTrb {
+    param_low: u32,
+    param_high: u32,
+    status: u32,
+    control: u32,
+}
+
+struct XhciRing {
+    trbs: [XhciTrb; 32],
+    enqueue_idx: uint,
+    cycle_state: u32,
+}
+
+fn xhci_ring_init(r: *mut XhciRing) {
+    r.enqueue_idx = 0;
+    r.cycle_state = 1;
+    var i: uint = 0;
+    while i < 32 {
+        r.trbs[i].param_low = 0;
+        r.trbs[i].param_high = 0;
+        r.trbs[i].status = 0;
+        r.trbs[i].control = 0;
+        i = i + 1;
+    }
+}
+
+fn xhci_ring_enqueue(r: *mut XhciRing, p_low: u32, p_high: u32, status: u32, trb_type: u32, flags: u32) -> uint {
+    let idx: uint = r.enqueue_idx;
+    r.trbs[idx].param_low = p_low;
+    r.trbs[idx].param_high = p_high;
+    r.trbs[idx].status = status;
+    r.trbs[idx].control = (r.cycle_state & 1) | ((trb_type & 63) << 10) | flags;
+
+    r.enqueue_idx = r.enqueue_idx + 1;
+    if r.enqueue_idx >= 31 {
+        r.trbs[31].param_low = 0;
+        r.trbs[31].param_high = 0;
+        r.trbs[31].status = 0;
+        r.trbs[31].control = (r.cycle_state & 1) | (XHCI_TRB_LINK << 10) | 2;
+        r.enqueue_idx = 0;
+        r.cycle_state = r.cycle_state ^ 1;
+    }
+    return idx;
+}
+
+fn xhci_enqueue_get_descriptor(r: *mut XhciRing, desc_type: u8, desc_idx: u8, length: u16) -> uint {
+    let p_low: u32 = 128 | (6 << 8) | ((desc_idx as u32) << 16) | ((desc_type as u32) << 24);
+    let p_high: u32 = ((length as u32) << 16);
+    return xhci_ring_enqueue(r, p_low, p_high, 8, XHCI_TRB_SETUP_STAGE, 64 | (3 << 16));
+}
+

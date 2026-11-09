@@ -1,0 +1,113 @@
+include "tools/rxd/help.rx";
+include "tools/rxd/inspect.rx";
+include "tools/rxd/vitrify.rx";
+include "tools/rxd/materialize.rx";
+include "tools/rxd/validate.rx";
+include "tools/rxd/codegen.rx";
+
+fn rxd_dispatch_command(argc: int, argv: **byte, arg_offset: int) -> int {
+    if argc <= arg_offset {
+        print_rxd_help();
+        return 0;
+    }
+
+    let cmd: *const byte = argv[arg_offset as int];
+
+    var is_vitrify: bool = false;
+    if cmd[0] == 118 && cmd[1] == 105 && cmd[2] == 116 {
+        is_vitrify = true;
+    }
+
+    var is_materialize: bool = false;
+    if cmd[0] == 109 && cmd[1] == 97 && cmd[2] == 116 {
+        is_materialize = true;
+    }
+
+    var is_inspect: bool = false;
+    if cmd[0] == 105 && cmd[1] == 110 && cmd[2] == 115 {
+        is_inspect = true;
+    }
+
+    var is_validate: bool = false;
+    if cmd[0] == 118 && cmd[1] == 97 && cmd[2] == 108 {
+        is_validate = true;
+    }
+
+    var is_codegen: bool = false;
+    if cmd[0] == 99 && cmd[1] == 111 && cmd[2] == 100 {
+        is_codegen = true;
+    }
+
+    if is_vitrify {
+        if argc < (arg_offset + 2) {
+            let err: str = "Usage: rxd vitrify <in.rxd> [-o <out.rxdb>]";
+            os_println(err as *const byte);
+            return 1;
+        }
+        let in_path: *const byte = argv[(arg_offset + 1) as int];
+        var out_path: *const byte = "out.rxdb" as *const byte;
+        if argc >= (arg_offset + 4) {
+            let a3: *const byte = argv[(arg_offset + 2) as int];
+            if a3[0] == 45 && a3[1] == 111 {
+                out_path = argv[(arg_offset + 3) as int];
+            }
+        }
+        return rxd_cmd_vitrify(in_path, out_path);
+    }
+
+    if is_materialize {
+        if argc < (arg_offset + 2) {
+            let err: str = "Usage: rxd materialize <in.rxdb> [-o <out.rxd>]";
+            os_println(err as *const byte);
+            return 1;
+        }
+        let in_path: *const byte = argv[(arg_offset + 1) as int];
+        var out_path: *const byte = "out.rxd" as *const byte;
+        if argc >= (arg_offset + 4) {
+            let a3: *const byte = argv[(arg_offset + 2) as int];
+            if a3[0] == 45 && a3[1] == 111 {
+                out_path = argv[(arg_offset + 3) as int];
+            }
+        }
+        return rxd_cmd_materialize(in_path, out_path);
+    }
+
+    if is_inspect {
+        if argc < (arg_offset + 2) {
+            let err: str = "Usage: rxd inspect <in.rxdb>";
+            os_println(err as *const byte);
+            return 1;
+        }
+        return rxd_cmd_inspect(argv[(arg_offset + 1) as int]);
+    }
+
+    if is_validate {
+        if argc < (arg_offset + 2) {
+            let err: str = "Usage: rxd validate <in.rxd>";
+            os_println(err as *const byte);
+            return 1;
+        }
+        return rxd_cmd_validate(argv[(arg_offset + 1) as int]);
+    }
+
+    if is_codegen {
+        if argc < (arg_offset + 2) {
+            let err: str = "Usage: rxd codegen <in.rxd> [-o <out.rx>]";
+            os_println(err as *const byte);
+            return 1;
+        }
+        let in_path: *const byte = argv[(arg_offset + 1) as int];
+        var out_path: *const byte = "schema.rx" as *const byte;
+        if argc >= (arg_offset + 4) {
+            let a3: *const byte = argv[(arg_offset + 2) as int];
+            if a3[0] == 45 && a3[1] == 111 {
+                out_path = argv[(arg_offset + 3) as int];
+            }
+        }
+        return rxd_cmd_codegen(in_path, out_path);
+    }
+
+    print_rxd_help();
+    return 0;
+}
+

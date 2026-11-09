@@ -1,0 +1,136 @@
+include "lib/rxd/rxd.rx";
+
+fn main() -> int {
+    let title: str = "=== RUX RUNTIME TEST: RXD SOVEREIGN DATA ARCHITECTURE ===";
+    os_println(title as *const byte);
+
+    let b_16mb: u64 = rxd_eval_unit(16, "MB" as *const u8, 2);
+    if b_16mb != 16777216 {
+        let err1: str = "[FAIL] 16MB did not evaluate to 16,777,216 bytes";
+        os_println(err1 as *const byte);
+        return 1;
+    }
+    let ok1: str = "[PASS] Memory unit 16MB evaluated to exact 16,777,216 bytes";
+    os_println(ok1 as *const byte);
+
+    let ns_250ms: u64 = rxd_eval_unit(250, "ms" as *const u8, 2);
+    if ns_250ms != 250000000 {
+        let err2: str = "[FAIL] 250ms did not evaluate to 250,000,000 ns";
+        os_println(err2 as *const byte);
+        return 2;
+    }
+    let ok2: str = "[PASS] Time unit 250ms evaluated to exact 250,000,000 ns";
+    os_println(ok2 as *const byte);
+
+    let ns_5s: u64 = rxd_eval_unit(5, "s" as *const u8, 1);
+    if ns_5s != 5000000000 {
+        let err3: str = "[FAIL] 5s did not evaluate to 5,000,000,000 ns";
+        os_println(err3 as *const byte);
+        return 3;
+    }
+    let ok3: str = "[PASS] Time unit 5s evaluated to exact 5,000,000,000 ns";
+    os_println(ok3 as *const byte);
+
+    let sample_rxd: str = "// Sovereign Cluster Configuration\ncluster_id: \"ap-south-01\"\nport: 8080\nbuffer_size: 16MB\ntimeout: 5s\ntls_enabled: true\n";
+
+    var s_len: uint = 0;
+    let s_ptr: *const byte = sample_rxd as *const byte;
+    while s_ptr[s_len] != 0 { s_len = s_len + 1; }
+
+    let plate_buffer: *mut u8 = uses_substrate_alloc(16384);
+    let plate_bytes: u64 = rxd_vitrify(sample_rxd as *const byte, s_len as u64, plate_buffer, 16384);
+
+    if plate_bytes == 0 {
+        let err4: str = "[FAIL] Vitrification failed to produce .rxdb plate";
+        os_println(err4 as *const byte);
+        return 4;
+    }
+
+    let remainder: u64 = plate_bytes % 64;
+    if remainder != 0 {
+        let err5: str = "[FAIL] Plate is not 64-byte cacheline aligned";
+        os_println(err5 as *const byte);
+        return 5;
+    }
+    let ok4: str = "[PASS] Vitrified to 64-byte cacheline aligned .rxdb memory plate";
+    os_println(ok4 as *const byte);
+
+    let hdr: *const RxdHeader = plate_buffer as *const RxdHeader;
+    if hdr.magic != 4479058 {
+        let err6: str = "[FAIL] Cacheline 0 magic header mismatch";
+        os_println(err6 as *const byte);
+        return 6;
+    }
+    if hdr.format_version != 1 {
+        let err7: str = "[FAIL] Format version mismatch";
+        os_println(err7 as *const byte);
+        return 7;
+    }
+    if hdr.slot_count != 5 {
+        let err8: str = "[FAIL] Slot count mismatch in header";
+        os_println(err8 as *const byte);
+        return 8;
+    }
+    if hdr.blake3_content_hash == 0 {
+        let err9: str = "[FAIL] BLAKE3 content hash is zero";
+        os_println(err9 as *const byte);
+        return 9;
+    }
+    let ok5: str = "[PASS] Cacheline 0 Header stratigraphy and BLAKE3 hash verified";
+    os_println(ok5 as *const byte);
+
+    let plate: RxdPlate = rxd_plate_from_bytes(plate_buffer, plate_bytes);
+
+    let buf_val: u64 = rxd_plate_get_uint(&plate, "buffer_size" as *const byte, 0);
+    if buf_val != 16777216 {
+        let err10: str = "[FAIL] buffer_size slot lookup mismatch";
+        os_println(err10 as *const byte);
+        return 10;
+    }
+    let ok6: str = "[PASS] Zero-copy query: buffer_size == 16,777,216 bytes (16MB)";
+    os_println(ok6 as *const byte);
+
+    let time_val: u64 = rxd_plate_get_uint(&plate, "timeout" as *const byte, 0);
+    if time_val != 5000000000 {
+        let err11: str = "[FAIL] timeout slot lookup mismatch";
+        os_println(err11 as *const byte);
+        return 11;
+    }
+    let ok7: str = "[PASS] Zero-copy query: timeout == 5,000,000,000 ns (5s)";
+    os_println(ok7 as *const byte);
+
+    let tls_val: bool = rxd_plate_get_bool(&plate, "tls_enabled" as *const byte, false);
+    if !tls_val {
+        let err12: str = "[FAIL] tls_enabled slot lookup mismatch";
+        os_println(err12 as *const byte);
+        return 12;
+    }
+    let ok8: str = "[PASS] Zero-copy query: tls_enabled == true";
+    os_println(ok8 as *const byte);
+
+    let cid_ptr: *const byte = rxd_plate_get_str(&plate, "cluster_id" as *const byte);
+    if cid_ptr[0] != 97 || cid_ptr[1] != 112 {
+        let err13: str = "[FAIL] cluster_id string lookup mismatch";
+        os_println(err13 as *const byte);
+        return 13;
+    }
+    let ok9: str = "[PASS] Zero-copy query: cluster_id == 'ap-south-01'";
+    os_println(ok9 as *const byte);
+
+    let decompiled_text: *mut u8 = uses_substrate_alloc(16384);
+    let decompiled_len: u64 = rxd_materialize(&plate, decompiled_text, 16384);
+    if decompiled_len == 0 {
+        let err14: str = "[FAIL] Materialization failed";
+        os_println(err14 as *const byte);
+        return 14;
+    }
+    let ok10: str = "[PASS] Materialized .rxdb plate back into clean .rxd text";
+    os_println(ok10 as *const byte);
+
+    uses_substrate_free(plate_buffer, 16384);
+    uses_substrate_free(decompiled_text, 16384);
+
+    let done: str = "ALL RXD SOVEREIGN DATA ARCHITECTURE TESTS PASSED (100% OK)";
+    os_println(done as *const byte);
+    return 0;
+}

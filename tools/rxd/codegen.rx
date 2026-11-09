@@ -1,0 +1,90 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "lib/rxd/rxd.rx";
+
+fn rxd_cmd_codegen(in_path: *const byte, out_path: *const byte) -> int {
+    let buf: *mut u8 = uses_substrate_alloc(65536);
+    let plate_buf: *mut u8 = uses_substrate_alloc(65536);
+    let nread: int = os_read_file(in_path, buf, 65536);
+    if nread <= 0 {
+        os_println("[FAIL] Unable to read input .rxd file" as *const byte);
+        uses_substrate_free(buf, 65536);
+        uses_substrate_free(plate_buf, 65536);
+        return 1;
+    }
+    let p_bytes: u64 = rxd_vitrify(buf as *const byte, nread as u64, plate_buf, 65536);
+    if p_bytes == 0 {
+        os_println("[FAIL] Failed to vitrify .rxd schema for code generation" as *const byte);
+        uses_substrate_free(buf, 65536);
+        uses_substrate_free(plate_buf, 65536);
+        return 1;
+    }
+    let plate: RxdPlate = rxd_plate_from_bytes(plate_buf, p_bytes);
+    let out_buf: *mut u8 = uses_substrate_alloc(65536);
+    var out_len: uint = 0;
+
+    let pre: *const byte = "struct RxdSchemaRecord {\n" as *const byte;
+    var pi: uint = 0;
+    while pre[pi] != 0 { out_buf[out_len] = pre[pi] as u8; out_len = out_len + 1; pi = pi + 1; }
+
+    var i: u64 = 0;
+    while i < plate.slot_count {
+        let slot: *mut RxdSlotDescriptor = rxd_plate_get_slot(&plate, i);
+        let arena_base: *const u8 = plate.raw_ptr + plate.arena_offset;
+        let k_ptr: *const u8 = arena_base + (slot.name_offset as u64);
+        let k_len: u64 = slot.name_len as u64;
+
+        if slot.kind != 7 {
+            out_buf[out_len] = 32; out_buf[out_len + 1] = 32; out_buf[out_len + 2] = 32; out_buf[out_len + 3] = 32;
+            out_len = out_len + 4;
+
+            var ki: u64 = 0;
+            while ki < k_len {
+                out_buf[out_len] = k_ptr[ki];
+                out_len = out_len + 1;
+                ki = ki + 1;
+            }
+
+            let sep: *const byte = ": " as *const byte;
+            out_buf[out_len] = sep[0] as u8; out_buf[out_len + 1] = sep[1] as u8;
+            out_len = out_len + 2;
+
+            if slot.kind == 4 {
+                let tb: *const byte = "bool,\n" as *const byte;
+                var ti: uint = 0;
+                while tb[ti] != 0 { out_buf[out_len] = tb[ti] as u8; out_len = out_len + 1; ti = ti + 1; }
+            } else if slot.kind == 5 {
+                let ts: *const byte = "str,\n" as *const byte;
+                var ti2: uint = 0;
+                while ts[ti2] != 0 { out_buf[out_len] = ts[ti2] as u8; out_len = out_len + 1; ti2 = ti2 + 1; }
+            } else if slot.kind == 8 {
+                let ta: *const byte = "[str; 8],\n" as *const byte;
+                var ti3: uint = 0;
+                while ta[ti3] != 0 { out_buf[out_len] = ta[ti3] as u8; out_len = out_len + 1; ti3 = ti3 + 1; }
+            } else {
+                let tu: *const byte = "u64,\n" as *const byte;
+                var ti4: uint = 0;
+                while tu[ti4] != 0 { out_buf[out_len] = tu[ti4] as u8; out_len = out_len + 1; ti4 = ti4 + 1; }
+            }
+        }
+
+        i = i + 1;
+    }
+
+    let post: *const byte = "}\n" as *const byte;
+    var poi: uint = 0;
+    while post[poi] != 0 { out_buf[out_len] = post[poi] as u8; out_len = out_len + 1; poi = poi + 1; }
+
+    let wres: int = os_write_file(out_path, out_buf, out_len);
+    uses_substrate_free(buf, 65536);
+    uses_substrate_free(plate_buf, 65536);
+    uses_substrate_free(out_buf, 65536);
+
+    if wres <= 0 {
+        os_println("[FAIL] Failed to write generated .rx struct binding" as *const byte);
+        return 1;
+    }
+    os_println("[PASS] Generated type-safe Rux struct binding from .rxd schema" as *const byte);
+    return 0;
+}
+

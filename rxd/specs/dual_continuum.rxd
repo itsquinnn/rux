@@ -1,0 +1,25 @@
+specification {
+    name: "RXD Dual-Continuum Data Architecture"
+    standard_id: "SPEC-RUX-RXD-001"
+    version: "2026.1"
+    magic: "RXD\0"
+    alignment: 64B
+}
+
+continuum_layers {
+    layer_text {
+        format: ".rxd"
+        encoding: "UTF-8"
+        syntax: "punctuation-light, indentation-sensitive, human-readable"
+        native_units: ["B", "KB", "MB", "GB", "TB", "ns", "us", "ms", "s", "m", "h", "d"]
+    }
+
+    layer_silicon {
+        format: ".rxdb"
+        structure: "64-byte cacheline vitrified plate"
+        deserialization_cost: 0ns
+        simd_scannable: true
+        zero_copy: true
+    }
+}
+

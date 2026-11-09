@@ -1,0 +1,329 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/core/result.rx";
+include "lib/io/traits.rx";
+include "lib/net/tcp.rx";
+include "lib/os/uses_substrate.rx";
+
+const TLS_CONTENT_CHANGE_CIPHER_SPEC: u8 = 20;
+const TLS_CONTENT_ALERT: u8              = 21;
+const TLS_CONTENT_HANDSHAKE: u8          = 22;
+const TLS_CONTENT_APPLICATION_DATA: u8   = 23;
+
+const TLS_HANDSHAKE_CLIENT_HELLO: u8     = 1;
+const TLS_HANDSHAKE_SERVER_HELLO: u8     = 2;
+const TLS_HANDSHAKE_FINISHED: u8         = 20;
+
+struct TlsClient {
+    tcp_fd: int,
+    state: u64,
+    client_random: [u8; 32],
+    server_random: [u8; 32],
+    client_public_key: [u8; 32],
+    server_public_key: [u8; 32],
+    shared_secret: [u8; 32],
+    handshake_secret: [u8; 32],
+    client_app_key: [u8; 32],
+    server_app_key: [u8; 32],
+    record_seq: u64,
+}
+
+impl TlsClient {
+    fn new() -> TlsClient {
+        var client: TlsClient;
+        client.tcp_fd = -1;
+        client.state = 0;
+        client.record_seq = 0;
+        var i: u64 = 0;
+        while i < 32 {
+            client.client_random[i] = ((i * 37 + 101) & 255) as u8;
+            client.client_public_key[i] = ((i * 41 + 13) & 255) as u8;
+            client.server_random[i] = 0;
+            client.server_public_key[i] = 0;
+            client.shared_secret[i] = 0;
+            client.handshake_secret[i] = 0;
+            client.client_app_key[i] = 0;
+            client.server_app_key[i] = 0;
+            i = i + 1;
+        }
+        return client;
+    }
+}
+
+fn tls_hkdf_derive_key(secret: *const u8, label: *const u8, label_len: u64, out_key: *mut u8) {
+    var acc: u64 = 14695981039346656037;
+    var i: u64 = 0;
+    while i < 32 {
+        acc = (acc ^ (secret[i] as u64)) * 1099511628211;
+        i = i + 1;
+    }
+    var j: u64 = 0;
+    while j < label_len {
+        acc = (acc ^ (label[j] as u64)) * 1099511628211;
+        j = j + 1;
+    }
+    i = 0;
+    while i < 32 {
+        acc = (acc ^ (i * 0x9E3779B97F4A7C15)) * 1099511628211;
+        out_key[i] = (secret[i] ^ ((acc >> ((i % 8) * 8)) & 255) as u8);
+        i = i + 1;
+    }
+}
+
+fn tls_derive_key_schedule(tls: *mut TlsClient) {
+    tls_hkdf_derive_key(&tls.shared_secret[0], "tls13 hs traffic", 16, &mut tls.handshake_secret[0]);
+    tls_hkdf_derive_key(&tls.handshake_secret[0], "tls13 c ap traffic", 18, &mut tls.client_app_key[0]);
+    tls_hkdf_derive_key(&tls.handshake_secret[0], "tls13 s ap traffic", 18, &mut tls.server_app_key[0]);
+}
+
+fn tls_compute_aead_tag(key: *const u8, seq: u64, hdr: *const u8, ct: *const u8, ct_len: u64, tag_out: *mut u8) {
+    var h1: u64 = 0x6A09E667F3BCC908 ^ seq;
+    var h2: u64 = 0xBB67AE8584CAA73B ^ (ct_len * 0x517CC1B727220A95);
+    var i: u64 = 0;
+    while i < 32 {
+        h1 = (h1 ^ (key[i] as u64)) * 1099511628211;
+        h2 = (h2 + (key[i] as u64)) * 14695981039346656037;
+        i = i + 1;
+    }
+    i = 0;
+    while i < 5 {
+        h1 = (h1 ^ (hdr[i] as u64)) * 1099511628211;
+        i = i + 1;
+    }
+    i = 0;
+    while i < ct_len {
+        h1 = (h1 ^ (ct[i] as u64)) * 1099511628211;
+        h2 = (h2 ^ ((ct[i] as u64) + i)) * 1099511628211;
+        i = i + 1;
+    }
+    i = 0;
+    while i < 8 {
+        tag_out[i] = ((h1 >> (i * 8)) & 255) as u8;
+        tag_out[8 + i] = ((h2 >> (i * 8)) & 255) as u8;
+        i = i + 1;
+    }
+}
+
+fn tls_aead_seal_record(tls: *mut TlsClient, plain: *const u8, plain_len: u64, out_rec: *mut u8) -> u64 {
+    let body_len: u64 = plain_len + 1 + 16;
+    out_rec[0] = TLS_CONTENT_APPLICATION_DATA;
+    out_rec[1] = 3;
+    out_rec[2] = 3;
+    out_rec[3] = ((body_len >> 8) & 255) as u8;
+    out_rec[4] = (body_len & 255) as u8;
+
+    let seq_byte: u8 = (tls.record_seq & 255) as u8;
+    var i: u64 = 0;
+    while i < plain_len {
+        let ks: u8 = tls.client_app_key[i % 32] ^ seq_byte ^ ((i * 13) & 255) as u8;
+        out_rec[5 + i] = plain[i] ^ ks;
+        i = i + 1;
+    }
+    let inner_ks: u8 = tls.client_app_key[plain_len % 32] ^ seq_byte;
+    out_rec[5 + plain_len] = TLS_CONTENT_APPLICATION_DATA ^ inner_ks;
+
+    tls_compute_aead_tag(&tls.client_app_key[0], tls.record_seq, out_rec, out_rec + 5, plain_len + 1, out_rec + 5 + plain_len + 1);
+    tls.record_seq = tls.record_seq + 1;
+    return 5 + body_len;
+}
+
+fn tls_aead_open_record(tls: *mut TlsClient, seq: u64, in_rec: *const u8, rec_len: u64, out_plain: *mut u8) -> int {
+    if rec_len < 22 || in_rec[0] != TLS_CONTENT_APPLICATION_DATA {
+        return -1;
+    }
+    let plain_len: u64 = rec_len - 5 - 1 - 16;
+    var expected_tag: [u8; 16];
+    tls_compute_aead_tag(&tls.client_app_key[0], seq, in_rec, in_rec + 5, plain_len + 1, &mut expected_tag[0]);
+
+    let tag_off: u64 = 5 + plain_len + 1;
+    var diff: u8 = 0;
+    var ti: u64 = 0;
+    while ti < 16 {
+        diff = diff | (expected_tag[ti] ^ in_rec[tag_off + ti]);
+        ti = ti + 1;
+    }
+    if diff != 0 {
+        return -1;
+    }
+
+    let seq_byte: u8 = (seq & 255) as u8;
+    var i: u64 = 0;
+    while i < plain_len {
+        let ks: u8 = tls.client_app_key[i % 32] ^ seq_byte ^ ((i * 13) & 255) as u8;
+        out_plain[i] = in_rec[5 + i] ^ ks;
+        i = i + 1;
+    }
+    out_plain[plain_len] = 0;
+    return plain_len as int;
+}
+
+fn tls_build_client_hello(tls: *mut TlsClient, hostname: *u8, out: *mut u8) -> u64 {
+    out[0] = TLS_CONTENT_HANDSHAKE;
+    out[1] = 3;
+    out[2] = 1;
+    var p: u64 = 5;
+    out[p] = TLS_HANDSHAKE_CLIENT_HELLO;
+    p = p + 1;
+    let hs_len_pos: u64 = p;
+    p = p + 3;
+    out[p] = 3; out[p + 1] = 3;
+    p = p + 2;
+    var i: u64 = 0;
+    while i < 32 { out[p + i] = tls.client_random[i]; i = i + 1; }
+    p = p + 32;
+    out[p] = 32;
+    p = p + 1;
+    i = 0;
+    while i < 32 { out[p + i] = ((i * 17) & 255) as u8; i = i + 1; }
+    p = p + 32;
+    out[p] = 0; out[p + 1] = 4;
+    out[p + 2] = 19; out[p + 3] = 1;
+    out[p + 4] = 19; out[p + 5] = 3;
+    p = p + 6;
+    out[p] = 1; out[p + 1] = 0;
+    p = p + 2;
+    let ext_len_pos: u64 = p;
+    p = p + 2;
+    out[p] = 0; out[p + 1] = 43;
+    out[p + 2] = 0; out[p + 3] = 3;
+    out[p + 4] = 2; out[p + 5] = 3; out[p + 6] = 4;
+    p = p + 7;
+    out[p] = 0; out[p + 1] = 10;
+    out[p + 2] = 0; out[p + 3] = 4;
+    out[p + 4] = 0; out[p + 5] = 2;
+    out[p + 6] = 0; out[p + 7] = 29;
+    p = p + 8;
+    out[p] = 0; out[p + 1] = 51;
+    out[p + 2] = 0; out[p + 3] = 36;
+    out[p + 4] = 0; out[p + 5] = 34;
+    out[p + 6] = 0; out[p + 7] = 29;
+    out[p + 8] = 0; out[p + 9] = 32;
+    i = 0;
+    while i < 32 { out[p + 10 + i] = tls.client_public_key[i]; i = i + 1; }
+    p = p + 42;
+    let total_ext_len: u64 = p - (ext_len_pos + 2);
+    out[ext_len_pos] = ((total_ext_len >> 8) & 255) as u8;
+    out[ext_len_pos + 1] = (total_ext_len & 255) as u8;
+    let total_hs_len: u64 = p - (hs_len_pos + 3);
+    out[hs_len_pos] = ((total_hs_len >> 16) & 255) as u8;
+    out[hs_len_pos + 1] = ((total_hs_len >> 8) & 255) as u8;
+    out[hs_len_pos + 2] = (total_hs_len & 255) as u8;
+    let total_rec_len: u64 = p - 5;
+    out[3] = ((total_rec_len >> 8) & 255) as u8;
+    out[4] = (total_rec_len & 255) as u8;
+    return p;
+}
+
+fn tls_parse_server_hello(tls: *mut TlsClient, in_buf: *u8, len: u64) -> bool {
+    if len < 40 { return false; }
+    if in_buf[0] != TLS_CONTENT_HANDSHAKE { return false; }
+    if in_buf[5] != TLS_HANDSHAKE_SERVER_HELLO { return false; }
+    var i: u64 = 0;
+    while i < 32 && (11 + i) < len {
+        tls.server_random[i] = in_buf[11 + i];
+        i = i + 1;
+    }
+    i = 0;
+    while i < 32 {
+        tls.shared_secret[i] = tls.client_public_key[i] ^ tls.server_random[i];
+        i = i + 1;
+    }
+    tls_derive_key_schedule(tls);
+    tls.state = 2;
+    return true;
+}
+
+fn tls_connect(ip: u32, port: u16, hostname: *u8) -> Result<TlsClient, int> {
+    var client: TlsClient = TlsClient::new();
+    let res: Result = tcp_connect(ip, port);
+    if res_is_err<uint, int>(&res) == 1 {
+        return res_err<TlsClient, int>(res.err_code);
+    }
+    client.tcp_fd = res.val as int;
+    client.state = 1;
+    var ch_buf: [u8; 512];
+    let ch_len: u64 = tls_build_client_hello(&mut client, hostname, &mut ch_buf[0]);
+    let wr_res: Result = tcp_write(client.tcp_fd, &mut ch_buf[0], ch_len as uint);
+    if res_is_err<uint, int>(&wr_res) == 1 {
+        tcp_close(client.tcp_fd);
+        return res_err<TlsClient, int>(wr_res.err_code);
+    }
+    return res_ok<TlsClient, int>(client);
+}
+
+fn tls_write_app_data(tls: *mut TlsClient, data: *u8, len: u64) -> Result<u64, int> {
+    if tls.state == 0 || tls.tcp_fd < 0 {
+        return res_err<u64, int>(-9);
+    }
+    var rec_buf: [u8; 1024];
+    let total_len: u64 = tls_aead_seal_record(tls, data, len, &mut rec_buf[0]);
+    let wr: Result = tcp_write(tls.tcp_fd, &mut rec_buf[0], total_len as uint);
+    if res_is_err<uint, int>(&wr) == 1 {
+        return res_err<u64, int>(wr.err_code);
+    }
+    return res_ok<u64, int>(len);
+}
+
+fn tls_close(tls: *mut TlsClient) {
+    if tls.tcp_fd >= 0 {
+        tcp_close(tls.tcp_fd);
+        tls.tcp_fd = -1;
+        tls.state = 4;
+    }
+}
+
+struct BinaryHeap {
+    data: *mut uint,
+    len: uint,
+    cap: uint,
+}
+
+fn bheap_init(h: *mut BinaryHeap, cap: uint) {
+    var c: uint = cap;
+    if c < 16 { c = 16; }
+    h.data = uses_substrate_alloc(c * 8) as *mut uint;
+    h.len = 0;
+    h.cap = c;
+}
+
+fn bheap_push(h: *mut BinaryHeap, val: uint) {
+    if h.len >= h.cap { return; }
+    var idx: uint = h.len;
+    h.data[idx] = val;
+    h.len = h.len + 1;
+    while idx > 0 {
+        let parent: uint = (idx - 1) / 2;
+        if h.data[parent] < h.data[idx] {
+            let tmp: uint = h.data[parent];
+            h.data[parent] = h.data[idx];
+            h.data[idx] = tmp;
+            idx = parent;
+        } else {
+            break;
+        }
+    }
+}
+
+fn bheap_pop(h: *mut BinaryHeap) -> Option {
+    if h.len == 0 { return option_none(); }
+    let top: uint = h.data[0];
+    h.len = h.len - 1;
+    h.data[0] = h.data[h.len];
+    var idx: uint = 0;
+    while true {
+        let left: uint = (idx * 2) + 1;
+        let right: uint = (idx * 2) + 2;
+        var largest: uint = idx;
+        if left < h.len && h.data[left] > h.data[largest] { largest = left; }
+        if right < h.len && h.data[right] > h.data[largest] { largest = right; }
+        if largest != idx {
+            let tmp: uint = h.data[idx];
+            h.data[idx] = h.data[largest];
+            h.data[largest] = tmp;
+            idx = largest;
+        } else {
+            break;
+        }
+    }
+    return option_some(top);
+}

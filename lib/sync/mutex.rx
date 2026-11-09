@@ -1,0 +1,68 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+include "lib/sync/atomic.rx";
+
+const MUTEX_POLICY_UNFAIR: u32 = 0;
+const MUTEX_POLICY_FIFO: u32 = 1;
+const MUTEX_POLICY_ADAPTIVE: u32 = 2;
+
+struct Mutex<T> {
+    data: T,
+    lock_state: uint,
+    poisoned: bool,
+    poisoning_enabled: bool,
+    policy: u32,
+}
+
+fn mutex_new<T>(data: T) -> Mutex<T> {
+    return Mutex<T> {
+        data: data,
+        lock_state: 0,
+        poisoned: false,
+        poisoning_enabled: false,
+        policy: MUTEX_POLICY_ADAPTIVE,
+    };
+}
+
+fn mutex_with_poisoning<T>(data: T) -> Mutex<T> {
+    return Mutex<T> {
+        data: data,
+        lock_state: 0,
+        poisoned: false,
+        poisoning_enabled: true,
+        policy: MUTEX_POLICY_ADAPTIVE,
+    };
+}
+
+fn mutex_with_policy<T>(data: T, policy: u32) -> Mutex<T> {
+    return Mutex<T> {
+        data: data,
+        lock_state: 0,
+        poisoned: false,
+        poisoning_enabled: false,
+        policy: policy,
+    };
+}
+
+fn mutex_lock<T>(m: *mut Mutex<T>) -> *mut T {
+    if m.poisoned && m.poisoning_enabled {
+        panic("Cannot acquire poisoned mutex without explicit recovery");
+    }
+    while !@atomic.compare_exchange_u64(&mut m.lock_state, 0, 1) {
+        @silicon.pause();
+    }
+    return &mut m.data;
+}
+
+fn mutex_unlock<T>(m: *mut Mutex<T>) {
+    @atomic.store_u64(&mut m.lock_state, 0);
+}
+
+fn mutex_is_poisoned<T>(m: *const Mutex<T>) -> bool {
+    return m.poisoned;
+}
+
+fn mutex_clear_poison<T>(m: *mut Mutex<T>) {
+    m.poisoned = false;
+}
+

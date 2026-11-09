@@ -1,0 +1,186 @@
+include "lib/core/types.rx";
+
+fn get_file_directory(path: *const byte, out_dir: *mut byte, max_len: uint) -> uint {
+    var last_slash: int = -1;
+    var i: uint = 0;
+    while path[i] != 0 && i < max_len {
+        if path[i] == 47 {
+            last_slash = i as int;
+        }
+        i = i + 1;
+    }
+
+    if last_slash < 0 {
+        out_dir[0] = 0;
+        return 0;
+    }
+
+    var d: uint = 0;
+    while d <= (last_slash as uint) && d < (max_len - 1) {
+        out_dir[d] = path[d];
+        d = d + 1;
+    }
+    out_dir[d] = 0;
+    return d;
+}
+
+fn strip_last_dir_component(dir: *mut byte) -> uint {
+    var len: uint = 0;
+    while dir[len] != 0 { len = len + 1; }
+    if len <= 1 {
+        dir[0] = 0;
+        return 0;
+    }
+
+    var end: int = (len - 1) as int;
+    if dir[end] == 47 {
+        end = end - 1;
+    }
+
+    while end >= 0 && dir[end] != 47 {
+        end = end - 1;
+    }
+
+    if end < 0 {
+        dir[0] = 0;
+        return 0;
+    }
+
+    dir[(end + 1) as uint] = 0;
+    return (end + 1) as uint;
+}
+
+fn resolve_include_path(
+    base_file: *const byte,
+    inc_path: *const byte,
+    out_resolved: *mut byte,
+    max_len: uint
+) -> uint {
+    if inc_path[0] == 46 && inc_path[1] == 47 {
+        var base_dir: [byte; 256];
+        let dir_len: uint = get_file_directory(base_file, &mut base_dir[0], 256);
+
+    var oi: uint = 0;
+        while oi < dir_len && oi < max_len {
+            out_resolved[oi] = base_dir[oi];
+            oi = oi + 1;
+        }
+    var ii: uint = 2;
+        while inc_path[ii] != 0 && oi < (max_len - 1) {
+            out_resolved[oi] = inc_path[ii];
+            oi = oi + 1;
+            ii = ii + 1;
+        }
+        out_resolved[oi] = 0;
+        return oi;
+    }
+
+    if inc_path[0] == 46 && inc_path[1] == 46 && inc_path[2] == 47 {
+        var base_dir: [byte; 256];
+        get_file_directory(base_file, &mut base_dir[0], 256);
+
+    var curr_inc: uint = 0;
+        while inc_path[curr_inc] == 46 && inc_path[curr_inc + 1] == 46 && inc_path[curr_inc + 2] == 47 {
+            strip_last_dir_component(&mut base_dir[0]);
+            curr_inc = curr_inc + 3;
+        }
+
+    var oi: uint = 0;
+        while base_dir[oi] != 0 && oi < max_len {
+            out_resolved[oi] = base_dir[oi];
+            oi = oi + 1;
+        }
+        while inc_path[curr_inc] != 0 && oi < (max_len - 1) {
+            out_resolved[oi] = inc_path[curr_inc];
+            oi = oi + 1;
+            curr_inc = curr_inc + 1;
+        }
+        out_resolved[oi] = 0;
+        return oi;
+    }
+
+    var i: uint = 0;
+    while inc_path[i] != 0 && i < (max_len - 1) {
+        out_resolved[i] = inc_path[i];
+        i = i + 1;
+    }
+    out_resolved[i] = 0;
+    return i;
+}
+
+fn expand_source_includes(
+    current_filepath: *const byte,
+    src: *const byte,
+    src_len: uint,
+    dst: *mut byte,
+    dst_max: uint
+) -> uint {
+    var si: uint = 0;
+    var di: uint = 0;
+
+    while si < src_len && di < dst_max {
+        var is_inc: bool = false;
+        if (si + 9) < src_len {
+            if src[si] == 105 && src[si+1] == 110 && src[si+2] == 99 && src[si+3] == 108 &&
+               src[si+4] == 117 && src[si+5] == 100 && src[si+6] == 101 && src[si+7] == 32 && src[si+8] == 34 {
+                is_inc = true;
+            }
+        }
+
+        if is_inc {
+            let path_start: uint = si + 9;
+    var path_end: uint = path_start;
+            while path_end < src_len && src[path_end] != 34 {
+                path_end = path_end + 1;
+            }
+
+            var raw_path: [byte; 256];
+    var pi: uint = 0;
+            while (path_start + pi) < path_end && pi < 255 {
+                raw_path[pi] = src[path_start + pi];
+                pi = pi + 1;
+            }
+            raw_path[pi] = 0;
+
+            var resolved_path: [byte; 512];
+            resolve_include_path(current_filepath, &raw_path[0], &mut resolved_path[0], 512);
+
+            let fd: int = @os.open(&resolved_path[0], 0, 0);
+            if fd >= 0 {
+                let avail: uint = dst_max - di;
+                var inc_buf: [byte; 262144];
+                let nread: int = @os.read(fd, &inc_buf[0], 262144);
+                @os.close(fd);
+
+                if nread > 0 {
+                    let nested_bytes: uint = expand_source_includes(
+                        &resolved_path[0],
+                        &inc_buf[0],
+                        nread as uint,
+                        dst + di,
+                        avail
+                    );
+                    di = di + nested_bytes;
+                    if di < dst_max {
+                        dst[di] = 10;
+                        di = di + 1;
+                    }
+                }
+            }
+
+            si = path_end + 1;
+            while si < src_len && (src[si] == 59 || src[si] == 32 || src[si] == 9 || src[si] == 13) {
+                si = si + 1;
+            }
+            if si < src_len && src[si] == 10 {
+                si = si + 1;
+            }
+        } else {
+            dst[di] = src[si];
+            di = di + 1;
+            si = si + 1;
+        }
+    }
+
+    return di;
+}

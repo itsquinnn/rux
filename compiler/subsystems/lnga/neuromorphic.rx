@@ -1,0 +1,30 @@
+struct NeuromorphicSynapse {
+    weight: int,
+    membrane_potential: uint,
+    threshold: uint,
+    total_spikes_fired: uint,
+}
+
+fn lnga_synapse_update_stdp(syn: *mut NeuromorphicSynapse, delta_t_ns: int) {
+    if delta_t_ns > 0 && delta_t_ns < 50 {
+        syn.weight = syn.weight + 10;
+        if syn.weight > 1000 { syn.weight = 1000; }
+    } else if delta_t_ns < 0 && delta_t_ns > -50 {
+        syn.weight = syn.weight - 10;
+        if syn.weight < -1000 { syn.weight = -1000; }
+    }
+}
+
+fn lnga_neuron_integrate_and_fire(
+    syn: *mut NeuromorphicSynapse,
+    input_current: uint
+) -> bool {
+    syn.membrane_potential = syn.membrane_potential + input_current;
+    if syn.membrane_potential >= syn.threshold {
+        syn.membrane_potential = 0;
+        syn.total_spikes_fired = syn.total_spikes_fired + 1;
+        return true;
+    }
+    syn.membrane_potential = (syn.membrane_potential * 95) / 100;
+    return false;
+}

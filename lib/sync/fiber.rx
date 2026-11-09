@@ -1,0 +1,165 @@
+include "lib/core/types.rx";
+
+const FIBER_UNUSED: uint  = 0;
+const FIBER_READY: uint   = 1;
+const FIBER_RUNNING: uint = 2;
+const FIBER_YIELDED: uint = 3;
+const FIBER_DONE: uint    = 4;
+
+struct Fiber {
+    id: uint,
+    state: uint,
+    stack_base: *mut byte,
+    stack_size: uint,
+    saved_sp: uint,
+    entry_fn: fn(arg: uint),
+    arg: uint,
+    yield_count: uint,
+}
+
+fn fiber_dummy_sw(a: *mut uint, b: uint) {}
+
+struct FiberScheduler {
+    tramp_fn: fn(old_sp: *mut uint, new_sp: uint),
+    sched_sp: uint,
+    active_count: uint,
+    current_idx: uint,
+    total_switches: uint,
+    fibers: [Fiber; 16],
+}
+
+fn fiber_entry_trampoline(arg: uint) {
+    let sched: *mut FiberScheduler = arg as *mut FiberScheduler;
+    let idx: uint = sched.current_idx;
+    let entry = sched.fibers[idx].entry_fn;
+    let user_arg: uint = sched.fibers[idx].arg;
+
+    entry(user_arg);
+
+    sched.fibers[idx].state = FIBER_DONE;
+    sched.active_count = sched.active_count - 1;
+    let sw = sched.tramp_fn;
+    sw(&mut sched.fibers[idx].saved_sp, sched.sched_sp);
+}
+
+fn fiber_sched_init(sched: *mut FiberScheduler) {
+    sched.sched_sp = 0;
+    sched.active_count = 0;
+    sched.current_idx = 0;
+    sched.total_switches = 0;
+
+    let p: *mut byte = uses_substrate_alloc(4096);
+    p[0]  = 0x55 as byte;
+    p[1]  = 0x53 as byte;
+    p[2]  = 0x41 as byte; p[3]  = 0x54 as byte;
+    p[4]  = 0x41 as byte; p[5]  = 0x55 as byte;
+    p[6]  = 0x41 as byte; p[7]  = 0x56 as byte;
+    p[8]  = 0x41 as byte; p[9]  = 0x57 as byte;
+    p[10] = 0x57 as byte;
+    p[11] = 0x48 as byte; p[12] = 0x89 as byte; p[13] = 0x27 as byte;
+    p[14] = 0x48 as byte; p[15] = 0x89 as byte; p[16] = 0xF4 as byte;
+    p[17] = 0x5F as byte;
+    p[18] = 0x41 as byte; p[19] = 0x5F as byte;
+    p[20] = 0x41 as byte; p[21] = 0x5E as byte;
+    p[22] = 0x41 as byte; p[23] = 0x5D as byte;
+    p[24] = 0x41 as byte; p[25] = 0x5C as byte;
+    p[26] = 0x5B as byte;
+    p[27] = 0x5D as byte;
+    p[28] = 0xC3 as byte;
+
+    sched.tramp_fn = fiber_dummy_sw;
+    let slot: *mut uint = sched as *mut uint;
+    slot[0] = p as uint;
+
+    var i: uint = 0;
+    while i < 16 {
+        sched.fibers[i].state = FIBER_UNUSED;
+        sched.fibers[i].yield_count = 0;
+        sched.fibers[i].saved_sp = 0;
+        i = i + 1;
+    }
+}
+
+fn fiber_sched_spawn(
+    sched: *mut FiberScheduler,
+    stack_buf: *mut byte,
+    stack_sz: uint,
+    entry: fn(arg: uint),
+    arg: uint
+) -> int {
+    if sched.active_count >= 16 {
+        return -1;
+    }
+
+    var slot: uint = 0;
+    while slot < 16 {
+        if sched.fibers[slot].state == FIBER_UNUSED || sched.fibers[slot].state == FIBER_DONE {
+            break;
+        }
+        slot = slot + 1;
+    }
+
+    sched.fibers[slot].id = slot + 1;
+    sched.fibers[slot].state = FIBER_READY;
+    sched.fibers[slot].stack_base = stack_buf;
+    sched.fibers[slot].stack_size = stack_sz;
+    sched.fibers[slot].entry_fn = entry;
+    sched.fibers[slot].arg = arg;
+    sched.fibers[slot].yield_count = 0;
+
+    let top: uint = ((stack_buf as uint) + stack_sz) & (0 - 16);
+
+    let p_sp: *mut uint = (top - 72) as *mut uint;
+    p_sp[0] = sched as uint;
+    p_sp[1] = 0;
+    p_sp[2] = 0;
+    p_sp[3] = 0;
+    p_sp[4] = 0;
+    p_sp[5] = 0;
+    p_sp[6] = 0;
+    p_sp[7] = fiber_entry_trampoline as uint;
+
+    sched.fibers[slot].saved_sp = (top - 72);
+    sched.active_count = sched.active_count + 1;
+    return slot as int;
+}
+
+fn fiber_yield(sched: *mut FiberScheduler) {
+    let idx: uint = sched.current_idx;
+    sched.fibers[idx].state = FIBER_YIELDED;
+    sched.fibers[idx].yield_count = sched.fibers[idx].yield_count + 1;
+    let sw = sched.tramp_fn;
+    sw(&mut sched.fibers[idx].saved_sp, sched.sched_sp);
+}
+
+fn fiber_sched_run(sched: *mut FiberScheduler) -> uint {
+    var completed: uint = 0;
+    let sw = sched.tramp_fn;
+
+    while sched.active_count > 0 {
+        var i: uint = 0;
+        var ran_any: bool = false;
+
+        while i < 16 {
+            if sched.fibers[i].state == FIBER_READY || sched.fibers[i].state == FIBER_YIELDED {
+                sched.fibers[i].state = FIBER_RUNNING;
+                sched.current_idx = i;
+                sched.total_switches = sched.total_switches + 1;
+
+                sw(&mut sched.sched_sp, sched.fibers[i].saved_sp);
+
+                if sched.fibers[i].state == FIBER_DONE {
+                    completed = completed + 1;
+                }
+                ran_any = true;
+            }
+            i = i + 1;
+        }
+
+        if !ran_any {
+            break;
+        }
+    }
+
+    return completed;
+}

@@ -1,0 +1,206 @@
+fn omni_slen(s: *u8) -> u64 {
+    var i: u64 = 0;
+    while s[i] != 0 { i = i + 1; }
+    return i;
+}
+
+fn omni_contains(hay: *u8, hlen: u64, needle: *u8) -> u32 {
+    let nlen: u64 = omni_slen(needle);
+    if nlen == 0 { return 1; }
+    if hlen < nlen { return 0; }
+    var i: u64 = 0;
+    while (i + nlen) <= hlen {
+        var ok: u32 = 1;
+        var j: u64 = 0;
+        while j < nlen {
+            if hay[i + j] != needle[j] {
+                ok = 0;
+                j = nlen;
+            } else {
+                j = j + 1;
+            }
+        }
+        if ok == 1 { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn omni_write_file(path: *u8, content: *u8) {
+    let fd: i64 = syscall(2, path as u64, 577, 493);
+    if fd >= 0 {
+        syscall(1, fd as u64, content as u64, omni_slen(content));
+        syscall(3, fd as u64);
+    }
+}
+
+fn omni_run_cmd(a0: *u8, a1: *u8, a2: *u8, a3: *u8, a4: *u8, stdin_str: *u8, out_buf: *mut u8, out_cap: u64, out_len: *mut u64) -> i64 {
+    var out_pack: u64 = 0;
+    var in_pack: u64 = 0;
+    syscall(22, (&mut out_pack) as u64);
+    let out_r: u64 = out_pack & 4294967295;
+    let out_w: u64 = (out_pack >> 32) & 4294967295;
+    var in_r: u64 = 0;
+    var in_w: u64 = 0;
+    if stdin_str != (0 as *u8) {
+        syscall(22, (&mut in_pack) as u64);
+        in_r = in_pack & 4294967295;
+        in_w = (in_pack >> 32) & 4294967295;
+    }
+
+    let pid: i64 = syscall(56, 17, 0, 0, 0, 0);
+    if pid == 0 {
+        syscall(3, out_r);
+        syscall(33, out_w, 1);
+        syscall(33, out_w, 2);
+        syscall(3, out_w);
+
+        if stdin_str != (0 as *u8) {
+            syscall(3, in_w);
+            syscall(33, in_r, 0);
+            syscall(3, in_r);
+        }
+
+        var argv: [u64; 8];
+        argv[0] = a0 as u64;
+        var ac: u64 = 1;
+        if a1 != (0 as *u8) { argv[ac] = a1 as u64; ac = ac + 1; }
+        if a2 != (0 as *u8) { argv[ac] = a2 as u64; ac = ac + 1; }
+        if a3 != (0 as *u8) { argv[ac] = a3 as u64; ac = ac + 1; }
+        if a4 != (0 as *u8) { argv[ac] = a4 as u64; ac = ac + 1; }
+        argv[ac] = 0;
+
+        var envp: [u64; 2];
+        envp[0] = "PATH=/usr/bin:/bin" as u64;
+        envp[1] = 0;
+        syscall(59, a0 as u64, (&argv[0]) as u64, (&envp[0]) as u64);
+        syscall(60, 127);
+    }
+
+    syscall(3, out_w);
+    if stdin_str != (0 as *u8) {
+        syscall(3, in_r);
+        let slen: u64 = omni_slen(stdin_str);
+        if slen > 0 {
+            syscall(1, in_w, stdin_str as u64, slen);
+        }
+        syscall(3, in_w);
+    }
+
+    var total: u64 = 0;
+    var more: u32 = 1;
+    while more == 1 && (total + 1) < out_cap {
+        let nr: i64 = syscall(0, out_r, (out_buf + total) as u64, (out_cap - 1) - total);
+        if nr > 0 {
+            total = total + (nr as u64);
+        } else {
+            more = 0;
+        }
+    }
+    out_buf[total] = 0;
+    *out_len = total;
+    syscall(3, out_r);
+
+    var wstatus: u64 = 0;
+    syscall(61, pid as u64, (&mut wstatus) as u64, 0, 0);
+    let ws: u64 = wstatus & 4294967295;
+    if (ws & 127) != 0 {
+        return (128 + (ws & 127)) as i64;
+    }
+    return ((ws >> 8) & 255) as i64;
+}
+
+fn omni_assert(ok: u32, label: *u8, buf: *u8) {
+    if ok == 1 {
+        print("[PASS] ");
+        println(label);
+    } else {
+        print("[FAIL] ");
+        println(label);
+        print("Output: ");
+        println(buf);
+        syscall(60, 1);
+    }
+}
+
+println("=== Rux Omni-Modal 10-Model Continuum Verification ===");
+
+var out_buf: [u8; 16384];
+var out_len: u64 = 0;
+
+let unified_src: *u8 = "fn tri(n: int) -> int {\n    var acc: int = 0;\n    for i in 1..(n + 1) {\n        acc = acc + i;\n    }\n    return acc;\n}\nvar arr: [u64; 3];\narr[0] = 10;\narr[1] = 20;\narr[2] = 12;\nlet total: u64 = arr[0] + arr[1] + arr[2] + (tri(10) as u64);\nprint(\"OMNI=\");\nprintln(total);\n";
+omni_write_file("/tmp/rux_omni_u.rx", unified_src);
+
+let rc_auto: i64 = omni_run_cmd("./bin/rux", "/tmp/rux_omni_u.rx", 0 as *u8, 0 as *u8, 0 as *u8, 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_auto == 0 && omni_contains(&out_buf[0], out_len, "OMNI=97") == 1) as u32, "1. Continuum Auto-Substrate on Unified Top-Level Script", &out_buf[0]);
+
+let rc_interp: i64 = omni_run_cmd("./bin/rux", "interp", "/tmp/rux_omni_u.rx", 0 as *u8, 0 as *u8, 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_interp == 0 && omni_contains(&out_buf[0], out_len, "OMNI=97") == 1) as u32, "2. Pure AST Tree-Walking Interpreter (rux interp)", &out_buf[0]);
+
+let rc_vm: i64 = omni_run_cmd("./bin/rux", "vm", "/tmp/rux_omni_u.rx", 0 as *u8, 0 as *u8, 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_vm == 0 && omni_contains(&out_buf[0], out_len, "OMNI=97") == 1) as u32, "3. RXBC Sovereign Bytecode VM (rux vm)", &out_buf[0]);
+
+let rc_jit: i64 = omni_run_cmd("./bin/rux", "jit", "/tmp/rux_omni_u.rx", 0 as *u8, 0 as *u8, 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_jit == 0 && omni_contains(&out_buf[0], out_len, "OMNI=97") == 1) as u32, "4. Zero-Disk In-Memory Native RWX JIT (rux jit)", &out_buf[0]);
+
+let rc_aot_b: i64 = omni_run_cmd("./bin/rux", "build", "/tmp/rux_omni_u.rx", "-o", "/tmp/rux_omni_aot", 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+let rc_aot_r: i64 = omni_run_cmd("/tmp/rux_omni_aot", 0 as *u8, 0 as *u8, 0 as *u8, 0 as *u8, 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_aot_b == 0 && rc_aot_r == 0 && omni_contains(&out_buf[0], out_len, "OMNI=97") == 1) as u32, "5. Ahead-of-Time (AOT) Native ELF64 Binary", &out_buf[0]);
+
+let eval_src: *u8 = "var x: int = 15;\neval(\"x = x + 27;\");\neval(\"fn cube(v: int) -> int { return v * v * v; }\");\nlet y: int = eval(\"cube(4)\") as int;\nprint(\"EVAL=\");\nprintln(x + y);\n";
+omni_write_file("/tmp/rux_omni_eval.rx", eval_src);
+let rc_eval: i64 = omni_run_cmd("./bin/rux", "--trace-mode", "/tmp/rux_omni_eval.rx", 0 as *u8, 0 as *u8, 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_eval == 0 && omni_contains(&out_buf[0], out_len, "tier=ast-interpreter") == 1 && omni_contains(&out_buf[0], out_len, "EVAL=106") == 1) as u32, "6. Dynamic eval() Auto-Routed to Hybrid AST Tier", &out_buf[0]);
+
+let rc_inline: i64 = omni_run_cmd("./bin/rux", "--trace-mode", "-e", "println(21 * 2);", 0 as *u8, 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_inline == 0 && omni_contains(&out_buf[0], out_len, "tier=jit-in-memory") == 1 && omni_contains(&out_buf[0], out_len, "42") == 1) as u32, "7. Inline -e Source Auto-Routed to Zero-Disk JIT", &out_buf[0]);
+
+let rc_c: i64 = omni_run_cmd("./bin/rux", "transpile", "/tmp/rux_omni_u.rx", "-o", "/tmp/rux_omni_u.c", 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+var c_file_buf: [u8; 8192];
+let cp_buf: *mut u8 = &mut c_file_buf[0];
+let c_fd: i64 = syscall(2, "/tmp/rux_omni_u.c" as u64, 0, 0);
+var c_n: i64 = 0;
+if c_fd >= 0 {
+    c_n = syscall(0, c_fd as u64, cp_buf as u64, 8190);
+    syscall(3, c_fd as u64);
+}
+if c_n < 0 { c_n = 0; }
+cp_buf[c_n as u64] = 0;
+omni_assert((rc_c == 0 && omni_contains(cp_buf, c_n as u64, "int main(int rx_argc") == 1) as u32, "8. Source-to-Source ISO C99 Transpilation (rux transpile)", cp_buf);
+
+let repl_input: *u8 = "let base = 50\nbase + 25\nfn mul3(v: int) -> int {\n  return v * 3;\n}\nmul3(11)\n:quit\n";
+let rc_repl: i64 = omni_run_cmd("./bin/rux", "repl", 0 as *u8, 0 as *u8, 0 as *u8, repl_input, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_repl == 0 && omni_contains(&out_buf[0], out_len, "75") == 1 && omni_contains(&out_buf[0], out_len, "33") == 1) as u32, "9. Interactive Stateful Persistent REPL (rux repl)", &out_buf[0]);
+
+let kmain_src: *u8 = "fn kernel_main() -> int {\n    println(\"RING0_READY\");\n    return 0;\n}\n";
+omni_write_file("/tmp/rux_omni_km.rx", kmain_src);
+let rc_fs_b: i64 = omni_run_cmd("./bin/rux", "/tmp/rux_omni_km.rx", "--freestanding", "-o", "/tmp/rux_omni_km_bin", 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+let rc_fs_r: i64 = omni_run_cmd("/tmp/rux_omni_km_bin", 0 as *u8, 0 as *u8, 0 as *u8, 0 as *u8, 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_fs_b == 0 && rc_fs_r == 0 && omni_contains(&out_buf[0], out_len, "RING0_READY") == 1) as u32, "10. Freestanding ZWNS Kernel Entry (kernel_main, zero libc)", &out_buf[0]);
+
+let rc_wasm: i64 = omni_run_cmd("./bin/rux", "/tmp/rux_omni_u.rx", "--wasm", "-o", "/tmp/rux_omni_u.wasm", 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+var w_hdr: [u8; 16];
+let wp: *mut u8 = &mut w_hdr[0];
+let w_fd: i64 = syscall(2, "/tmp/rux_omni_u.wasm" as u64, 0, 0);
+var w_n: i64 = 0;
+if w_fd >= 0 {
+    w_n = syscall(0, w_fd as u64, wp as u64, 8);
+    syscall(3, w_fd as u64);
+}
+let wasm_ok: u32 = (rc_wasm == 0 && w_n >= 4 && wp[0] == 0 && wp[1] == 97 && wp[2] == 115 && wp[3] == 109) as u32;
+omni_assert(wasm_ok, "11. WASM64 Emission from Unified Top-Level Script", &out_buf[0]);
+
+let mixed_src: *u8 = "print(\"INIT-\");\nfn main() -> int {\n    println(\"MAIN\");\n    return 0;\n}\n";
+omni_write_file("/tmp/rux_omni_mix.rx", mixed_src);
+let rc_mix: i64 = omni_run_cmd("./bin/rux", "/tmp/rux_omni_mix.rx", 0 as *u8, 0 as *u8, 0 as *u8, 0 as *u8, &mut out_buf[0], 16384, &mut out_len);
+omni_assert((rc_mix == 0 && omni_contains(&out_buf[0], out_len, "INIT-MAIN") == 1) as u32, "12. Mixed Top-Level Statements + Explicit fn main()", &out_buf[0]);
+
+syscall(87, "/tmp/rux_omni_u.rx" as u64);
+syscall(87, "/tmp/rux_omni_aot" as u64);
+syscall(87, "/tmp/rux_omni_eval.rx" as u64);
+syscall(87, "/tmp/rux_omni_u.c" as u64);
+syscall(87, "/tmp/rux_omni_km.rx" as u64);
+syscall(87, "/tmp/rux_omni_km_bin" as u64);
+syscall(87, "/tmp/rux_omni_u.wasm" as u64);
+syscall(87, "/tmp/rux_omni_mix.rx" as u64);
+println("=== ALL 12 OMNI-MODAL CONTINUUM VERIFICATION CHECKS PASSED ===");

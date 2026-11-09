@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test-linux-x86_64:
+    name: Test & Verify (Linux x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify static standalone binary
+        run: |
+          chmod +x bin/rux bin/ruxc
+          file bin/rux
+          ./bin/rux --help
+
+      - name: Run Sovereign Master Test Harness
+        run: ./bin/rux test
+
+      - name: Run EIA 5-Gate Hardware Verification Ring
+        run: ./bin/rux verify
+
+      - name: Test Program Compilation & Native Execution
+        run: |
+          ./bin/rux build examples/hello.rx -o hello_bin
+          ./hello_bin
+
+      - name: Test Inline Code Evaluation
+        run: ./bin/rux -e 'println("CI inline evaluation: OK");'
+
+      - name: Test Multi-Target Cross-Compilation
+        run: |
+          ./bin/rux build examples/hello.rx -o hello_arm64 --target=arm64
+          file hello_arm64 | grep -q "ARM aarch64"
+          
+          ./bin/rux build examples/hello.rx -o hello_win.exe --target=win64
+          file hello_win.exe | grep -q "PE32+"
+          
+          ./bin/rux build examples/hello.rx -o hello_mac --target=macos
+          file hello_mac | grep -q "Mach-O"
+          
+          ./bin/rux build examples/hello.rx -o hello.wasm --wasm
+          file hello.wasm | grep -q "WebAssembly"
+
+      - name: Test C99 Transpilation and Compilation
+        run: |
+          ./bin/rux transpile examples/hello.rx -o hello.c
+          gcc -std=c99 -O2 hello.c -o hello_c
+          ./hello_c
+
+      - name: Test Installation Script (Local mode)
+        run: |
+          chmod +x install.sh
+          ./install.sh --local --prefix /tmp/rux_ci_install --no-modify-path
+          /tmp/rux_ci_install/bin/rux --help
+          /tmp/rux_ci_install/bin/rux -e 'println("Installed rux runs cleanly!");'

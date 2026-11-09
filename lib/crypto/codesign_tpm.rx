@@ -1,0 +1,113 @@
+include "lib/core/types.rx";
+
+const CHERI_PERM_LOAD: u32    = 1;
+const CHERI_PERM_STORE: u32   = 2;
+const CHERI_PERM_EXECUTE: u32 = 4;
+
+struct TpmState {
+    pcrs: [u64; 24],
+    event_count: u32,
+    secure_boot_enforced: bool,
+    trusted_signer_key_hash: u64,
+}
+
+struct SignedBinaryEnvelope {
+    image_digest: u64,
+    signer_key_hash: u64,
+    signature_tag: u64,
+    svn_version: u32,
+}
+
+struct CheriCap {
+    base: u64,
+    length: u64,
+    cursor: u64,
+    perms: u32,
+    tag_valid: bool,
+}
+
+fn tpm_init(tpm: *mut TpmState, enforce_secboot: bool, trusted_signer: u64) {
+    var i: uint = 0;
+    while i < 24 {
+        tpm.pcrs[i] = 0;
+        i = i + 1;
+    }
+    tpm.event_count = 0;
+    tpm.secure_boot_enforced = enforce_secboot;
+    tpm.trusted_signer_key_hash = trusted_signer;
+}
+
+fn tpm_pcr_extend(tpm: *mut TpmState, pcr_idx: uint, measurement_hash: u64) -> bool {
+    if pcr_idx >= 24 { return false; }
+    let old: u64 = tpm.pcrs[pcr_idx];
+    let mixed: u64 = ((old ^ 14695981039346656037) * 1099511628211) ^ measurement_hash;
+    tpm.pcrs[pcr_idx] = mixed * 1099511628211;
+    tpm.event_count = tpm.event_count + 1;
+    return true;
+}
+
+fn codesign_sign_digest(image_digest: u64, signer_key_hash: u64, svn: u32, out: *mut SignedBinaryEnvelope) {
+    out.image_digest = image_digest;
+    out.signer_key_hash = signer_key_hash;
+    out.svn_version = svn;
+    var tag: u64 = 14695981039346656037;
+    tag = (tag ^ image_digest) * 1099511628211;
+    tag = (tag ^ signer_key_hash) * 1099511628211;
+    tag = (tag ^ (svn as u64)) * 1099511628211;
+    out.signature_tag = tag;
+}
+
+fn secboot_verify_and_measure(tpm: *mut TpmState, env: *const SignedBinaryEnvelope, min_svn: u32) -> bool {
+    if env.svn_version < min_svn {
+        return false;
+    }
+    if tpm.secure_boot_enforced && env.signer_key_hash != tpm.trusted_signer_key_hash {
+        return false;
+    }
+    var expected: u64 = 14695981039346656037;
+    expected = (expected ^ env.image_digest) * 1099511628211;
+    expected = (expected ^ env.signer_key_hash) * 1099511628211;
+    expected = (expected ^ (env.svn_version as u64)) * 1099511628211;
+    if expected != env.signature_tag {
+        return false;
+    }
+    tpm_pcr_extend(tpm, 7, env.image_digest);
+    return true;
+}
+
+fn cheri_cap_mint(base: u64, length: u64, perms: u32) -> CheriCap {
+    var c: CheriCap;
+    c.base = base;
+    c.length = length;
+    c.cursor = base;
+    c.perms = perms;
+    c.tag_valid = true;
+    return c;
+}
+
+fn cheri_cap_narrow(parent: *const CheriCap, sub_offset: u64, sub_len: u64, sub_perms: u32) -> CheriCap {
+    var out: CheriCap;
+    if !parent.tag_valid || (sub_offset + sub_len) > parent.length || (parent.perms & sub_perms) != sub_perms {
+        out.base = 0;
+        out.length = 0;
+        out.cursor = 0;
+        out.perms = 0;
+        out.tag_valid = false;
+        return out;
+    }
+    out.base = parent.base + sub_offset;
+    out.length = sub_len;
+    out.cursor = out.base;
+    out.perms = sub_perms;
+    out.tag_valid = true;
+    return out;
+}
+
+fn cheri_cap_check_access(cap: *const CheriCap, access_len: u64, req_perm: u32) -> bool {
+    if !cap.tag_valid { return false; }
+    if (cap.perms & req_perm) != req_perm { return false; }
+    if cap.cursor < cap.base { return false; }
+    if (cap.cursor + access_len) > (cap.base + cap.length) { return false; }
+    return true;
+}
+

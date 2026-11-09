@@ -1,0 +1,749 @@
+fn extract_parent_dir(file_path: *u8, out_dir: *mut u8) {
+    var last_slash: i64 = 0 - 1;
+    var i: u64 = 0;
+    while file_path[i] != 0 && i < 250 {
+        if file_path[i] == 47 || file_path[i] == 92 {
+            last_slash = i as i64;
+        }
+        i = i + 1;
+    }
+    if last_slash < 0 {
+        out_dir[0] = 0;
+        return;
+    }
+    let end_idx: u64 = (last_slash as u64) + 1;
+    var j: u64 = 0;
+    while j < end_idx && j < 254 {
+        if file_path[j] == 92 {
+            out_dir[j] = 47;
+        } else {
+            out_dir[j] = file_path[j];
+        }
+        j = j + 1;
+    }
+    out_dir[j] = 0;
+}
+
+fn normalize_rel_path(base_dir: *u8, rel_path: *u8, out_norm: *mut u8) -> u64 {
+    var comb: [u8; 512];
+    var clen: u64 = 0;
+
+    if rel_path[0] != 47 && base_dir[0] != 0 {
+        var bi: u64 = 0;
+        while base_dir[bi] != 0 && clen < 250 {
+            if base_dir[bi] == 92 { comb[clen] = 47; } else { comb[clen] = base_dir[bi]; }
+            clen = clen + 1;
+            bi = bi + 1;
+        }
+        if clen > 0 && comb[clen - 1] != 47 {
+            comb[clen] = 47;
+            clen = clen + 1;
+        }
+    }
+    var ri: u64 = 0;
+    while rel_path[ri] != 0 && clen < 508 {
+        if rel_path[ri] == 92 { comb[clen] = 47; } else { comb[clen] = rel_path[ri]; }
+        clen = clen + 1;
+        ri = ri + 1;
+    }
+    comb[clen] = 0;
+
+    var is_abs: u32 = 0;
+    if clen > 0 && comb[0] == 47 { is_abs = 1; }
+
+    var seg_starts: [u64; 64];
+    var seg_lens: [u64; 64];
+    var seg_cnt: u64 = 0;
+
+    var ci: u64 = 0;
+    while ci < clen {
+        while ci < clen && comb[ci] == 47 {
+            ci = ci + 1;
+        }
+        let seg_s: u64 = ci;
+        while ci < clen && comb[ci] != 47 {
+            ci = ci + 1;
+        }
+        let slen: u64 = ci - seg_s;
+        if slen > 0 {
+            if slen == 1 && comb[seg_s] == 46 {
+            } else if slen == 2 && comb[seg_s] == 46 && comb[seg_s + 1] == 46 {
+                var can_pop: u32 = 0;
+                if seg_cnt > 0 {
+                    let top_s: u64 = seg_starts[seg_cnt - 1];
+                    let top_l: u64 = seg_lens[seg_cnt - 1];
+                    if !(top_l == 2 && comb[top_s] == 46 && comb[top_s + 1] == 46) {
+                        can_pop = 1;
+                    }
+                }
+                if can_pop == 1 {
+                    seg_cnt = seg_cnt - 1;
+                } else if is_abs == 0 && seg_cnt < 64 {
+                    seg_starts[seg_cnt] = seg_s;
+                    seg_lens[seg_cnt] = slen;
+                    seg_cnt = seg_cnt + 1;
+                }
+            } else if seg_cnt < 64 {
+                seg_starts[seg_cnt] = seg_s;
+                seg_lens[seg_cnt] = slen;
+                seg_cnt = seg_cnt + 1;
+            }
+        }
+    }
+
+    var oi: u64 = 0;
+    if is_abs == 1 {
+        out_norm[0] = 47;
+        oi = 1;
+    }
+    var si_idx: u64 = 0;
+    while si_idx < seg_cnt {
+        if si_idx > 0 && oi < 254 {
+            out_norm[oi] = 47;
+            oi = oi + 1;
+        }
+        let ss: u64 = seg_starts[si_idx];
+        let sl: u64 = seg_lens[si_idx];
+        var k: u64 = 0;
+        while k < sl && oi < 254 {
+            out_norm[oi] = comb[ss + k];
+            oi = oi + 1;
+            k = k + 1;
+        }
+        si_idx = si_idx + 1;
+    }
+    out_norm[oi] = 0;
+    return oi;
+}
+
+fn canonical_path_hash(path_buf: *u8, plen: u64, out_stripped_off: *mut u64) -> u64 {
+    var p_off: u64 = 0;
+    var changed: u32 = 1;
+    while changed == 1 && p_off < plen {
+        changed = 0;
+        if (p_off + 3) <= plen {
+            if path_buf[p_off] == 46 && path_buf[p_off + 1] == 46 && path_buf[p_off + 2] == 47 {
+                p_off = p_off + 3;
+                changed = 1;
+            }
+        }
+        if changed == 0 && (p_off + 2) <= plen {
+            if path_buf[p_off] == 46 && path_buf[p_off + 1] == 47 {
+                p_off = p_off + 2;
+                changed = 1;
+            }
+        }
+        if changed == 0 && (p_off + 4) <= plen {
+            if path_buf[p_off] == 114 && path_buf[p_off + 1] == 117 && path_buf[p_off + 2] == 120 && path_buf[p_off + 3] == 47 {
+                p_off = p_off + 4;
+                changed = 1;
+            }
+        }
+    }
+    out_stripped_off[0] = p_off;
+    var h: u64 = 14695981039346656037;
+    var hi: u64 = p_off;
+    while hi < plen {
+        h = h ^ (path_buf[hi] as u64);
+        h = h * 1099511628211;
+        hi = hi + 1;
+    }
+    return h;
+}
+
+fn expand_include_rec(
+    src: *u8,
+    src_len: u64,
+    base_dir: *u8,
+    dst: *mut u8,
+    dst_max: u64,
+    state: *mut u64
+) {
+    var si: u64 = 0;
+    while si < src_len {
+        if (si + 1) < src_len && src[si] == 47 && src[si + 1] == 47 {
+            while si < src_len && src[si] != 10 {
+                let cdi1: u64 = state[0];
+                if cdi1 < dst_max { dst[cdi1] = src[si]; state[0] = cdi1 + 1; }
+                si = si + 1;
+            }
+            if si < src_len && src[si] == 10 {
+                let cdi1b: u64 = state[0];
+                if cdi1b < dst_max { dst[cdi1b] = 10; state[0] = cdi1b + 1; }
+                si = si + 1;
+            }
+        } else if (si + 1) < src_len && src[si] == 47 && src[si + 1] == 42 {
+            let cdi2a: u64 = state[0];
+            if (cdi2a + 1) < dst_max { dst[cdi2a] = 47; dst[cdi2a + 1] = 42; state[0] = cdi2a + 2; }
+            si = si + 2;
+            var bdone: u32 = 0;
+            while si < src_len && bdone == 0 {
+                if (si + 1) < src_len && src[si] == 42 && src[si + 1] == 47 {
+                    let cdi2b: u64 = state[0];
+                    if (cdi2b + 1) < dst_max { dst[cdi2b] = 42; dst[cdi2b + 1] = 47; state[0] = cdi2b + 2; }
+                    si = si + 2;
+                    bdone = 1;
+                } else {
+                    let cdi2c: u64 = state[0];
+                    if cdi2c < dst_max { dst[cdi2c] = src[si]; state[0] = cdi2c + 1; }
+                    si = si + 1;
+                }
+            }
+        } else if src[si] == 34 {
+            let cdi3a: u64 = state[0];
+            if cdi3a < dst_max { dst[cdi3a] = 34; state[0] = cdi3a + 1; }
+            si = si + 1;
+            while si < src_len && src[si] != 34 {
+                if src[si] == 92 && (si + 1) < src_len {
+                    let cdi3e: u64 = state[0];
+                    if (cdi3e + 1) < dst_max {
+                        dst[cdi3e] = src[si];
+                        dst[cdi3e + 1] = src[si + 1];
+                        state[0] = cdi3e + 2;
+                    }
+                    si = si + 2;
+                } else {
+                    let cdi3c: u64 = state[0];
+                    if cdi3c < dst_max { dst[cdi3c] = src[si]; state[0] = cdi3c + 1; }
+                    si = si + 1;
+                }
+            }
+            if si < src_len && src[si] == 34 {
+                let cdi3z: u64 = state[0];
+                if cdi3z < dst_max { dst[cdi3z] = 34; state[0] = cdi3z + 1; }
+                si = si + 1;
+            }
+        } else {
+            var is_inc: u32 = 0;
+            var q_pos: u64 = 0;
+            var at_boundary: u32 = 0;
+            if si == 0 {
+                at_boundary = 1;
+            } else {
+                let prev_ch: u8 = src[si - 1];
+                if prev_ch == 10 || prev_ch == 13 || prev_ch == 32 || prev_ch == 9 || prev_ch == 59 {
+                    at_boundary = 1;
+                }
+            }
+            if at_boundary == 1 && (si + 9) < src_len {
+                var inc_kw: u64 = si;
+                if src[si] == 35 {
+                    inc_kw = si + 1;
+                    while inc_kw < src_len && (src[inc_kw] == 32 || src[inc_kw] == 9) {
+                        inc_kw = inc_kw + 1;
+                    }
+                }
+                if (inc_kw + 8) < src_len &&
+                   src[inc_kw] == 105 && src[inc_kw+1] == 110 && src[inc_kw+2] == 99 && src[inc_kw+3] == 108 &&
+                   src[inc_kw+4] == 117 && src[inc_kw+5] == 100 && src[inc_kw+6] == 101 && (src[inc_kw+7] == 32 || src[inc_kw+7] == 9 || src[inc_kw+7] == 34) {
+                    var ws: u64 = inc_kw + 7;
+                    while ws < src_len && (src[ws] == 32 || src[ws] == 9) {
+                        ws = ws + 1;
+                    }
+                    if ws < src_len && src[ws] == 34 {
+                        is_inc = 1;
+                        q_pos = ws;
+                    }
+                } else if (si + 12) < src_len && src[si] == 64 && src[si+1] == 99 && src[si+2] == 73 && src[si+3] == 110 &&
+                          src[si+4] == 99 && src[si+5] == 108 && src[si+6] == 117 && src[si+7] == 100 && src[si+8] == 101 &&
+                          src[si+9] == 40 && src[si+10] == 34 {
+                    is_inc = 1;
+                    q_pos = si + 10;
+                }
+            }
+
+            if is_inc == 1 {
+                let path_start: u64 = q_pos + 1;
+                var path_end: u64 = path_start;
+                while path_end < src_len && src[path_end] != 34 {
+                    path_end = path_end + 1;
+                }
+                var raw_path: [u8; 256];
+                var pi: u64 = 0;
+                while (path_start + pi) < path_end && pi < 255 {
+                    raw_path[pi] = src[path_start + pi];
+                    pi = pi + 1;
+                }
+                raw_path[pi] = 0;
+
+                var norm_path: [u8; 256];
+                let norm_len: u64 = normalize_rel_path(base_dir, &raw_path[0], &norm_path[0]);
+
+                var p_off_slot: [u64; 1];
+                let h: u64 = canonical_path_hash(&norm_path[0], norm_len, &mut p_off_slot[0]);
+                let p_off: u64 = p_off_slot[0];
+
+                var already_included: u32 = 0;
+                var ki: u64 = 0;
+                let total_inc: u64 = state[1];
+                while ki < total_inc {
+                    if state[2 + ki] == h {
+                        already_included = 1;
+                    }
+                    ki = ki + 1;
+                }
+
+                if already_included == 0 && total_inc < 500 {
+                    state[2 + total_inc] = h;
+                    state[1] = total_inc + 1;
+
+                    let file_buf: *mut u8 = uses_alloc(1048576);
+                    if (file_buf as i64) > 0 {
+                        var used_path: *u8 = &norm_path[0];
+                        var inc_nread: i64 = acrq_file_read(&norm_path[0], file_buf, 1048576);
+                        if inc_nread <= 0 && p_off != 0 {
+                            used_path = &norm_path[p_off];
+                            inc_nread = acrq_file_read(used_path, file_buf, 1048576);
+                        }
+                        if inc_nread <= 0 {
+                            var raw_off_slot: [u64; 1];
+                            canonical_path_hash(&raw_path[0], pi, &mut raw_off_slot[0]);
+                            let roff: u64 = raw_off_slot[0];
+                            used_path = &raw_path[roff];
+                            inc_nread = acrq_file_read(used_path, file_buf, 1048576);
+                        }
+                        if inc_nread > 0 {
+                            var child_dir: [u8; 256];
+                            extract_parent_dir(used_path, &mut child_dir[0]);
+                            if str_ends_with(used_path, ".h") == 1 {
+                                let c_tr_buf: *mut u8 = uses_alloc(262144);
+                                let c_tr_len: u64 = translate_c_header_to_rux(file_buf, inc_nread as u64, c_tr_buf, 262144);
+                                expand_include_rec(c_tr_buf, c_tr_len, &child_dir[0], dst, dst_max, state);
+                                uses_free(c_tr_buf, 262144);
+                            } else {
+                                expand_include_rec(file_buf, inc_nread as u64, &child_dir[0], dst, dst_max, state);
+                            }
+                            let cur_di: u64 = state[0];
+                            if cur_di < dst_max {
+                                dst[cur_di] = 10;
+                                state[0] = cur_di + 1;
+                            }
+                        }
+                        uses_free(file_buf, 1048576);
+                    }
+                }
+
+                si = path_end + 1;
+                while si < src_len && (src[si] == 41 || src[si] == 59 || src[si] == 32 || src[si] == 9 || src[si] == 13) {
+                    si = si + 1;
+                }
+                if si < src_len && src[si] == 10 {
+                    si = si + 1;
+                }
+            } else {
+                let cur_di: u64 = state[0];
+                if cur_di < dst_max {
+                    dst[cur_di] = src[si];
+                    state[0] = cur_di + 1;
+                }
+                si = si + 1;
+            }
+        }
+    }
+}
+
+fn pp_is_ident_start(c: u8) -> u32 {
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 { return 1; }
+    return 0;
+}
+
+fn pp_is_ident_char(c: u8) -> u32 {
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 { return 1; }
+    return 0;
+}
+
+fn pp_find_macro(m_hashes: *u64, m_cnt: u64, h: u64) -> i64 {
+    var i: u64 = 0;
+    while i < m_cnt {
+        if m_hashes[i] == h { return i as i64; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn pp_eval_cond(src: *u8, start: u64, end: u64, m_hashes: *u64, m_vals: *i64, m_cnt: u64) -> u32 {
+    var i: u64 = start;
+    while i < end && (src[i] == 32 || src[i] == 9) { i = i + 1; }
+    var inv: u32 = 0;
+    if i < end && src[i] == 33 { inv = 1; i = i + 1; }
+    while i < end && (src[i] == 32 || src[i] == 9) { i = i + 1; }
+
+    if (i + 7) <= end && src[i] == 100 && src[i+1] == 101 && src[i+2] == 102 && src[i+3] == 105 && src[i+4] == 110 && src[i+5] == 101 && src[i+6] == 100 {
+        i = i + 7;
+        while i < end && (src[i] == 32 || src[i] == 9 || src[i] == 40) { i = i + 1; }
+        let id_s: u64 = i;
+        while i < end && pp_is_ident_char(src[i]) == 1 { i = i + 1; }
+        let h: u64 = hash_identifier(src + id_s, i - id_s);
+        let idx: i64 = pp_find_macro(m_hashes, m_cnt, h);
+        var r: u32 = 0;
+        if idx >= 0 { r = 1; }
+        if inv == 1 { return 1 - r; }
+        return r;
+    }
+
+    var lhs: i64 = 0;
+    if i < end && src[i] >= 48 && src[i] <= 57 {
+        while i < end && src[i] >= 48 && src[i] <= 57 {
+            lhs = (lhs * 10) + ((src[i] - 48) as i64);
+            i = i + 1;
+        }
+    } else if i < end && pp_is_ident_start(src[i]) == 1 {
+        let id_s: u64 = i;
+        while i < end && pp_is_ident_char(src[i]) == 1 { i = i + 1; }
+        let h: u64 = hash_identifier(src + id_s, i - id_s);
+        let idx: i64 = pp_find_macro(m_hashes, m_cnt, h);
+        if idx >= 0 { lhs = m_vals[idx as u64]; }
+    }
+    while i < end && (src[i] == 32 || src[i] == 9) { i = i + 1; }
+    if i < end {
+        var op: u32 = 0;
+        if (i + 1) < end && src[i] == 61 && src[i+1] == 61 { op = 1; i = i + 2; }
+        else if (i + 1) < end && src[i] == 33 && src[i+1] == 61 { op = 2; i = i + 2; }
+        else if (i + 1) < end && src[i] == 62 && src[i+1] == 61 { op = 3; i = i + 2; }
+        else if (i + 1) < end && src[i] == 60 && src[i+1] == 61 { op = 4; i = i + 2; }
+        else if src[i] == 62 { op = 5; i = i + 1; }
+        else if src[i] == 60 { op = 6; i = i + 1; }
+        if op > 0 {
+            while i < end && (src[i] == 32 || src[i] == 9) { i = i + 1; }
+            var rhs: i64 = 0;
+            if i < end && src[i] >= 48 && src[i] <= 57 {
+                while i < end && src[i] >= 48 && src[i] <= 57 {
+                    rhs = (rhs * 10) + ((src[i] - 48) as i64);
+                    i = i + 1;
+                }
+            } else if i < end && pp_is_ident_start(src[i]) == 1 {
+                let id_s2: u64 = i;
+                while i < end && pp_is_ident_char(src[i]) == 1 { i = i + 1; }
+                let h2: u64 = hash_identifier(src + id_s2, i - id_s2);
+                let idx2: i64 = pp_find_macro(m_hashes, m_cnt, h2);
+                if idx2 >= 0 { rhs = m_vals[idx2 as u64]; }
+            }
+            if op == 1 { if lhs == rhs { lhs = 1; } else { lhs = 0; } }
+            if op == 2 { if lhs != rhs { lhs = 1; } else { lhs = 0; } }
+            if op == 3 { if lhs >= rhs { lhs = 1; } else { lhs = 0; } }
+            if op == 4 { if lhs <= rhs { lhs = 1; } else { lhs = 0; } }
+            if op == 5 { if lhs > rhs { lhs = 1; } else { lhs = 0; } }
+            if op == 6 { if lhs < rhs { lhs = 1; } else { lhs = 0; } }
+        }
+    }
+    var res_b: u32 = 0;
+    if lhs != 0 { res_b = 1; }
+    if inv == 1 { return 1 - res_b; }
+    return res_b;
+}
+
+fn preprocess_directives(buf: *mut u8, len: u64, max_len: u64) -> u64 {
+    var has_pp: u32 = 0;
+    var fi: u64 = 0;
+    while (fi + 2) < len {
+        if buf[fi] == 35 && (fi == 0 || buf[fi - 1] == 10) {
+            let nc: u8 = buf[fi + 1];
+            if nc == 100 || nc == 105 || nc == 117 || nc == 101 || nc == 112 {
+                has_pp = 1;
+                fi = len;
+            }
+        }
+        fi = fi + 1;
+    }
+    if has_pp == 0 { return len; }
+
+    let src: *mut u8 = uses_alloc(len + 16);
+    var ci: u64 = 0;
+    while ci < len { src[ci] = buf[ci]; ci = ci + 1; }
+    src[len] = 0;
+
+    var m_hashes: [u64; 128];
+    var m_bstart: [u64; 128];
+    var m_blen: [u64; 128];
+    var m_vals: [i64; 128];
+    var m_pcnt: [u32; 128];
+    var m_phashes: [u64; 512];
+    var m_cnt: u64 = 0;
+
+    var cond_active: [u32; 32];
+    var cond_taken: [u32; 32];
+    var cond_depth: u64 = 0;
+    var cur_active: u32 = 1;
+
+    var si: u64 = 0;
+    var di: u64 = 0;
+    while si < len {
+        var at_line_start: u32 = 0;
+        if si == 0 || src[si - 1] == 10 { at_line_start = 1; }
+        var ws: u64 = si;
+        if at_line_start == 1 {
+            while ws < len && (src[ws] == 32 || src[ws] == 9) { ws = ws + 1; }
+        }
+        if at_line_start == 1 && ws < len && src[ws] == 35 && (ws + 1) < len && src[ws + 1] != 91 {
+            var kw_s: u64 = ws + 1;
+            while kw_s < len && (src[kw_s] == 32 || src[kw_s] == 9) { kw_s = kw_s + 1; }
+            var kw_e: u64 = kw_s;
+            while kw_e < len && pp_is_ident_char(src[kw_e]) == 1 { kw_e = kw_e + 1; }
+            let kw_h: u64 = hash_identifier(src + kw_s, kw_e - kw_s);
+            var line_e: u64 = kw_e;
+            while line_e < len && src[line_e] != 10 { line_e = line_e + 1; }
+            var arg_s: u64 = kw_e;
+            while arg_s < line_e && (src[arg_s] == 32 || src[arg_s] == 9) { arg_s = arg_s + 1; }
+
+            if kw_h == 9632351110148956557 {
+                var id_e: u64 = arg_s;
+                while id_e < line_e && pp_is_ident_char(src[id_e]) == 1 { id_e = id_e + 1; }
+                let mh: u64 = hash_identifier(src + arg_s, (id_e - arg_s) as u32);
+                var hit: u32 = 0;
+                if pp_find_macro(&m_hashes[0], m_cnt, mh) >= 0 { hit = 1; }
+                if cond_depth < 31 {
+                    cond_active[cond_depth] = cur_active & hit;
+                    cond_taken[cond_depth] = hit;
+                    cond_depth = cond_depth + 1;
+                    cur_active = cond_active[cond_depth - 1];
+                }
+            } else if kw_h == 4232667670113538943 {
+                var id_e: u64 = arg_s;
+                while id_e < line_e && pp_is_ident_char(src[id_e]) == 1 { id_e = id_e + 1; }
+                let mh: u64 = hash_identifier(src + arg_s, (id_e - arg_s) as u32);
+                var hit: u32 = 1;
+                if pp_find_macro(&m_hashes[0], m_cnt, mh) >= 0 { hit = 0; }
+                if cond_depth < 31 {
+                    cond_active[cond_depth] = cur_active & hit;
+                    cond_taken[cond_depth] = hit;
+                    cond_depth = cond_depth + 1;
+                    cur_active = cond_active[cond_depth - 1];
+                }
+            } else if kw_h == 628023482707099174 {
+                let hit: u32 = pp_eval_cond(src, arg_s, line_e, &m_hashes[0], &m_vals[0], m_cnt);
+                if cond_depth < 31 {
+                    cond_active[cond_depth] = cur_active & hit;
+                    cond_taken[cond_depth] = hit;
+                    cond_depth = cond_depth + 1;
+                    cur_active = cond_active[cond_depth - 1];
+                }
+            } else if kw_h == 9153970177108736995 {
+                if cond_depth > 0 {
+                    let d: u64 = cond_depth - 1;
+                    var p_act: u32 = 1;
+                    if d > 0 { p_act = cond_active[d - 1]; }
+                    if cond_taken[d] == 1 {
+                        cond_active[d] = 0;
+                    } else {
+                        let hit: u32 = pp_eval_cond(src, arg_s, line_e, &m_hashes[0], &m_vals[0], m_cnt);
+                        cond_active[d] = p_act & hit;
+                        if hit == 1 { cond_taken[d] = 1; }
+                    }
+                    cur_active = cond_active[d];
+                }
+            } else if kw_h == 9163537027783908656 {
+                if cond_depth > 0 {
+                    let d: u64 = cond_depth - 1;
+                    var p_act: u32 = 1;
+                    if d > 0 { p_act = cond_active[d - 1]; }
+                    if cond_taken[d] == 1 {
+                        cond_active[d] = 0;
+                    } else {
+                        cond_active[d] = p_act;
+                        cond_taken[d] = 1;
+                    }
+                    cur_active = cond_active[d];
+                }
+            } else if kw_h == 3788113047116441965 {
+                if cond_depth > 0 {
+                    cond_depth = cond_depth - 1;
+                    if cond_depth == 0 { cur_active = 1; }
+                    else { cur_active = cond_active[cond_depth - 1]; }
+                }
+            } else if cur_active == 1 && kw_h == 12228404724271304561 {
+                var id_e: u64 = arg_s;
+                while id_e < line_e && pp_is_ident_char(src[id_e]) == 1 { id_e = id_e + 1; }
+                let mh: u64 = hash_identifier(src + arg_s, (id_e - arg_s) as u32);
+                let idx: i64 = pp_find_macro(&m_hashes[0], m_cnt, mh);
+                if idx >= 0 { m_hashes[idx as u64] = 0; }
+            } else if cur_active == 1 && kw_h == 5500604938257788306 {
+                var id_e: u64 = arg_s;
+                while id_e < line_e && pp_is_ident_char(src[id_e]) == 1 { id_e = id_e + 1; }
+                let mh: u64 = hash_identifier(src + arg_s, (id_e - arg_s) as u32);
+                var mi: u64 = m_cnt;
+                let ex_idx: i64 = pp_find_macro(&m_hashes[0], m_cnt, mh);
+                if ex_idx >= 0 { mi = ex_idx as u64; }
+                else if m_cnt < 128 { m_cnt = m_cnt + 1; }
+                m_hashes[mi] = mh;
+                m_pcnt[mi] = 0;
+                var b_s: u64 = id_e;
+                if b_s < line_e && src[b_s] == 40 {
+                    b_s = b_s + 1;
+                    var p_i: u32 = 0;
+                    while b_s < line_e && src[b_s] != 41 {
+                        while b_s < line_e && (src[b_s] == 32 || src[b_s] == 9 || src[b_s] == 44) { b_s = b_s + 1; }
+                        let ps: u64 = b_s;
+                        while b_s < line_e && pp_is_ident_char(src[b_s]) == 1 { b_s = b_s + 1; }
+                        if b_s > ps && p_i < 4 {
+                            m_phashes[(mi * 4) + (p_i as u64)] = hash_identifier(src + ps, b_s - ps);
+                            p_i = p_i + 1;
+                        }
+                    }
+                    if b_s < line_e && src[b_s] == 41 { b_s = b_s + 1; }
+                    m_pcnt[mi] = p_i;
+                }
+                while b_s < line_e && (src[b_s] == 32 || src[b_s] == 9) { b_s = b_s + 1; }
+                var b_e: u64 = line_e;
+                while b_e > b_s && (src[b_e - 1] == 32 || src[b_e - 1] == 9 || src[b_e - 1] == 13) { b_e = b_e - 1; }
+                m_bstart[mi] = b_s;
+                m_blen[mi] = b_e - b_s;
+                var mv: i64 = 1;
+                if b_s < b_e && src[b_s] >= 48 && src[b_s] <= 57 {
+                    mv = 0;
+                    var vi: u64 = b_s;
+                    while vi < b_e && src[vi] >= 48 && src[vi] <= 57 {
+                        mv = (mv * 10) + ((src[vi] - 48) as i64);
+                        vi = vi + 1;
+                    }
+                }
+                m_vals[mi] = mv;
+            }
+            si = line_e;
+            if si < len && src[si] == 10 {
+                if di < max_len { buf[di] = 10; di = di + 1; }
+                si = si + 1;
+            }
+        } else if cur_active == 0 {
+            while si < len && src[si] != 10 { si = si + 1; }
+            if si < len && src[si] == 10 {
+                if di < max_len { buf[di] = 10; di = di + 1; }
+                si = si + 1;
+            }
+        } else if (si + 1) < len && src[si] == 47 && src[si + 1] == 47 {
+            while si < len && src[si] != 10 {
+                if di < max_len { buf[di] = src[si]; di = di + 1; }
+                si = si + 1;
+            }
+        } else if src[si] == 34 {
+            if di < max_len { buf[di] = 34; di = di + 1; }
+            si = si + 1;
+            while si < len && src[si] != 34 {
+                if src[si] == 92 && (si + 1) < len {
+                    if (di + 1) < max_len { buf[di] = src[si]; buf[di + 1] = src[si + 1]; di = di + 2; }
+                    si = si + 2;
+                } else {
+                    if di < max_len { buf[di] = src[si]; di = di + 1; }
+                    si = si + 1;
+                }
+            }
+            if si < len && src[si] == 34 {
+                if di < max_len { buf[di] = 34; di = di + 1; }
+                si = si + 1;
+            }
+        } else if pp_is_ident_start(src[si]) == 1 {
+            let id_s: u64 = si;
+            while si < len && pp_is_ident_char(src[si]) == 1 { si = si + 1; }
+            let id_h: u64 = hash_identifier(src + id_s, si - id_s);
+            let midx: i64 = pp_find_macro(&m_hashes[0], m_cnt, id_h);
+            if midx >= 0 {
+                let mi: u64 = midx as u64;
+                if m_pcnt[mi] > 0 && si < len && src[si] == 40 {
+                    si = si + 1;
+                    var a_starts: [u64; 4];
+                    var a_lens: [u64; 4];
+                    var a_i: u32 = 0;
+                    var p_depth: u32 = 1;
+                    var cur_as: u64 = si;
+                    while si < len && p_depth > 0 {
+                        if src[si] == 40 { p_depth = p_depth + 1; }
+                        else if src[si] == 41 {
+                            p_depth = p_depth - 1;
+                            if p_depth == 0 {
+                                if a_i < 4 { a_starts[a_i as u64] = cur_as; a_lens[a_i as u64] = si - cur_as; a_i = a_i + 1; }
+                            }
+                        } else if src[si] == 44 && p_depth == 1 {
+                            if a_i < 4 { a_starts[a_i as u64] = cur_as; a_lens[a_i as u64] = si - cur_as; a_i = a_i + 1; }
+                            cur_as = si + 1;
+                        }
+                        si = si + 1;
+                    }
+                    var bi: u64 = m_bstart[mi];
+                    let be: u64 = bi + m_blen[mi];
+                    while bi < be {
+                        if pp_is_ident_start(src[bi]) == 1 {
+                            let ps: u64 = bi;
+                            while bi < be && pp_is_ident_char(src[bi]) == 1 { bi = bi + 1; }
+                            let ph: u64 = hash_identifier(src + ps, bi - ps);
+                            var matched_p: i64 = -1;
+                            var pk: u32 = 0;
+                            while pk < m_pcnt[mi] {
+                                if m_phashes[(mi * 4) + (pk as u64)] == ph { matched_p = pk as i64; }
+                                pk = pk + 1;
+                            }
+                            if matched_p >= 0 && (matched_p as u32) < a_i {
+                                var as_p: u64 = a_starts[matched_p as u64];
+                                var al_p: u64 = a_lens[matched_p as u64];
+                                while al_p > 0 && (src[as_p] == 32 || src[as_p] == 9) { as_p = as_p + 1; al_p = al_p - 1; }
+                                while al_p > 0 && (src[as_p + al_p - 1] == 32 || src[as_p + al_p - 1] == 9) { al_p = al_p - 1; }
+                                let arg_mh: u64 = hash_identifier(src + as_p, al_p as u32);
+                                let arg_midx: i64 = pp_find_macro(&m_hashes[0], m_cnt, arg_mh);
+                                if arg_midx >= 0 {
+                                    let ami: u64 = arg_midx as u64;
+                                    let abs: u64 = m_bstart[ami];
+                                    let abl: u64 = m_blen[ami];
+                                    var ak2: u64 = 0;
+                                    while ak2 < abl && di < max_len { buf[di] = src[abs + ak2]; di = di + 1; ak2 = ak2 + 1; }
+                                } else {
+                                    var ak: u64 = 0;
+                                    while ak < al_p && di < max_len { buf[di] = src[as_p + ak]; di = di + 1; ak = ak + 1; }
+                                }
+                            } else {
+                                var pk2: u64 = ps;
+                                while pk2 < bi && di < max_len { buf[di] = src[pk2]; di = di + 1; pk2 = pk2 + 1; }
+                            }
+                        } else {
+                            if di < max_len { buf[di] = src[bi]; di = di + 1; }
+                            bi = bi + 1;
+                        }
+                    }
+                } else {
+                    var bi: u64 = 0;
+                    let bl: u64 = m_blen[mi];
+                    let bs: u64 = m_bstart[mi];
+                    while bi < bl && di < max_len {
+                        buf[di] = src[bs + bi];
+                        di = di + 1;
+                        bi = bi + 1;
+                    }
+                }
+            } else {
+                var ki: u64 = id_s;
+                while ki < si && di < max_len {
+                    buf[di] = src[ki];
+                    di = di + 1;
+                    ki = ki + 1;
+                }
+            }
+        } else {
+            if di < max_len { buf[di] = src[si]; di = di + 1; }
+            si = si + 1;
+        }
+    }
+    uses_free(src, len + 16);
+    return di;
+}
+
+fn expand_source_includes(in_path: *u8, src: *u8, src_len: u64, dst: *mut u8, dst_max: u64) -> u64 {
+    let state: *mut u64 = uses_alloc(4096) as *mut u64;
+    state[0] = 0;
+    state[1] = 0;
+
+    var root_norm: [u8; 256];
+    var empty_dir: [u8; 2];
+    empty_dir[0] = 0;
+    let rlen: u64 = normalize_rel_path(&empty_dir[0], in_path, &mut root_norm[0]);
+    if rlen > 0 {
+        var r_off: [u64; 1];
+        let rh: u64 = canonical_path_hash(&root_norm[0], rlen, &mut r_off[0]);
+        state[2] = rh;
+        state[1] = 1;
+    }
+
+    var base_dir: [u8; 256];
+    extract_parent_dir(in_path, &mut base_dir[0]);
+    expand_include_rec(src, src_len, &base_dir[0], dst, dst_max, state);
+
+    let res: u64 = state[0];
+    uses_free(state as *mut u8, 4096);
+    return preprocess_directives(dst, res, dst_max);
+}

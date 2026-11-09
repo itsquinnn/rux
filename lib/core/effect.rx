@@ -1,0 +1,40 @@
+struct EffectToken {
+    effect_id: u64,
+    name_hash: u64,
+    is_active: u32,
+}
+
+struct EffectContext {
+    active_mask: u64,
+    permitted_mask: u64,
+}
+
+fn effect_token_new(id: u64, name_hash: u64) -> EffectToken {
+    var tok: EffectToken;
+    tok.effect_id = id;
+    tok.name_hash = name_hash;
+    tok.is_active = 1;
+    return tok;
+}
+
+fn effect_context_init(ctx: *mut EffectContext, permitted: u64) {
+    ctx.active_mask = 0;
+    ctx.permitted_mask = permitted;
+}
+
+fn effect_is_permitted(ctx: *const EffectContext, effect_bit: u64) -> bool {
+    return (ctx.permitted_mask & effect_bit) != 0;
+}
+
+fn effect_enter(ctx: *mut EffectContext, effect_bit: u64) -> bool {
+    if (ctx.permitted_mask & effect_bit) == 0 {
+        return false;
+    }
+    ctx.active_mask = ctx.active_mask | effect_bit;
+    return true;
+}
+
+fn effect_leave(ctx: *mut EffectContext, effect_bit: u64) {
+    ctx.active_mask = ctx.active_mask & (~effect_bit);
+}
+

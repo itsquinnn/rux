@@ -1,0 +1,139 @@
+include "lib/core/types.rx";
+include "lib/core/result.rx";
+
+trait Read {
+    fn read(self: *mut Self, buf: *mut u8, len: u64) -> Result<u64, int>;
+}
+
+trait Write {
+    fn write(self: *mut Self, buf: *u8, len: u64) -> Result<u64, int>;
+    fn flush(self: *mut Self) -> Result<bool, int>;
+}
+
+struct MemBuffer {
+    data: *mut u8,
+    len: u64,
+    capacity: u64,
+    pos: u64,
+}
+
+impl MemBuffer {
+    fn new(backing: *mut u8, cap: u64) -> MemBuffer {
+        return MemBuffer {
+            data: backing,
+            len: 0,
+            capacity: cap,
+            pos: 0,
+        };
+    }
+}
+
+impl Read for MemBuffer {
+    fn read(self: *mut MemBuffer, buf: *mut u8, len: u64) -> Result<u64, int> {
+        var avail: u64 = 0;
+        if self.len > self.pos {
+            avail = self.len - self.pos;
+        }
+        if avail == 0 {
+            return res_ok<u64, int>(0);
+        }
+        var to_read: u64 = len;
+        if to_read > avail {
+            to_read = avail;
+        }
+        var i: u64 = 0;
+        while i < to_read {
+            buf[i] = self.data[self.pos + i];
+            i = i + 1;
+        }
+        self.pos = self.pos + to_read;
+        return res_ok<u64, int>(to_read);
+    }
+}
+
+impl Write for MemBuffer {
+    fn write(self: *mut MemBuffer, buf: *u8, len: u64) -> Result<u64, int> {
+        var remain: u64 = 0;
+        if self.capacity > self.len {
+            remain = self.capacity - self.len;
+        }
+        if remain == 0 {
+            return res_err<u64, int>(-28);
+        }
+        var to_write: u64 = len;
+        if to_write > remain {
+            to_write = remain;
+        }
+        var i: u64 = 0;
+        while i < to_write {
+            self.data[self.len + i] = buf[i];
+            i = i + 1;
+        }
+        self.len = self.len + to_write;
+        return res_ok<u64, int>(to_write);
+    }
+
+    fn flush(self: *mut MemBuffer) -> Result<bool, int> {
+        return res_ok<bool, int>(true);
+    }
+}
+
+struct BufReader {
+    buffer: [u8; 512],
+    buf_pos: u64,
+    buf_len: u64,
+}
+
+impl BufReader {
+    fn new() -> BufReader {
+        var br: BufReader;
+        br.buf_pos = 0;
+        br.buf_len = 0;
+        return br;
+    }
+
+    fn fill_from_buffer(self: *mut BufReader, src: *u8, len: u64) {
+        var i: u64 = 0;
+        while i < len && i < 512 {
+            self.buffer[i] = src[i];
+            i = i + 1;
+        }
+        self.buf_pos = 0;
+        self.buf_len = i;
+    }
+
+    fn read_byte(self: *mut BufReader) -> int {
+        if self.buf_pos >= self.buf_len {
+            return -1;
+        }
+        let b: u8 = self.buffer[self.buf_pos];
+        self.buf_pos = self.buf_pos + 1;
+        return b as int;
+    }
+}
+
+struct BufWriter {
+    buffer: [u8; 512],
+    buf_len: u64,
+}
+
+impl BufWriter {
+    fn new() -> BufWriter {
+        var bw: BufWriter;
+        bw.buf_len = 0;
+        return bw;
+    }
+
+    fn write_byte(self: *mut BufWriter, b: u8) -> bool {
+        if self.buf_len >= 512 {
+            return false;
+        }
+        self.buffer[self.buf_len] = b;
+        self.buf_len = self.buf_len + 1;
+        return true;
+    }
+
+    fn clear(self: *mut BufWriter) {
+        self.buf_len = 0;
+    }
+}

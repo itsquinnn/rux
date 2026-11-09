@@ -1,0 +1,153 @@
+include "bootstrap/scanner/keywords.rx";
+
+struct SourceReader {
+    source: *byte,
+    length: uint,
+    cursor: uint,
+    line: uint,
+    column: uint,
+}
+
+fn reader_init(r: *mut SourceReader, src: *byte, len: uint) {
+    r.source = src;
+    r.length = len;
+    r.cursor = 0;
+    r.line = 1;
+    r.column = 1;
+}
+
+fn is_digit(c: byte) -> int {
+    if c >= 48 && c <= 57 { return 1; }
+    return 0;
+}
+
+fn is_alpha(c: byte) -> int {
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 { return 1; }
+    return 0;
+}
+
+fn is_alnum(c: byte) -> int {
+    if is_alpha(c) == 1 || is_digit(c) == 1 { return 1; }
+    return 0;
+}
+
+fn skip_whitespace_and_comments(r: *mut SourceReader) {
+    var scanning: int = 1;
+    while scanning == 1 {
+        if r.cursor >= r.length {
+            scanning = 0;
+        } else {
+            let c: byte = r.source[r.cursor];
+            if c == 32 || c == 9 || c == 10 || c == 13 {
+                if c == 10 {
+                    r.line = r.line + 1;
+                    r.column = 1;
+                } else {
+                    r.column = r.column + 1;
+                }
+                r.cursor = r.cursor + 1;
+            } else if c == 47 && r.cursor + 1 < r.length && r.source[r.cursor + 1] == 47 {
+                r.cursor = r.cursor + 2;
+                while r.cursor < r.length && r.source[r.cursor] != 10 {
+                    r.cursor = r.cursor + 1;
+                }
+            } else {
+                scanning = 0;
+            }
+        }
+    }
+}
+
+fn scan_next_token(r: *mut SourceReader, tok: *mut Token) {
+    skip_whitespace_and_comments(r);
+
+    if r.cursor >= r.length {
+        tok.kind = TOKEN_EOF;
+        tok.start = r.source + r.cursor;
+        tok.length = 0;
+        tok.int_value = 0;
+        tok.name_hash = 0;
+        return;
+    }
+
+    let start_pos: uint = r.cursor;
+    let start_ptr: *byte = r.source + start_pos;
+    let c: byte = r.source[start_pos];
+    r.cursor = r.cursor + 1;
+    r.column = r.column + 1;
+
+    if is_alpha(c) == 1 {
+        while r.cursor < r.length && is_alnum(r.source[r.cursor]) == 1 {
+            r.cursor = r.cursor + 1;
+            r.column = r.column + 1;
+        }
+        let tok_len: uint = r.cursor - start_pos;
+        let h: uint = hash_string(start_ptr, tok_len);
+        let k: uint = classify_keyword(h);
+
+        tok.kind = k;
+        tok.start = start_ptr;
+        tok.length = tok_len;
+        tok.int_value = 0;
+        tok.name_hash = h;
+        return;
+    }
+
+    if is_digit(c) == 1 {
+    var val: uint = (c - 48) as uint;
+        while r.cursor < r.length && is_digit(r.source[r.cursor]) == 1 {
+            let d: byte = r.source[r.cursor];
+            val = val * 10 + ((d - 48) as uint);
+            r.cursor = r.cursor + 1;
+            r.column = r.column + 1;
+        }
+        tok.kind = TOKEN_INT;
+        tok.start = start_ptr;
+        tok.length = r.cursor - start_pos;
+        tok.int_value = val;
+        tok.name_hash = 0;
+        return;
+    }
+
+    if c == 34 {
+        while r.cursor < r.length && r.source[r.cursor] != 34 {
+            if r.source[r.cursor] == 92 { r.cursor = r.cursor + 1; }
+            r.cursor = r.cursor + 1;
+        }
+        if r.cursor < r.length { r.cursor = r.cursor + 1; }
+        tok.kind = TOKEN_STRING;
+        tok.start = start_ptr;
+        tok.length = r.cursor - start_pos;
+        tok.int_value = 0;
+        tok.name_hash = 0;
+        return;
+    }
+
+    if c == 61 && r.cursor < r.length && r.source[r.cursor] == 62 {
+        r.cursor = r.cursor + 1;
+        tok.kind = TOKEN_FAT_ARROW;
+    } else if c == 45 && r.cursor < r.length && r.source[r.cursor] == 62 {
+        r.cursor = r.cursor + 1;
+        tok.kind = TOKEN_ARROW;
+    } else if c == 124 && r.cursor < r.length && r.source[r.cursor] == 62 {
+        r.cursor = r.cursor + 1;
+        tok.kind = TOKEN_PIPE;
+    } else if c == 61 { tok.kind = TOKEN_EQ; }
+    else if c == 43 { tok.kind = TOKEN_PLUS; }
+    else if c == 45 { tok.kind = TOKEN_MINUS; }
+    else if c == 42 { tok.kind = TOKEN_STAR; }
+    else if c == 47 { tok.kind = TOKEN_SLASH; }
+    else if c == 40 { tok.kind = TOKEN_LPAREN; }
+    else if c == 41 { tok.kind = TOKEN_RPAREN; }
+    else if c == 123 { tok.kind = TOKEN_LBRACE; }
+    else if c == 125 { tok.kind = TOKEN_RBRACE; }
+    else if c == 58 { tok.kind = TOKEN_COLON; }
+    else if c == 59 { tok.kind = TOKEN_SEMICOLON; }
+    else if c == 44 { tok.kind = TOKEN_COMMA; }
+    else { tok.kind = 99; }
+
+    tok.start = start_ptr;
+    tok.length = r.cursor - start_pos;
+    tok.int_value = 0;
+    tok.name_hash = 0;
+}

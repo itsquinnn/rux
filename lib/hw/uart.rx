@@ -1,0 +1,115 @@
+include "lib/core/types.rx";
+
+const UART_COM1_PORT: u16 = 0x03F8;
+const UART_COM2_PORT: u16 = 0x02F8;
+const UART_PL011_BASE_QEMU: u64 = 0x09000000;
+
+const UART_LSR_DATA_READY: u8 = 1;
+const UART_LSR_THR_EMPTY: u8  = 32;
+
+struct UartPort {
+    base_addr: u64,
+    clock_hz: u32,
+    baud_rate: u32,
+    divisor: u16,
+    is_mmio_pl011: bool,
+    rx_buf: [byte; 256],
+    rx_head: uint,
+    rx_tail: uint,
+    tx_buf: [byte; 256],
+    tx_head: uint,
+    tx_tail: uint,
+}
+
+fn uart_calc_16550_divisor(clock_hz: u32, baud_rate: u32) -> u16 {
+    if baud_rate == 0 {
+        return 1;
+    }
+    let denom: u32 = baud_rate * 16;
+    if denom == 0 {
+        return 1;
+    }
+    let div: u32 = clock_hz / denom;
+    if div == 0 {
+        return 1;
+    }
+    return div as u16;
+}
+
+fn uart_init_16550(port: *mut UartPort, io_base: u16, baud_rate: u32) {
+    port.base_addr = io_base as u64;
+    port.clock_hz = 1843200;
+    port.baud_rate = baud_rate;
+    port.divisor = uart_calc_16550_divisor(1843200, baud_rate);
+    port.is_mmio_pl011 = false;
+    port.rx_head = 0;
+    port.rx_tail = 0;
+    port.tx_head = 0;
+    port.tx_tail = 0;
+}
+
+fn uart_init_pl011(port: *mut UartPort, mmio_base: u64, clock_hz: u32, baud_rate: u32) {
+    port.base_addr = mmio_base;
+    port.clock_hz = clock_hz;
+    port.baud_rate = baud_rate;
+    port.divisor = uart_calc_16550_divisor(clock_hz, baud_rate);
+    port.is_mmio_pl011 = true;
+    port.rx_head = 0;
+    port.rx_tail = 0;
+    port.tx_head = 0;
+    port.tx_tail = 0;
+}
+
+fn uart_tx_enqueue(port: *mut UartPort, ch: byte) -> bool {
+    let next: uint = (port.tx_tail + 1) & 255;
+    if next == port.tx_head {
+        return false;
+    }
+    port.tx_buf[port.tx_tail] = ch;
+    port.tx_tail = next;
+    return true;
+}
+
+fn uart_tx_write_str(port: *mut UartPort, s: *const byte) -> uint {
+    var i: uint = 0;
+    var written: uint = 0;
+    while s[i] != 0 {
+        if s[i] == 10 {
+            uart_tx_enqueue(port, 13);
+        }
+        if uart_tx_enqueue(port, s[i]) {
+            written = written + 1;
+        }
+        i = i + 1;
+    }
+    return written;
+}
+
+fn uart_tx_dequeue(port: *mut UartPort, out_ch: *mut byte) -> bool {
+    if port.tx_head == port.tx_tail {
+        return false;
+    }
+    out_ch[0] = port.tx_buf[port.tx_head];
+    port.tx_head = (port.tx_head + 1) & 255;
+    return true;
+}
+
+fn uart_rx_push(port: *mut UartPort, ch: byte) -> bool {
+    let next: uint = (port.rx_tail + 1) & 255;
+    if next == port.rx_head {
+        return false;
+    }
+    port.rx_buf[port.rx_tail] = ch;
+    port.rx_tail = next;
+    return true;
+}
+
+fn uart_rx_pop(port: *mut UartPort, out_ch: *mut byte) -> bool {
+    if port.rx_head == port.rx_tail {
+        return false;
+    }
+    out_ch[0] = port.rx_buf[port.rx_head];
+    port.rx_head = (port.rx_head + 1) & 255;
+    return true;
+}
+

@@ -1,0 +1,109 @@
+include "lib/core/types.rx";
+
+fn utf8_decode_rune(src: *const byte, len: uint, offset: uint, out_codepoint: *mut uint) -> uint {
+    if offset >= len {
+        return 0;
+    }
+
+    let b0: uint = (src[offset] as uint) & 0xFF;
+
+    if (b0 & 0x80) == 0 {
+        out_codepoint[0] = b0;
+        return 1;
+    }
+
+    if (b0 & 0xE0) == 0xC0 {
+        if (offset + 1) >= len { return 0; }
+        let b1: uint = (src[offset + 1] as uint) & 0xFF;
+        if (b1 & 0xC0) != 0x80 { return 0; }
+        out_codepoint[0] = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+        return 2;
+    }
+
+    if (b0 & 0xF0) == 0xE0 {
+        if (offset + 2) >= len { return 0; }
+        let b1: uint = (src[offset + 1] as uint) & 0xFF;
+        let b2: uint = (src[offset + 2] as uint) & 0xFF;
+        if (b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 { return 0; }
+        out_codepoint[0] = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+        return 3;
+    }
+
+    if (b0 & 0xF8) == 0xF0 {
+        if (offset + 3) >= len { return 0; }
+        let b1: uint = (src[offset + 1] as uint) & 0xFF;
+        let b2: uint = (src[offset + 2] as uint) & 0xFF;
+        let b3: uint = (src[offset + 3] as uint) & 0xFF;
+        if (b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 { return 0; }
+        out_codepoint[0] = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+        return 4;
+    }
+
+    return 0;
+}
+
+fn utf8_char_count(s: str) -> uint {
+    let ptr: *const byte = s as *const byte;
+    var len: uint = 0;
+    while ptr[len] != 0 as byte { len = len + 1; }
+
+    var count: uint = 0;
+    var offset: uint = 0;
+    var cp: [uint; 1];
+
+    while offset < len {
+        let consumed: uint = utf8_decode_rune(ptr, len, offset, &mut cp[0]);
+        if consumed == 0 {
+            offset = offset + 1;
+        } else {
+            offset = offset + consumed;
+        }
+        count = count + 1;
+    }
+
+    return count;
+}
+
+fn utf8_is_valid(s: str) -> bool {
+    let ptr: *const byte = s as *const byte;
+    var len: uint = 0;
+    while ptr[len] != 0 as byte { len = len + 1; }
+
+    var offset: uint = 0;
+    var cp: [uint; 1];
+
+    while offset < len {
+        let consumed: uint = utf8_decode_rune(ptr, len, offset, &mut cp[0]);
+        if consumed == 0 {
+            return false;
+        }
+        offset = offset + consumed;
+    }
+    return true;
+}
+
+fn utf8_encode_rune(codepoint: uint, out_buf: *mut byte) -> uint {
+    if codepoint <= 0x7F {
+        out_buf[0] = (codepoint & 0xFF) as byte;
+        return 1;
+    }
+    if codepoint <= 0x7FF {
+        out_buf[0] = (0xC0 | ((codepoint >> 6) & 0x1F)) as byte;
+        out_buf[1] = (0x80 | (codepoint & 0x3F)) as byte;
+        return 2;
+    }
+    if codepoint <= 0xFFFF {
+        out_buf[0] = (0xE0 | ((codepoint >> 12) & 0x0F)) as byte;
+        out_buf[1] = (0x80 | ((codepoint >> 6) & 0x3F)) as byte;
+        out_buf[2] = (0x80 | (codepoint & 0x3F)) as byte;
+        return 3;
+    }
+    if codepoint <= 0x10FFFF {
+        out_buf[0] = (0xF0 | ((codepoint >> 18) & 0x07)) as byte;
+        out_buf[1] = (0x80 | ((codepoint >> 12) & 0x3F)) as byte;
+        out_buf[2] = (0x80 | ((codepoint >> 6) & 0x3F)) as byte;
+        out_buf[3] = (0x80 | (codepoint & 0x3F)) as byte;
+        return 4;
+    }
+    return 0;
+}

@@ -1,0 +1,72 @@
+include "lib/core/types.rx";
+
+struct Point {
+    x: u64,
+    y: u64,
+}
+
+trait Measurable {
+    fn area(self: *mut Self) -> u64;
+}
+
+impl Measurable for Point {
+    fn area(self: *mut Point) -> u64 {
+        return self.x * self.y;
+    }
+}
+
+impl Point {
+    fn scale(self: *mut Point, factor: u64) -> u64 {
+        return (self.x + self.y) * factor;
+    }
+}
+
+fn compute_area<T: Measurable>(item: T) -> u64 {
+    var mut_item: T = item;
+    return Point::area(&mut mut_item);
+}
+
+fn test_trait_implementation() {
+    var pt: Point = Point { x: 4, y: 5 };
+    let a: u64 = Point::area(&mut pt);
+    if a != 20 {
+        println("[FAIL] Trait area calculation failed!");
+        sys_exit(1);
+    }
+    println("[PASS] Trait implementation & invocation OK");
+}
+
+fn test_inherent_impl_and_method_dispatch() {
+    var pt: Point = Point { x: 3, y: 7 };
+    let s1: u64 = Point::scale(&mut pt, 2);
+    if s1 != 20 {
+        println("[FAIL] Inherent static call failed!");
+        sys_exit(1);
+    }
+
+    let s2: u64 = pt.scale(2);
+    if s2 != 20 {
+        println("[FAIL] Method dispatch via dot syntax failed!");
+        sys_exit(1);
+    }
+    println("[PASS] Inherent impl & dot-syntax method dispatch OK");
+}
+
+fn test_trait_bounds() {
+    let pt: Point = Point { x: 6, y: 7 };
+    let a: u64 = compute_area<Point>(pt);
+    if a != 42 {
+        println("[FAIL] Generic function with trait bound returned wrong value!");
+        sys_exit(1);
+    }
+    println("[PASS] Generic function with Trait bounds OK");
+}
+
+fn main() -> int {
+    println("=== RUNNING TRAIT SYSTEM & DISPATCH SUITE ===");
+    test_trait_implementation();
+    test_inherent_impl_and_method_dispatch();
+    test_trait_bounds();
+    println("=== ALL TRAIT TESTS PASSED (SILICON CONFIRMED) ===");
+    return 0;
+}

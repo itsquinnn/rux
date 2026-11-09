@@ -1,0 +1,108 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/os/uses_substrate.rx";
+
+struct BinaryHeap {
+    buf: *mut uint,
+    len: uint,
+    cap: uint,
+}
+
+fn binary_heap_init(h: *mut BinaryHeap, initial_cap: uint) {
+    var cap: uint = initial_cap;
+    if cap < 16 { cap = 16; }
+    h.buf = uses_substrate_alloc(cap * 8) as *mut uint;
+    h.len = 0;
+    h.cap = cap;
+}
+
+fn binary_heap_grow(h: *mut BinaryHeap) {
+    let old_cap: uint = h.cap;
+    let new_cap: uint = old_cap * 2;
+    let new_buf: *mut uint = uses_substrate_alloc(new_cap * 8) as *mut uint;
+    var i: uint = 0;
+    while i < h.len {
+        new_buf[i] = h.buf[i];
+        i = i + 1;
+    }
+    uses_substrate_free(h.buf as *mut byte, old_cap * 8);
+    h.buf = new_buf;
+    h.cap = new_cap;
+}
+
+fn binary_heap_push(h: *mut BinaryHeap, val: uint) {
+    if h.len >= h.cap {
+        binary_heap_grow(h);
+    }
+    var idx: uint = h.len;
+    h.buf[idx] = val;
+    h.len = h.len + 1;
+    while idx > 0 {
+        let parent: uint = (idx - 1) / 2;
+        if h.buf[idx] > h.buf[parent] {
+            let tmp: uint = h.buf[idx];
+            h.buf[idx] = h.buf[parent];
+            h.buf[parent] = tmp;
+            idx = parent;
+        } else {
+            break;
+        }
+    }
+}
+
+fn binary_heap_pop(h: *mut BinaryHeap) -> Option {
+    if h.len == 0 {
+        return option_none();
+    }
+    let top_val: uint = h.buf[0];
+    h.len = h.len - 1;
+    if h.len > 0 {
+        h.buf[0] = h.buf[h.len];
+        var idx: uint = 0;
+        while true {
+            let left: uint = (idx * 2) + 1;
+            let right: uint = (idx * 2) + 2;
+            var largest: uint = idx;
+            if left < h.len && h.buf[left] > h.buf[largest] {
+                largest = left;
+            }
+            if right < h.len && h.buf[right] > h.buf[largest] {
+                largest = right;
+            }
+            if largest != idx {
+                let tmp: uint = h.buf[idx];
+                h.buf[idx] = h.buf[largest];
+                h.buf[largest] = tmp;
+                idx = largest;
+            } else {
+                break;
+            }
+        }
+    }
+    return option_some(top_val);
+}
+
+fn binary_heap_peek(h: *const BinaryHeap) -> Option {
+    if h.len == 0 {
+        return option_none();
+    }
+    return option_some(h.buf[0]);
+}
+
+fn binary_heap_len(h: *const BinaryHeap) -> uint {
+    return h.len;
+}
+
+fn binary_heap_is_empty(h: *const BinaryHeap) -> bool {
+    return h.len == 0;
+}
+
+fn binary_heap_free(h: *mut BinaryHeap) {
+    if (h.buf as uint) != 0 && h.cap > 0 {
+        uses_substrate_free(h.buf as *mut byte, h.cap * 8);
+        h.buf = 0 as *mut uint;
+        h.len = 0;
+        h.cap = 0;
+    }
+}
+

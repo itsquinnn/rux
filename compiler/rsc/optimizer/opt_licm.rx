@@ -1,0 +1,78 @@
+fn opt_collect_mutated_vars(stmts: *mut AstNode, mut_vars: *mut u64, mut_counts: *mut u32, cnt_ptr: *mut u32) {
+    var cur: *mut AstNode = stmts;
+    while cur != (0 as *mut AstNode) {
+        if (cur.kind == 106 && cur.child1 != (0 as *mut AstNode) && cur.child1.kind == 117) || cur.kind == 105 || cur.kind == 125 {
+            var vh: u64 = cur.hash;
+            if cur.kind == 106 { vh = cur.child1.hash; }
+            let n: u32 = *cnt_ptr;
+            var found: u32 = 0;
+            var i: u32 = 0;
+            while i < n {
+                if mut_vars[i as u64] == vh {
+                    mut_counts[i as u64] = mut_counts[i as u64] + 1;
+                    found = 1;
+                }
+                i = i + 1;
+            }
+            if found == 0 && n < 32 {
+                mut_vars[n as u64] = vh;
+                mut_counts[n as u64] = 1;
+                *cnt_ptr = n + 1;
+            }
+        }
+        if cur.kind == 107 {
+            opt_collect_mutated_vars(cur.child2, mut_vars, mut_counts, cnt_ptr);
+            opt_collect_mutated_vars(cur.child3, mut_vars, mut_counts, cnt_ptr);
+        } else if cur.kind == 108 {
+            opt_collect_mutated_vars(cur.child2, mut_vars, mut_counts, cnt_ptr);
+        } else if cur.kind == 125 {
+            opt_collect_mutated_vars(cur.child3, mut_vars, mut_counts, cnt_ptr);
+        }
+        cur = cur.next;
+    }
+}
+
+fn opt_expr_uses_any_var(n: *mut AstNode, vars: *mut u64, vcnt: u32) -> u32 {
+    var i: u32 = 0;
+    while i < vcnt {
+        if opt_expr_reads_var(n, vars[i as u64]) == 1 { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn opt_emit_licm_preheader(cg: *mut CodeGen, cond: *mut AstNode, body: *mut AstNode) {
+    if cg.has_lambdas != 0 || body == (0 as *mut AstNode) { return; }
+    var mut_vars: [u64; 32];
+    var mut_counts: [u32; 32];
+    var mut_cnt: u32 = 0;
+    opt_collect_mutated_vars(body, &mut mut_vars[0], &mut mut_counts[0], &mut mut_cnt);
+
+    var cur: *mut AstNode = body;
+    while cur != (0 as *mut AstNode) {
+        if cur.kind == 106 && cur.child1 != (0 as *mut AstNode) && cur.child1.kind == 117 {
+            let lh: u64 = cur.child1.hash;
+            let rhs: *mut AstNode = cur.child2;
+            if rhs != (0 as *mut AstNode) && rhs.kind == 106 && opt_is_pure_expr(rhs) == 1 && opt_expr_reads_var(cond, lh) == 0 {
+                if opt_expr_uses_any_var(rhs, &mut mut_vars[0], mut_cnt) == 0 {
+                    var m_times: u32 = 0;
+                    var mi: u32 = 0;
+                    while mi < mut_cnt {
+                        if mut_vars[mi as u64] == lh { m_times = mut_counts[mi as u64]; }
+                        mi = mi + 1;
+                    }
+                    if m_times == 1 {
+                        compile_stmt(cg, cur);
+                        cur.kind = 0;
+                    }
+                }
+            }
+            cur = cur.next;
+        } else if cur.kind == 0 {
+            cur = cur.next;
+        } else {
+            return;
+        }
+    }
+}
+

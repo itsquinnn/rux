@@ -1,0 +1,75 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/core/ops.rx";
+
+struct Range {
+    start: isize,
+    end: isize,
+    step: isize,
+}
+
+fn range_new(start: isize, end: isize) -> Range {
+    return Range {
+        start: start,
+        end: end,
+        step: 1,
+    };
+}
+
+fn range_stepped(start: isize, end: isize, step: isize) -> Range {
+    var actual_step: isize = step;
+    if actual_step == 0 {
+        actual_step = 1;
+    }
+    return Range {
+        start: start,
+        end: end,
+        step: actual_step,
+    };
+}
+
+fn range_len(r: *const Range) -> usize {
+    if r.step > 0 {
+        if r.end <= r.start { return 0; }
+        return ((r.end - r.start + r.step - 1) / r.step) as usize;
+    }
+    if r.start <= r.end { return 0; }
+    let pos_step: isize = -r.step;
+    return ((r.start - r.end + pos_step - 1) / pos_step) as usize;
+}
+
+struct RangeIterator {
+    current: isize,
+    end: isize,
+    step: isize,
+    done: bool,
+}
+
+fn range_iter(r: *const Range) -> RangeIterator {
+    return RangeIterator {
+        current: r.start,
+        end: r.end,
+        step: r.step,
+        done: false,
+    };
+}
+
+fn range_iter_next(it: *mut RangeIterator) -> Option<isize> {
+    if it.done {
+        return None<isize>();
+    }
+    if it.step > 0 {
+        if it.current >= it.end {
+            it.done = true;
+            return None<isize>();
+        }
+    } else {
+        if it.current <= it.end {
+            it.done = true;
+            return None<isize>();
+        }
+    }
+    let val: isize = it.current;
+    it.current = it.current + it.step;
+    return Some<isize>(val);
+}

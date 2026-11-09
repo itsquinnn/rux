@@ -1,0 +1,71 @@
+include "lib/core/types.rx";
+include "lib/core/memory.rx";
+include "lib/os/uses_substrate.rx";
+
+struct Allocator {
+    ctx: *mut byte,
+    alloc_fn: fn(ctx: *mut byte, size: uint) -> *mut byte,
+    free_fn: fn(ctx: *mut byte, ptr: *mut byte, size: uint),
+    total_allocated: uint,
+}
+
+fn allocator_alloc(a: *mut Allocator, size: uint) -> *mut byte {
+    let f = a.alloc_fn;
+    let ptr: *mut byte = f(a.ctx, size);
+    if (ptr as uint) != 0 {
+        a.total_allocated = a.total_allocated + size;
+    }
+    return ptr;
+}
+
+fn allocator_free(a: *mut Allocator, ptr: *mut byte, size: uint) {
+    let f = a.free_fn;
+    f(a.ctx, ptr, size);
+}
+
+fn arena_alloc_trampoline(ctx: *mut byte, size: uint) -> *mut byte {
+    let arena: *mut BumpArena = ctx as *mut BumpArena;
+    return arena_bump(arena, size);
+}
+
+fn arena_free_trampoline(ctx: *mut byte, ptr: *mut byte, size: uint) {
+}
+
+fn allocator_from_arena(arena: *mut BumpArena, out: *mut Allocator) {
+    out.ctx = arena as *mut byte;
+    out.alloc_fn = arena_alloc_trampoline;
+    out.free_fn = arena_free_trampoline;
+    out.total_allocated = 0;
+}
+
+fn slab_alloc_trampoline(ctx: *mut byte, size: uint) -> *mut byte {
+    let slab: *mut SlabAllocator = ctx as *mut SlabAllocator;
+    return slab_alloc(slab, size);
+}
+
+fn slab_free_trampoline(ctx: *mut byte, ptr: *mut byte, size: uint) {
+    let slab: *mut SlabAllocator = ctx as *mut SlabAllocator;
+    slab_free(slab, ptr, size);
+}
+
+fn allocator_from_slab(slab: *mut SlabAllocator, out: *mut Allocator) {
+    out.ctx = slab as *mut byte;
+    out.alloc_fn = slab_alloc_trampoline;
+    out.free_fn = slab_free_trampoline;
+    out.total_allocated = 0;
+}
+
+fn substrate_alloc_trampoline(ctx: *mut byte, size: uint) -> *mut byte {
+    return uses_substrate_alloc(size) as *mut byte;
+}
+
+fn substrate_free_trampoline(ctx: *mut byte, ptr: *mut byte, size: uint) {
+    uses_substrate_free(ptr as *mut u8, size);
+}
+
+fn allocator_from_substrate(out: *mut Allocator) {
+    out.ctx = 0 as *mut byte;
+    out.alloc_fn = substrate_alloc_trampoline;
+    out.free_fn = substrate_free_trampoline;
+    out.total_allocated = 0;
+}

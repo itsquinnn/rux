@@ -1,0 +1,93 @@
+fn opt_ssa_subst_const_expr(n: *mut AstNode, vh: u64, cval: u64) {
+    if n == (0 as *mut AstNode) { return; }
+    if n.kind == 117 && n.hash == vh {
+        n.kind = 116;
+        n.val = cval;
+        n.hash = 0;
+        return;
+    }
+    if n.kind == 106 || n.kind == 131 || n.kind == 120 || n.kind == 124 {
+        opt_ssa_subst_const_expr(n.child1, vh, cval);
+        opt_ssa_subst_const_expr(n.child2, vh, cval);
+        opt_ssa_subst_const_expr(n.child3, vh, cval);
+    } else if n.kind == 113 {
+        var a: *mut AstNode = n.child2;
+        while a != (0 as *mut AstNode) {
+            opt_ssa_subst_const_expr(a, vh, cval);
+            a = a.next;
+        }
+    }
+}
+
+fn opt_ast_ever_mutates_or_addrs(n: *mut AstNode, vh: u64) -> u32 {
+    if n == (0 as *mut AstNode) { return 0; }
+    if n.kind == 113 && n.hash == hash_identifier("eval", 4) { return 1; }
+    if n.kind == 106 && n.child1 != (0 as *mut AstNode) && opt_expr_reads_var(n.child1, vh) == 1 { return 1; }
+    if n.kind == 112 && opt_expr_reads_var(n.child1, vh) == 1 { return 1; }
+    if n.kind == 105 {
+        if n.hash == vh { return 1; }
+        if opt_ast_ever_mutates_or_addrs(n.child1, vh) == 1 { return 1; }
+        if opt_ast_ever_mutates_or_addrs(n.next, vh) == 1 { return 1; }
+        return 0;
+    }
+    if n.kind == 125 && n.hash == vh { return 1; }
+    if opt_ast_ever_mutates_or_addrs(n.child1, vh) == 1 { return 1; }
+    if opt_ast_ever_mutates_or_addrs(n.child2, vh) == 1 { return 1; }
+    if (n.kind == 107 || n.kind == 124 || n.kind == 125 || n.kind == 121) && opt_ast_ever_mutates_or_addrs(n.child3, vh) == 1 { return 1; }
+    if opt_ast_ever_mutates_or_addrs(n.next, vh) == 1 { return 1; }
+    return 0;
+}
+
+fn opt_run_ir_pipeline(cg: *mut CodeGen, fnode: *mut AstNode) {
+    if fnode == (0 as *mut AstNode) { return; }
+    if cg.skip_ir_opt == 1 { return; }
+    let p: *mut Parser = cg.parser as *mut Parser;
+    let stmts: *mut AstNode = fnode.child1;
+
+    var cur: *mut AstNode = stmts;
+    while cur != (0 as *mut AstNode) {
+        if cur.kind == 105 || cur.kind == 109 || cur.kind == 110 {
+            opt_inline_expr(p, fnode.hash, cur.child1);
+        } else if cur.kind == 106 {
+            opt_inline_expr(p, fnode.hash, cur.child2);
+        } else if cur.kind == 108 {
+            var ws: *mut AstNode = cur.child2;
+            while ws != (0 as *mut AstNode) {
+                if ws.kind == 106 { opt_inline_expr(p, fnode.hash, ws.child2); }
+                ws = ws.next;
+            }
+        }
+        cur = cur.next;
+    }
+
+    opt_optimize_stmt_list(stmts);
+
+    if cg.has_lambdas == 0 {
+        var s_cur: *mut AstNode = stmts;
+        while s_cur != (0 as *mut AstNode) {
+            if s_cur.kind == 105 && s_cur.id == 0 && s_cur.is_mut == 0 && s_cur.child1 != (0 as *mut AstNode) {
+                if s_cur.child1.kind == 116 {
+                    let vh: u64 = s_cur.hash;
+                    let cval: u64 = s_cur.child1.val;
+                    if opt_ast_ever_mutates_or_addrs(s_cur.next, vh) == 0 {
+                        var d_cur: *mut AstNode = s_cur.next;
+                        while d_cur != (0 as *mut AstNode) {
+                            if d_cur.kind == 105 || d_cur.kind == 109 {
+                                opt_ssa_subst_const_expr(d_cur.child1, vh, cval);
+                                opt_simplify_expr(d_cur.child1);
+                            } else if d_cur.kind == 106 {
+                                opt_ssa_subst_const_expr(d_cur.child2, vh, cval);
+                                opt_simplify_expr(d_cur.child2);
+                            }
+                            d_cur = d_cur.next;
+                        }
+                    }
+                }
+            }
+            s_cur = s_cur.next;
+        }
+        opt_cse_stmt_list(stmts);
+        opt_dce_stmt_list(stmts);
+    }
+}
+

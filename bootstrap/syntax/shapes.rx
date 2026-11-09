@@ -1,0 +1,70 @@
+include "bootstrap/syntax/statements.rx";
+
+struct ShapeField {
+    name_hash: uint,
+    type_hash: uint,
+    byte_offset: uint,
+    field_size: uint,
+}
+
+struct ShapeContract {
+    name_hash: uint,
+    field_count: uint,
+    total_size: uint,
+    fields: [ShapeField; 16],
+}
+
+fn calculate_shape_offsets(target_shape: *mut ShapeContract) {
+    var current_offset: uint = 0;
+    var i: uint = 0;
+
+    while i < target_shape.field_count {
+        target_shape.fields[i].byte_offset = current_offset;
+        let field_bytes: uint = target_shape.fields[i].field_size;
+        current_offset = current_offset + field_bytes;
+        i = i + 1;
+    }
+
+    target_shape.total_size = ((current_offset + 7) / 8) * 8;
+}
+
+fn parse_shape_declaration(p: *mut ParserState, out_contract: *mut ShapeContract) -> *mut AstNode {
+    expect_token(p, TOKEN_SHAPE);
+
+    let shape_node: *mut AstNode = create_node(p, NODE_SHAPE);
+    shape_node.name_hash = p.current_token.name_hash;
+    expect_token(p, TOKEN_IDENT);
+    expect_token(p, TOKEN_LBRACE);
+
+    out_contract.name_hash = shape_node.name_hash;
+    out_contract.field_count = 0;
+
+    while p.current_token.kind != TOKEN_RBRACE && p.current_token.kind != TOKEN_EOF {
+        if p.current_token.kind == TOKEN_IDENT {
+            let field_name_hash: uint = p.current_token.name_hash;
+            scan_next_token(p.reader, &mut p.current_token);
+            expect_token(p, TOKEN_COLON);
+
+            let field_type_kind: uint = p.current_token.kind;
+            scan_next_token(p.reader, &mut p.current_token);
+
+            let idx: uint = out_contract.field_count;
+            if idx < 16 {
+                out_contract.fields[idx].name_hash = field_name_hash;
+                out_contract.fields[idx].type_hash = field_type_kind;
+                out_contract.fields[idx].field_size = 8;
+                out_contract.field_count = idx + 1;
+            }
+
+            if p.current_token.kind == TOKEN_SEMICOLON || p.current_token.kind == TOKEN_COMMA {
+                scan_next_token(p.reader, &mut p.current_token);
+            }
+        } else {
+            scan_next_token(p.reader, &mut p.current_token);
+        }
+    }
+
+    expect_token(p, TOKEN_RBRACE);
+    calculate_shape_offsets(out_contract);
+    return shape_node;
+}

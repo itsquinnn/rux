@@ -1,0 +1,109 @@
+include "lib/core/types.rx";
+
+const SYSLOG_EMERG: u8   = 0;
+const SYSLOG_ERR: u8     = 3;
+const SYSLOG_WARNING: u8 = 4;
+const SYSLOG_INFO: u8    = 6;
+
+struct ShellPipelineCmd {
+    argc: uint,
+    arg_offsets: [uint; 16],
+    pipe_stages: uint,
+    has_redirect_out: bool,
+    background: bool,
+}
+
+struct SyslogRecord {
+    timestamp_sec: u64,
+    severity: u8,
+    facility: u8,
+    msg_hash: uint,
+}
+
+struct SyslogRing {
+    records: [SyslogRecord; 64],
+    write_idx: uint,
+    total_logged: u64,
+}
+
+struct CronRule {
+    minute: int,
+    hour: int,
+    day_of_month: int,
+    month: int,
+    day_of_week: int,
+}
+
+fn shell_parse_line(line: *const byte, out: *mut ShellPipelineCmd) -> uint {
+    out.argc = 0;
+    out.pipe_stages = 1;
+    out.has_redirect_out = false;
+    out.background = false;
+
+    var i: uint = 0;
+    var in_word: bool = false;
+    while line[i] != 0 {
+        let ch: byte = line[i];
+        if ch == 32 || ch == 9 || ch == 10 {
+            in_word = false;
+        } else if ch == 124 {
+            out.pipe_stages = out.pipe_stages + 1;
+            in_word = false;
+        } else if ch == 62 {
+            out.has_redirect_out = true;
+            in_word = false;
+        } else if ch == 38 {
+            out.background = true;
+            in_word = false;
+        } else {
+            if !in_word && out.argc < 16 {
+                out.arg_offsets[out.argc] = i;
+                out.argc = out.argc + 1;
+                in_word = true;
+            }
+        }
+        i = i + 1;
+    }
+    return out.argc;
+}
+
+fn coreutil_grep_contains(haystack: *const byte, needle: *const byte) -> bool {
+    if needle[0] == 0 { return true; }
+    var i: uint = 0;
+    while haystack[i] != 0 {
+        var j: uint = 0;
+        while needle[j] != 0 && haystack[i + j] == needle[j] {
+            j = j + 1;
+        }
+        if needle[j] == 0 {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn syslog_init(ring: *mut SyslogRing) {
+    ring.write_idx = 0;
+    ring.total_logged = 0;
+}
+
+fn syslog_emit(ring: *mut SyslogRing, ts: u64, severity: u8, facility: u8, msg_hash: uint) {
+    let slot: uint = ring.write_idx & 63;
+    ring.records[slot].timestamp_sec = ts;
+    ring.records[slot].severity = severity;
+    ring.records[slot].facility = facility;
+    ring.records[slot].msg_hash = msg_hash;
+    ring.write_idx = ring.write_idx + 1;
+    ring.total_logged = ring.total_logged + 1;
+}
+
+fn cron_matches(rule: *const CronRule, min: int, hr: int, dom: int, mon: int, dow: int) -> bool {
+    if rule.minute >= 0 && rule.minute != min { return false; }
+    if rule.hour >= 0 && rule.hour != hr { return false; }
+    if rule.day_of_month >= 0 && rule.day_of_month != dom { return false; }
+    if rule.month >= 0 && rule.month != mon { return false; }
+    if rule.day_of_week >= 0 && rule.day_of_week != dow { return false; }
+    return true;
+}
+

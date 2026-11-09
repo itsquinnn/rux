@@ -1,0 +1,66 @@
+include "lib/core/types.rx";
+
+const NS_CLONE_NEWNS: u32   = 0x00020000;
+const NS_CLONE_NEWUTS: u32  = 0x04000000;
+const NS_CLONE_NEWIPC: u32  = 0x08000000;
+const NS_CLONE_NEWUSER: u32 = 0x10000000;
+const NS_CLONE_NEWPID: u32  = 0x20000000;
+const NS_CLONE_NEWNET: u32  = 0x40000000;
+
+const OCI_STATE_CREATING: u8 = 0;
+const OCI_STATE_CREATED: u8  = 1;
+const OCI_STATE_RUNNING: u8  = 2;
+const OCI_STATE_STOPPED: u8  = 3;
+
+struct CgroupV2Limits {
+    cpu_quota_us: u64,
+    cpu_period_us: u64,
+    memory_max_bytes: u64,
+    pids_max: u32,
+}
+
+struct OciContainer {
+    id_hash: uint,
+    state: u8,
+    ns_flags: u32,
+    init_pid: uint,
+    exit_code: int,
+    rootfs_layers: uint,
+    limits: CgroupV2Limits,
+}
+
+fn oci_container_create(c: *mut OciContainer, id_hash: uint, mem_max: u64, cpu_quota_us: u64, layers: uint) {
+    c.id_hash = id_hash;
+    c.state = OCI_STATE_CREATED;
+    c.ns_flags = NS_CLONE_NEWNS | NS_CLONE_NEWUTS | NS_CLONE_NEWIPC | NS_CLONE_NEWPID | NS_CLONE_NEWNET;
+    c.init_pid = 0;
+    c.exit_code = 0;
+    c.rootfs_layers = layers;
+    c.limits.cpu_quota_us = cpu_quota_us;
+    c.limits.cpu_period_us = 100000;
+    c.limits.memory_max_bytes = mem_max;
+    c.limits.pids_max = 512;
+}
+
+fn oci_container_start(c: *mut OciContainer, host_pid: uint) -> bool {
+    if c.state != OCI_STATE_CREATED {
+        return false;
+    }
+    c.init_pid = host_pid;
+    c.state = OCI_STATE_RUNNING;
+    return true;
+}
+
+fn oci_container_kill(c: *mut OciContainer, exit_code: int) -> bool {
+    if c.state != OCI_STATE_RUNNING {
+        return false;
+    }
+    c.exit_code = exit_code;
+    c.state = OCI_STATE_STOPPED;
+    return true;
+}
+
+fn cgroup_check_mem_charge(c: *const OciContainer, current_bytes: u64, alloc_bytes: u64) -> bool {
+    return (current_bytes + alloc_bytes) <= c.limits.memory_max_bytes;
+}
+

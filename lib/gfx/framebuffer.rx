@@ -1,0 +1,109 @@
+include "lib/core/types.rx";
+
+struct GfxSurface {
+    pixels: *mut u32,
+    width: uint,
+    height: uint,
+    pitch_pixels: uint,
+}
+
+fn gfx_pack_argb(a: u8, r: u8, g: u8, b: u8) -> u32 {
+    return ((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32);
+}
+
+fn gfx_blend_argb(dst: u32, src: u32) -> u32 {
+    let sa: u32 = (src >> 24) & 255;
+    if sa == 255 { return src; }
+    if sa == 0 { return dst; }
+    let inv_a: u32 = 255 - sa;
+
+    let sr: u32 = (src >> 16) & 255;
+    let sg: u32 = (src >> 8) & 255;
+    let sb: u32 = src & 255;
+
+    let dr: u32 = (dst >> 16) & 255;
+    let dg: u32 = (dst >> 8) & 255;
+    let db: u32 = dst & 255;
+
+    let out_r: u32 = (sr * sa + dr * inv_a) / 255;
+    let out_g: u32 = (sg * sa + dg * inv_a) / 255;
+    let out_b: u32 = (sb * sa + db * inv_a) / 255;
+    return (255 << 24) | ((out_r & 255) << 16) | ((out_g & 255) << 8) | (out_b & 255);
+}
+
+fn gfx_put_pixel(surf: *mut GfxSurface, x: int, y: int, argb: u32) {
+    if x < 0 || y < 0 { return; }
+    let ux: uint = x as uint;
+    let uy: uint = y as uint;
+    if ux >= surf.width || uy >= surf.height { return; }
+    let idx: uint = uy * surf.pitch_pixels + ux;
+    surf.pixels[idx] = gfx_blend_argb(surf.pixels[idx], argb);
+}
+
+fn gfx_fill_rect(surf: *mut GfxSurface, rx: int, ry: int, rw: int, rh: int, argb: u32) {
+    var y: int = ry;
+    while y < (ry + rh) {
+        var x: int = rx;
+        while x < (rx + rw) {
+            gfx_put_pixel(surf, x, y, argb);
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+fn gfx_draw_line(surf: *mut GfxSurface, x0: int, y0: int, x1: int, y1: int, argb: u32) {
+    var cx: int = x0;
+    var cy: int = y0;
+    var dx: int = x1 - x0;
+    if dx < 0 { dx = 0 - dx; }
+    var sx: int = 1;
+    if x0 >= x1 { sx = -1; }
+    var dy: int = y1 - y0;
+    if dy > 0 { dy = 0 - dy; }
+    var sy: int = 1;
+    if y0 >= y1 { sy = -1; }
+    var err: int = dx + dy;
+
+    var guard: uint = 0;
+    while guard < 8192 {
+        gfx_put_pixel(surf, cx, cy, argb);
+        if cx == x1 && cy == y1 {
+            return;
+        }
+        let e2: int = err * 2;
+        if e2 >= dy {
+            err = err + dy;
+            cx = cx + sx;
+        }
+        if e2 <= dx {
+            err = err + dx;
+            cy = cy + sy;
+        }
+        guard = guard + 1;
+    }
+}
+
+fn gfx_draw_circle(surf: *mut GfxSurface, cx: int, cy: int, radius: int, argb: u32) {
+    var x: int = radius;
+    var y: int = 0;
+    var err: int = 1 - radius;
+    while x >= y {
+        gfx_put_pixel(surf, cx + x, cy + y, argb);
+        gfx_put_pixel(surf, cx + y, cy + x, argb);
+        gfx_put_pixel(surf, cx - y, cy + x, argb);
+        gfx_put_pixel(surf, cx - x, cy + y, argb);
+        gfx_put_pixel(surf, cx - x, cy - y, argb);
+        gfx_put_pixel(surf, cx - y, cy - x, argb);
+        gfx_put_pixel(surf, cx + y, cy - x, argb);
+        gfx_put_pixel(surf, cx + x, cy - y, argb);
+        y = y + 1;
+        if err < 0 {
+            err = err + (2 * y) + 1;
+        } else {
+            x = x - 1;
+            err = err + (2 * (y - x)) + 1;
+        }
+    }
+}
+

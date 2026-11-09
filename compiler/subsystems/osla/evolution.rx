@@ -1,0 +1,23 @@
+struct HebbianCircuit {
+    transit_count: uint,
+    reinforcement_level: uint,
+}
+
+struct PunctuatedDispatch {
+    kernel_id: uint,
+    stability_generation: uint,
+    is_crystallized: bool,
+}
+
+fn osla_hebbian_record_transit(circuit: *mut HebbianCircuit) -> uint {
+    circuit.transit_count = circuit.transit_count + 1;
+    circuit.reinforcement_level = circuit.reinforcement_level + 1;
+    return circuit.reinforcement_level;
+}
+
+fn osla_punctuated_dispatch_resolve(pd: *mut PunctuatedDispatch) -> uint {
+    if pd.stability_generation > 100 {
+        pd.is_crystallized = true;
+    }
+    return pd.kernel_id;
+}

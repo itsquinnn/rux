@@ -1,0 +1,304 @@
+include "lib/core/variadic.rx";
+include "lib/core/future.rx";
+include "lib/core/generator.rx";
+include "lib/sync/taskgroup.rx";
+include "lib/core/effect.rx";
+include "lib/core/reflect.rx";
+
+effect Network;
+
+struct UserProfile {
+    id: i64,
+    age: i64,
+    active: i64,
+}
+
+fn add_ints(a: i32, b: i32) -> i32 {
+    return a + b;
+}
+
+pub fn greet_user(name: *u8) -> i64 {
+    return 42;
+}
+
+fn factorial(n: i64) -> i64 {
+    if n <= 1 {
+        return 1;
+    }
+    return n * factorial(n - 1);
+}
+
+fn pass_by_value(x: i64) -> i64 {
+    return x * 2;
+}
+
+fn pass_by_immut_borrow(u: *const UserProfile) -> i64 {
+    return u.age;
+}
+
+fn pass_by_mut_borrow(u: *mut UserProfile, new_age: i64) {
+    u.age = new_age;
+}
+
+fn connect_host(host: *u8) -> i64 {
+    return connect_host_port(host, 8080);
+}
+
+fn connect_host_port(host: *u8, port: i64) -> i64 {
+    return port;
+}
+
+fn make_user(id: i64, age: i64, active: i64) -> UserProfile {
+    var u: UserProfile;
+    u.id = id;
+    u.age = age;
+    u.active = active;
+    return u;
+}
+
+fn test_overload_process_int(val: i32) -> i64 {
+    return (val as i64) * 10;
+}
+
+fn test_overload_process_str(s: *u8) -> i64 {
+    return 999;
+}
+
+fn sum_numbers(v0: i32, v1: i32, v2: i32, v3: i32) -> i32 {
+    return v0 + v1 + v2 + v3;
+}
+
+const fn const_square(x: i64) -> i64 {
+    return x * x;
+}
+
+const CONST_COMPUTED: i64 = const_square(7);
+
+unsafe fn unsafe_raw_read(ptr: *const i64) -> i64 {
+    return ptr[0];
+}
+
+@inline fn inlined_calc(a: i64, b: i64) -> i64 {
+    return a + b;
+}
+
+@noinline fn non_inlined_calc(a: i64, b: i64) -> i64 {
+    return a * b;
+}
+
+@cold fn cold_handler() -> i64 {
+    return -1;
+}
+
+fn tail_recursive_sum(n: i64, acc: i64) -> i64 {
+    if n <= 0 {
+        return acc;
+    }
+    return tail_recursive_sum(n - 1, acc + n);
+}
+
+fn async_step_poll(data: *mut u8) -> Poll {
+    let counter_ptr: *mut i64 = data as *mut i64;
+    counter_ptr[0] = counter_ptr[0] + 1;
+    if counter_ptr[0] >= 3 {
+        return future_ready(42);
+    }
+    return future_pending();
+}
+
+fn generator_step_numbers(g: *mut GeneratorState) -> i64 {
+    if g.state == 0 {
+        return generator_yield(g, 10, 1);
+    }
+    if g.state == 1 {
+        return generator_yield(g, 20, 2);
+    }
+    if g.state == 2 {
+        return generator_yield(g, 30, 3);
+    }
+    return generator_finish(g);
+}
+
+extern "C" {
+    fn mock_c_strlen(s: *const u8) -> usize;
+}
+
+fn pipe_step1(x: i64) -> i64 {
+    return x + 10;
+}
+
+fn pipe_step2(x: i64) -> i64 {
+    return x * 2;
+}
+
+fn pipe_step3(x: i64) -> i64 {
+    return x - 5;
+}
+
+fn test_defer_scope(flag_ptr: *mut i64) -> i64 {
+    defer flag_ptr[0] = 999;
+    return 123;
+}
+
+fn fetch_remote_user(uid: i64) -> i64 !{Network} {
+    return uid * 100;
+}
+
+fn main() {
+    let r1: i32 = add_ints(10, 20);
+    if r1 != 30 {
+        println("[FAIL] Decisions 161-163 typed function declaration");
+        sys_exit(1);
+    }
+    if greet_user("rux") != 42 {
+        println("[FAIL] Decisions 161-163 pub function");
+        sys_exit(1);
+    }
+    if factorial(5) != 120 {
+        println("[FAIL] Decisions 161-163 recursion");
+        sys_exit(1);
+    }
+
+    let ov_int: i64 = test_overload_process_int(100);
+    let ov_str: i64 = test_overload_process_str("hello");
+    if ov_int != 1000 || ov_str != 999 {
+        println("[FAIL] Decisions 161-163 function overloading");
+        sys_exit(1);
+    }
+
+    var user: UserProfile = make_user(1, 25, 1);
+    if pass_by_value(user.age) != 50 {
+        println("[FAIL] Decisions 164-166 pass by value");
+        sys_exit(1);
+    }
+    if pass_by_immut_borrow(&user) != 25 {
+        println("[FAIL] Decisions 164-166 immutable borrow");
+        sys_exit(1);
+    }
+    pass_by_mut_borrow(&mut user, 30);
+    if user.age != 30 {
+        println("[FAIL] Decisions 164-166 mutable borrow");
+        sys_exit(1);
+    }
+
+    let nu1: UserProfile = make_user(id: 2, age: 28, active: 1);
+    if nu1.id != 2 || nu1.age != 28 {
+        println("[FAIL] Decisions 164-166 named arguments");
+        sys_exit(1);
+    }
+    let nu2: UserProfile = make_user(3, age: 35, active: 0);
+    if nu2.id != 3 || nu2.age != 35 {
+        println("[FAIL] Decisions 164-166 mixed positional and named arguments");
+        sys_exit(1);
+    }
+
+    if connect_host("localhost") != 8080 {
+        println("[FAIL] Decisions 164-166 overload wrappers");
+        sys_exit(1);
+    }
+
+    var var_arr: [i64; 4];
+    var_arr[0] = 5;
+    var_arr[1] = 10;
+    var_arr[2] = 15;
+    var_arr[3] = 20;
+    let vs: VariadicSlice = variadic_from_raw(&var_arr[0], 4);
+    if variadic_len(&vs) != 4 || variadic_get(&vs, 2) != 15 || variadic_sum_i64(&vs) != 50 {
+        println("[FAIL] Decision 169 variadic functions");
+        sys_exit(1);
+    }
+
+    var async_counter: i64 = 0;
+    var task: FutureTask;
+    future_init(&mut task, async_step_poll as *mut u8, (&mut async_counter) as *mut u8);
+    let async_res: i64 = future_block_on(&mut task);
+    if async_res != 42 || async_counter != 3 {
+        println("[FAIL] Decisions 170-171 async/future execution");
+        sys_exit(1);
+    }
+
+    var tg: TaskGroup;
+    taskgroup_init(&mut tg);
+    var async_c1: i64 = 0;
+    var async_c2: i64 = 0;
+    let t1: *mut TaskHandle = taskgroup_spawn(&mut tg, async_step_poll as *mut u8, (&mut async_c1) as *mut u8);
+    let t2: *mut TaskHandle = taskgroup_spawn(&mut tg, async_step_poll as *mut u8, (&mut async_c2) as *mut u8);
+    let r_t1: i64 = task_handle_join(t1);
+    let r_t2: i64 = task_handle_join(t2);
+    if r_t1 != 42 || r_t2 != 42 || taskgroup_join_all(&mut tg) != 84 {
+        println("[FAIL] Decisions 170-171 structured concurrency taskgroup");
+        sys_exit(1);
+    }
+
+    var gen_state: GeneratorState;
+    generator_init(&mut gen_state, generator_step_numbers as *mut u8, 0 as *mut u8);
+    let g1: i64 = generator_next(&mut gen_state);
+    let g2: i64 = generator_next(&mut gen_state);
+    let g3: i64 = generator_next(&mut gen_state);
+    let g4: i64 = generator_next(&mut gen_state);
+    if g1 != 10 || g2 != 20 || g3 != 30 || g4 != 0 || generator_is_done(&gen_state) == false {
+        println("[FAIL] Decision 172 lazy generator functions");
+        sys_exit(1);
+    }
+
+    if CONST_COMPUTED != 49 {
+        println("[FAIL] Decision 173 compile-time const fn");
+        sys_exit(1);
+    }
+
+    let fn_ptr: fn(i64) -> i64 = pass_by_value;
+    if fn_ptr(21) != 42 {
+        println("[FAIL] Decisions 174-175 callable function pointer");
+        sys_exit(1);
+    }
+
+    let raw_val: i64 = 777;
+    var unsafe_res: i64 = 0;
+    unsafe {
+        unsafe_res = unsafe_raw_read(&raw_val);
+    }
+    if unsafe_res != 777 {
+        println("[FAIL] Decisions 176-177 explicit unsafe boundary");
+        sys_exit(1);
+    }
+
+    var eff_ctx: EffectContext;
+    effect_context_init(&mut eff_ctx, 1);
+    let has_net: bool = effect_is_permitted(&eff_ctx, 1);
+    let remote_data: i64 = fetch_remote_user(5);
+    if has_net == false || remote_data != 500 {
+        println("[FAIL] Decisions 178-179 function effects");
+        sys_exit(1);
+    }
+
+    if inlined_calc(15, 25) != 40 || non_inlined_calc(6, 7) != 42 || cold_handler() != -1 {
+        println("[FAIL] Decisions 180-181 optimization attributes");
+        sys_exit(1);
+    }
+
+    if tail_recursive_sum(100, 0) != 5050 {
+        println("[FAIL] Decisions 180-181 tail call optimization");
+        sys_exit(1);
+    }
+
+    var cleanup_flag: i64 = 0;
+    let def_ret: i64 = test_defer_scope(&mut cleanup_flag);
+    if def_ret != 123 || cleanup_flag != 999 {
+        println("[FAIL] Decisions 182-183 scoped cleanup defer");
+        sys_exit(1);
+    }
+
+    let fn_meta: FnReflectInfo = fn_reflect_query(12345, 2, 5563585020063213298, true, false);
+    if fn_meta.param_count != 2 || fn_meta.is_async == false || fn_meta.is_unsafe == true {
+        println("[FAIL] Decisions 182-183 function reflection");
+        sys_exit(1);
+    }
+
+    let piped_res: i64 = 5 |> pipe_step1 |> pipe_step2 |> pipe_step3;
+    if piped_res != 25 {
+        println("[FAIL] Decisions 184-185 pipeline operator");
+        sys_exit(1);
+    }
+
+    println("Rux Step 3 Functions (Decisions 161-190) Master Specification 100% Verified!");
+}

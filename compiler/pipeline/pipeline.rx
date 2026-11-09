@@ -1,0 +1,315 @@
+include "compiler/pipeline/options.rx";
+include "compiler/pipeline/diagnostics.rx";
+include "bootstrap/memory/allocator.rx";
+include "bootstrap/syntax/parser.rx";
+include "bootstrap/types/checker.rx";
+include "bootstrap/emitter/codegen.rx";
+include "bootstrap/binary/writer.rx";
+include "compiler/pipeline/preprocessor.rx";
+
+include "compiler/subsystems/eia/header.rx";
+include "compiler/subsystems/eia/contracts.rx";
+include "compiler/subsystems/ccns/cap.rx";
+include "compiler/subsystems/hsns/streamer.rx";
+include "compiler/subsystems/lcvs/vitrify.rx";
+include "compiler/subsystems/lnga/channel.rx";
+include "compiler/subsystems/osla/codon.rx";
+include "compiler/subsystems/rse/plate.rx";
+include "compiler/subsystems/saes/patcher.rx";
+include "compiler/subsystems/tspa/ledger.rx";
+include "compiler/subsystems/uses/ip_hee.rx";
+include "compiler/subsystems/zwns/arena.rx";
+include "compiler/subsystems/zwns/freestanding.rx";
+
+enum PipelineStatus {
+    SUCCESS = 0,
+    SOURCE_READ_FAILED = 1,
+    SYNTAX_ERROR = 2,
+    TYPE_CHECK_FAILED = 3,
+    CAPABILITY_FAULT = 4,
+    SYNTHESIS_FAILED = 5,
+    HOLOGRAM_SEAL_FAILED = 6,
+    EMISSION_FAILED = 7,
+}
+
+struct PipelineContext {
+    opts: CompilerOptions,
+    telemetry: PipelineTelemetry,
+    source_buffer: *mut byte,
+    source_len: uint,
+    output_buffer: *mut byte,
+    output_len: uint,
+    exit_code: int,
+}
+
+fn pipeline_init(opts: CompilerOptions) -> PipelineContext {
+    return PipelineContext {
+        opts: opts,
+        telemetry: telemetry_init(),
+        source_buffer: 0 as *mut byte,
+        source_len: 0,
+        output_buffer: 0 as *mut byte,
+        output_len: 0,
+        exit_code: 0,
+    };
+}
+
+fn pipeline_alloc_mmap(bytes: uint) -> *mut byte {
+    let aligned: uint = ((bytes + 4095) / 4096) * 4096;
+    return @os.mmap(0, aligned, 7, 34, 0 - 1, 0) as *mut byte;
+}
+
+fn pipeline_free_mmap(ptr: *mut byte, bytes: uint) {
+    if (ptr as int) > 0 {
+        let aligned: uint = ((bytes + 4095) / 4096) * 4096;
+        @os.munmap(ptr as uint, aligned);
+    }
+}
+
+fn pipeline_cleanup(sb: *mut byte, eb: *mut byte, ps: *mut byte, ab: *mut byte, mb: *mut byte) {
+    pipeline_free_mmap(sb, 524288);
+    pipeline_free_mmap(eb, 1048576);
+    pipeline_free_mmap(ps, 65536);
+    pipeline_free_mmap(ab, 2097152);
+    pipeline_free_mmap(mb, 65536);
+}
+
+fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
+    let t0: uint = @silicon.rdtsc();
+
+    let source_buffer: *mut byte = pipeline_alloc_mmap(524288);
+    let expanded_buffer: *mut byte = pipeline_alloc_mmap(1048576);
+    let plate_storage: *mut byte = pipeline_alloc_mmap(65536);
+    let arena_buffer: *mut byte = pipeline_alloc_mmap(2097152);
+    let machine_code_buffer: *mut byte = pipeline_alloc_mmap(65536);
+
+    var spike_storage: [SynapticSpike; 32];
+    var event_bus: SpikeChannel;
+    lnga_channel_init(&mut event_bus, &mut spike_storage[0], 32);
+    lnga_dispatch_spike(&mut event_bus, 1, 0x1000);
+
+    if ctx.opts.is_verbose {
+        @terminal.print_line("[ruxc] Stage 1: Loading source unit into memory (CCNS guarded)...");
+    }
+
+    var bytes_read: int = 0;
+
+    if ctx.source_buffer != (0 as *mut byte) && ctx.source_len > 0 {
+        bytes_read = ctx.source_len as int;
+    } else {
+        let fd: int = @os.open(ctx.opts.input_path as *byte, 0, 0);
+        if fd < 0 {
+            report_diagnostic(
+                Severity.FATAL,
+                ctx.opts.input_path,
+                0,
+                0,
+                "Failed to open source file for compilation"
+            );
+            lnga_dispatch_spike(&mut event_bus, 1, 0xE001);
+            pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+            return PipelineStatus.SOURCE_READ_FAILED;
+        }
+
+        bytes_read = @os.read(fd, source_buffer, 524288);
+        @os.close(fd);
+
+        if bytes_read <= 0 {
+            report_diagnostic(
+                Severity.FATAL,
+                ctx.opts.input_path,
+                0,
+                0,
+                "Source file is empty or cannot be read"
+            );
+            pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+            return PipelineStatus.SOURCE_READ_FAILED;
+        }
+    }
+
+    let expanded_len: uint = expand_source_includes(
+        ctx.opts.input_path as *byte,
+        source_buffer,
+        bytes_read as uint,
+        expanded_buffer,
+        1048576
+    );
+
+    var src_cap: AegisCapToken;
+    ccns_cap_from_slice(&mut src_cap, expanded_buffer, expanded_len, 1);
+    if !ccns_cap_validate(&src_cap, 0, expanded_len, 1) {
+        report_diagnostic(Severity.FATAL, ctx.opts.input_path, 0, 0, "CCNS capability bounds violation on source buffer");
+        pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+        return PipelineStatus.CAPABILITY_FAULT;
+    }
+
+    if ctx.opts.is_verbose {
+        @terminal.print_line("[ruxc] Stage 2: Streaming tokens via HSNS SIMD & OSLA CodonStream...");
+    }
+
+    var codon_stream: CodonStream;
+    osla_codon_stream_init(&mut codon_stream, expanded_buffer, expanded_len);
+
+    var simd_stream: SimdTokenStream;
+    hsns_simd_stream_init(&mut simd_stream, expanded_buffer, expanded_len);
+    let _delim_mask: uint = hsns_simd_scan_delimiters_64(&mut simd_stream);
+
+    var plate: RseSpacetimePlate;
+    rse_plate_init(&mut plate, plate_storage);
+
+    var ramc: RamcArena;
+    zwns_ramc_init(&mut ramc, plate_storage, 65536);
+
+    var arena: MemoryArena;
+    allocator_init(&mut arena, arena_buffer, 2097152);
+
+    var reader: SourceReader;
+    reader_init(&mut reader, expanded_buffer, expanded_len);
+
+    var parser: ParserState;
+    parser.reader = &mut reader;
+    parser.arena = &mut arena;
+    parser.node_id_counter = 0;
+    scan_next_token(&mut reader, &mut parser.current_token);
+
+    var shapes: [ShapeContract; 32];
+    let ast_root: *mut AstNode = parse_program(&mut parser, &shapes[0], 32);
+
+    if ast_root == (0 as *mut AstNode) {
+        report_diagnostic(
+            Severity.ERROR,
+            ctx.opts.input_path,
+            1,
+            1,
+            "Syntax parsing failed to construct valid AST"
+        );
+        pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+        return PipelineStatus.SYNTAX_ERROR;
+    }
+
+    ctx.telemetry.ast_nodes_created = parser.node_id_counter;
+    ctx.telemetry.total_tokens = reader.position;
+
+    if ctx.opts.is_verbose {
+        @terminal.print_line("[ruxc] Stage 3: Verifying canonical types & shape contracts...");
+    }
+
+    var s_idx: uint = 0;
+    while s_idx < 32 {
+        if shapes[s_idx].field_count > 0 {
+    var f_idx: uint = 0;
+            while f_idx < shapes[s_idx].field_count {
+                let f_hash: uint = shapes[s_idx].field_type_hashes[f_idx];
+                if f_hash == 0 {
+                    report_diagnostic(
+                        Severity.ERROR,
+                        ctx.opts.input_path,
+                        1,
+                        1,
+                        "Shape field contains unresolved type specification"
+                    );
+                    pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+                    return PipelineStatus.TYPE_CHECK_FAILED;
+                }
+                f_idx = f_idx + 1;
+            }
+        }
+        s_idx = s_idx + 1;
+    }
+
+    if ctx.opts.is_verbose {
+        @terminal.print_line("[ruxc] Stage 4: Splicing machine instructions into native stream (ZWNS)...");
+    }
+
+    var cg: CodeGenerator;
+    codegen_init(&mut cg, machine_code_buffer, 65536);
+    compile_node(&mut cg, ast_root);
+
+    ctx.telemetry.bytes_emitted = cg.stream.length;
+    ctx.telemetry.stencils_spliced = cg.stream.length / 4;
+
+    if ctx.opts.is_verbose {
+        @terminal.print_line("[ruxc] Stage 5: Sealing EIA Universal Hologram & Contracts...");
+    }
+
+    var hologram_hdr: UniversalHologramHeader;
+    eia_hologram_init(&mut hologram_hdr, 1);
+    hologram_hdr.contracts_count = 1;
+    hologram_hdr.blake3_root = @crypto.blake3_64(machine_code_buffer as uint, cg.stream.length);
+
+    var contract: SymbolContract;
+    eia_contract_init(&mut contract, 0x1234, 0x5678, cg.entry_point_offset, cg.stream.length, hologram_hdr.blake3_root);
+
+    if !eia_hologram_validate(&hologram_hdr) {
+        pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+        return PipelineStatus.HOLOGRAM_SEAL_FAILED;
+    }
+
+    var vitrify_engine: VitrificationEngine;
+    lcvs_vitrify_init(&mut vitrify_engine, machine_code_buffer);
+    lcvs_vitrify_arena(&mut vitrify_engine, machine_code_buffer, cg.stream.length);
+
+    saes_fence_instruction_stream();
+
+    if ctx.opts.is_freestanding {
+        if ctx.opts.is_verbose {
+            @terminal.print_line("[ruxc] Stage 6: Emitting freestanding 174-byte direct-syscall binary (ZWNS)...");
+        }
+        var free_buf: [byte; 256];
+        let free_sz: uint = zwns_emit_freestanding_elf174(&mut free_buf[0], "Rux Freestanding", 0);
+
+        let flags: uint = 577;
+        let out_fd: int = @os.open(ctx.opts.output_path as *byte, flags, 493);
+        if out_fd < 0 {
+            pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+            return PipelineStatus.EMISSION_FAILED;
+        }
+        @os.write(out_fd, &free_buf[0], free_sz);
+        @os.close(out_fd);
+    } else {
+        if ctx.opts.is_verbose {
+            @terminal.print_line("[ruxc] Stage 6: Emitting multi-OS executable vessel (EIA Target)...");
+        }
+        var target_os_code: uint = TARGET_OS_LINUX;
+        if ctx.opts.target_env == TARGET_ENV_WINDOWS_PE {
+            target_os_code = TARGET_OS_WINDOWS;
+        } else if ctx.opts.target_env == TARGET_ENV_MACOS_MACHO {
+            target_os_code = TARGET_OS_MACOS;
+        }
+        let write_res: int = write_executable_binary_target(&mut cg, ctx.opts.output_path as *byte, target_os_code);
+        if write_res <= 0 {
+            report_diagnostic(
+                Severity.FATAL,
+                ctx.opts.output_path,
+                0,
+                0,
+                "Failed to write output binary to target path"
+            );
+            pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+            return PipelineStatus.EMISSION_FAILED;
+        }
+    }
+
+    if ctx.opts.is_run_mode {
+        if ctx.opts.is_verbose {
+            @terminal.print_line("[ruxc] Executing binary directly in-process via USES IP-HEE...");
+        }
+        var engine: IpHeeEngine;
+        let init_res: int = ip_hee_init(&mut engine, 65536);
+        if init_res == 0 {
+            ip_hee_load_machine_code(&mut engine, machine_code_buffer, cg.stream.length, cg.entry_point_offset);
+            ctx.exit_code = ip_hee_execute(&mut engine, 0, 0);
+            ip_hee_destroy(&mut engine);
+        } else {
+            let exec_res: int = @os.execve(ctx.opts.output_path as *byte, 0, 0);
+            ctx.exit_code = exec_res;
+        }
+    }
+
+    let t1: uint = @silicon.rdtsc();
+    ctx.telemetry.elapsed_nanoseconds = (t1 - t0) / 3;
+
+    lnga_dispatch_spike(&mut event_bus, 1, 0x2000);
+    pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+    return PipelineStatus.SUCCESS;
+}

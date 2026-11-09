@@ -1,0 +1,45 @@
+include "lib/core/types.rx";
+
+const BT_HCI_PKT_COMMAND: u8 = 0x01;
+const BT_HCI_PKT_ACL: u8     = 0x02;
+const BT_HCI_PKT_EVENT: u8   = 0x04;
+
+const BT_OGF_HOST_CTL: u16 = 0x03;
+const BT_OGF_LE_CTL: u16   = 0x08;
+
+fn bt_hci_opcode(ogf: u16, ocf: u16) -> u16 {
+    return (ocf & 1023) | ((ogf & 63) << 10);
+}
+
+fn bt_hci_encode_cmd(dst: *mut byte, ogf: u16, ocf: u16, params: *const byte, param_len: u8) -> uint {
+    let op: u16 = bt_hci_opcode(ogf, ocf);
+    dst[0] = BT_HCI_PKT_COMMAND;
+    dst[1] = (op & 255) as byte;
+    dst[2] = ((op >> 8) & 255) as byte;
+    dst[3] = param_len;
+    var i: uint = 0;
+    let plen: uint = param_len as uint;
+    while i < plen {
+        dst[4 + i] = params[i];
+        i = i + 1;
+    }
+    return 4 + plen;
+}
+
+fn bt_hci_encode_reset(dst: *mut byte) -> uint {
+    var dummy: byte = 0;
+    return bt_hci_encode_cmd(dst, BT_OGF_HOST_CTL, 0x0003, &dummy, 0);
+}
+
+fn bt_hci_parse_cmd_complete(pkt: *const byte, len: uint, out_opcode: *mut u16, out_status: *mut u8) -> bool {
+    if len < 7 {
+        return false;
+    }
+    if pkt[0] != BT_HCI_PKT_EVENT || pkt[1] != 0x0E {
+        return false;
+    }
+    out_opcode[0] = (pkt[4] as u16) | ((pkt[5] as u16) << 8);
+    out_status[0] = pkt[6];
+    return true;
+}
+

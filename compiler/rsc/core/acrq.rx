@@ -1,0 +1,116 @@
+struct ACRQ_SubmissionEntry {
+    opcode: u8,
+    flags: u8,
+    ring_id: u16,
+    capability_tag: u32,
+    capability_proof: u64,
+    source_addr: u64,
+    dest_addr: u64,
+    length: u32,
+    user_data: u32,
+    continuation_ip: u64,
+}
+
+struct ACRQ_CompletionEntry {
+    user_data: u32,
+    status: u32,
+    transferred_bytes: u64,
+    timestamp_ns: u64,
+    reserved: u64,
+}
+
+struct ACRQ_Ring {
+    sq_entries: *mut ACRQ_SubmissionEntry,
+    cq_entries: *mut ACRQ_CompletionEntry,
+    sq_head: u32,
+    sq_tail: u32,
+    cq_head: u32,
+    cq_tail: u32,
+    ring_size: u32,
+    ring_mask: u32,
+}
+
+fn acrq_port_dispatch(sqe: *mut ACRQ_SubmissionEntry, cqe: *mut ACRQ_CompletionEntry) -> i64 {
+    @silicon.sfence();
+    let op: u8 = sqe.opcode;
+    var res: i64 = 0 - 1;
+    if op == 1 {
+        res = @os.write(sqe.capability_tag, sqe.source_addr, sqe.continuation_ip);
+    } else if op == 2 {
+        res = @os.read(sqe.capability_tag, sqe.dest_addr, sqe.continuation_ip);
+    } else if op == 3 {
+        res = @os.open(sqe.source_addr, sqe.capability_proof, sqe.capability_tag);
+    } else if op == 4 {
+        res = @os.close(sqe.capability_tag);
+    } else if op == 5 {
+        res = @os.mmap(sqe.source_addr, sqe.dest_addr, sqe.capability_proof, sqe.continuation_ip, 0 - 1, 0);
+    } else if op == 6 {
+        res = @os.munmap(sqe.source_addr, sqe.dest_addr);
+    } else if op == 7 {
+        res = @os.unlink(sqe.source_addr);
+    } else if op == 8 {
+        @os.exit(sqe.capability_tag);
+        res = 0;
+    }
+    @silicon.lfence();
+    cqe.user_data = sqe.user_data;
+    if res >= 0 {
+        cqe.status = 0;
+        cqe.transferred_bytes = res as u64;
+    } else {
+        cqe.status = (0 - res) as u32;
+        cqe.transferred_bytes = 0;
+    }
+    cqe.timestamp_ns = @silicon.rdtsc();
+    cqe.reserved = 0;
+    return res;
+}
+
+fn acrq_port_submit(opcode: u8, cap_tag: u32, cap_proof: u64, src_addr: u64, dst_addr: u64, cont_len: u64) -> i64 {
+    var sqe: ACRQ_SubmissionEntry;
+    var cqe: ACRQ_CompletionEntry;
+    sqe.opcode = opcode;
+    sqe.flags = 1;
+    sqe.ring_id = 0;
+    sqe.capability_tag = cap_tag;
+    sqe.capability_proof = cap_proof;
+    sqe.source_addr = src_addr;
+    sqe.dest_addr = dst_addr;
+    sqe.length = (cont_len & 4294967295) as u32;
+    sqe.user_data = opcode as u32;
+    sqe.continuation_ip = cont_len;
+    return acrq_port_dispatch(&mut sqe, &mut cqe);
+}
+
+fn acrq_init_ring(ring: *mut ACRQ_Ring, capacity: u32) -> i64 {
+    ring.ring_size = capacity;
+    ring.ring_mask = capacity - 1;
+    ring.sq_head = 0;
+    ring.sq_tail = 0;
+    ring.cq_head = 0;
+    ring.cq_tail = 0;
+    let sq_bytes: u64 = (((capacity as u64) * 64 + 4095) / 4096) * 4096;
+    let cq_bytes: u64 = (((capacity as u64) * 32 + 4095) / 4096) * 4096;
+    ring.sq_entries = acrq_port_submit(5, 0, 7, 0, sq_bytes, 34) as *mut ACRQ_SubmissionEntry;
+    if (ring.sq_entries as i64) <= 0 { return -1; }
+    ring.cq_entries = acrq_port_submit(5, 0, 7, 0, cq_bytes, 34) as *mut ACRQ_CompletionEntry;
+    if (ring.cq_entries as i64) <= 0 { return -1; }
+    return 0;
+}
+
+fn acrq_submit_entry(ring: *mut ACRQ_Ring, entry: *mut ACRQ_SubmissionEntry) -> i64 {
+    let next_tail: u32 = (ring.sq_tail + 1) & ring.ring_mask;
+    if next_tail == ring.sq_head {
+        return -1;
+    }
+    let slot: *mut ACRQ_SubmissionEntry = ((ring.sq_entries as *mut u8) + (((ring.sq_tail & ring.ring_mask) as u64) * 64)) as *mut ACRQ_SubmissionEntry;
+    let src_u8: *u8 = entry as *u8;
+    let dst_u8: *mut u8 = slot as *mut u8;
+    var i: u64 = 0;
+    while i < 64 {
+        dst_u8[i] = src_u8[i];
+        i = i + 1;
+    }
+    ring.sq_tail = next_tail;
+    return 0;
+}

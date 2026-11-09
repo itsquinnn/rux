@@ -1,0 +1,97 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+struct AlorRef {
+    addr: uint,
+    origin_depth: uint,
+    is_valid: bool,
+}
+
+struct AlorContext {
+    current_depth: uint,
+    is_unsafe_mode: bool,
+    active_refs: [AlorRef; 32],
+    ref_count: uint,
+}
+
+fn alor_init(ctx: *mut AlorContext) {
+    ctx.current_depth = 0;
+    ctx.is_unsafe_mode = false;
+    ctx.ref_count = 0;
+}
+
+fn alor_set_unsafe_mode(ctx: *mut AlorContext, enable_unsafe: bool) {
+    ctx.is_unsafe_mode = enable_unsafe;
+}
+
+fn alor_scope_enter(ctx: *mut AlorContext) -> uint {
+    ctx.current_depth = ctx.current_depth + 1;
+    return ctx.current_depth;
+}
+
+fn alor_register_ref(ctx: *mut AlorContext, ptr_addr: uint) -> uint {
+    if ctx.ref_count >= 32 {
+        panic("ALOR: exceeded maximum active reference tracking capacity");
+    }
+    let slot: uint = ctx.ref_count;
+    ctx.active_refs[slot].addr = ptr_addr;
+    ctx.active_refs[slot].origin_depth = ctx.current_depth;
+    ctx.active_refs[slot].is_valid = true;
+    ctx.ref_count = ctx.ref_count + 1;
+    return slot;
+}
+
+fn alor_validate_assignment(
+    ctx: *const AlorContext,
+    target_depth: uint,
+    ref_id: uint
+) -> bool {
+    if ctx.is_unsafe_mode {
+        return true;
+    }
+    if ref_id >= ctx.ref_count {
+        return false;
+    }
+    if !ctx.active_refs[ref_id].is_valid {
+        return false;
+    }
+    return ctx.active_refs[ref_id].origin_depth <= target_depth;
+}
+
+fn alor_subduct(ctx: *mut AlorContext, ref_id: uint, outer_depth: uint) -> bool {
+    if ref_id >= ctx.ref_count || !ctx.active_refs[ref_id].is_valid {
+        return false;
+    }
+    if outer_depth <= ctx.active_refs[ref_id].origin_depth {
+        ctx.active_refs[ref_id].origin_depth = outer_depth;
+        return true;
+    }
+    return false;
+}
+
+fn alor_scope_exit(ctx: *mut AlorContext) -> uint {
+    if ctx.current_depth == 0 {
+        return 0;
+    }
+    let exiting_depth: uint = ctx.current_depth;
+    ctx.current_depth = ctx.current_depth - 1;
+
+    var i: uint = 0;
+    while i < ctx.ref_count {
+        if ctx.active_refs[i].origin_depth == exiting_depth {
+            ctx.active_refs[i].is_valid = false;
+        }
+        i = i + 1;
+    }
+    return ctx.current_depth;
+}
+
+fn alor_is_valid(ctx: *const AlorContext, ref_id: uint) -> bool {
+    if ctx.is_unsafe_mode {
+        return true;
+    }
+    if ref_id >= ctx.ref_count {
+        return false;
+    }
+    return ctx.active_refs[ref_id].is_valid;
+}

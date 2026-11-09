@@ -1,0 +1,28 @@
+include "bootstrap/scanner/tokens.rx";
+
+const TYPE_HASH_INT: uint   = 0x2adc0e86b971a8e6;
+const TYPE_HASH_UINT: uint  = 0x4d32f5209ea9b3d2;
+const TYPE_HASH_U32: uint   = 0x4d2917209ea0be11;
+const TYPE_HASH_BYTE: uint  = 0x08c4e00285970568;
+const TYPE_HASH_FLOAT: uint = 0x3b1c90538a791a20;
+const TYPE_HASH_BOOL: uint  = 0x71a4f0289b52a781;
+const TYPE_HASH_VOID: uint  = 0x31726f5344494f5f;
+const TYPE_HASH_STR: uint   = 0x826e83195d0d60f0;
+
+fn resolve_primitive_type_hash(token_kind: uint) -> uint {
+    if token_kind == TOKEN_TYPE_INT  { return TYPE_HASH_INT; }
+    if token_kind == TOKEN_TYPE_UINT { return TYPE_HASH_UINT; }
+    if token_kind == TOKEN_TYPE_U32  { return TYPE_HASH_U32; }
+    if token_kind == TOKEN_TYPE_BYTE { return TYPE_HASH_BYTE; }
+    if token_kind == TOKEN_TYPE_VOID { return TYPE_HASH_VOID; }
+    if token_kind == TOKEN_TYPE_STR  { return TYPE_HASH_STR; }
+    return TYPE_HASH_INT;
+}
+
+fn get_type_size_bytes(type_hash: uint) -> uint {
+    if type_hash == TYPE_HASH_BYTE { return 1; }
+    if type_hash == TYPE_HASH_U32  { return 4; }
+    if type_hash == TYPE_HASH_VOID { return 0; }
+    if type_hash == TYPE_HASH_STR  { return 16; }
+    return 8;
+}

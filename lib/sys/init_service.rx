@@ -1,0 +1,80 @@
+include "lib/core/types.rx";
+
+const SVC_STOPPED: u8  = 0;
+const SVC_STARTING: u8 = 1;
+const SVC_RUNNING: u8  = 2;
+const SVC_FAILED: u8   = 3;
+
+struct ServiceUnit {
+    id: uint,
+    name_hash: uint,
+    after_service_id: int,
+    state: u8,
+    auto_restart: bool,
+    restart_count: u32,
+    pid: uint,
+}
+
+struct InitSupervisor {
+    units: [ServiceUnit; 32],
+    count: uint,
+    runlevel: u8,
+}
+
+fn init_supervisor_new(sup: *mut InitSupervisor) {
+    sup.count = 0;
+    sup.runlevel = 3;
+}
+
+fn init_register_unit(sup: *mut InitSupervisor, name_hash: uint, after_id: int, auto_restart: bool) -> int {
+    if sup.count >= 32 { return -1; }
+    let idx: uint = sup.count;
+    sup.units[idx].id = idx;
+    sup.units[idx].name_hash = name_hash;
+    sup.units[idx].after_service_id = after_id;
+    sup.units[idx].state = SVC_STOPPED;
+    sup.units[idx].auto_restart = auto_restart;
+    sup.units[idx].restart_count = 0;
+    sup.units[idx].pid = 0;
+    sup.count = idx + 1;
+    return idx as int;
+}
+
+fn init_boot_step(sup: *mut InitSupervisor, next_pid_base: uint) -> uint {
+    var started: uint = 0;
+    var progress: bool = true;
+    while progress {
+        progress = false;
+        var i: uint = 0;
+        while i < sup.count {
+            if sup.units[i].state == SVC_STOPPED {
+                let dep: int = sup.units[i].after_service_id;
+                var dep_ok: bool = true;
+                if dep >= 0 && (dep as uint) < sup.count {
+                    dep_ok = sup.units[dep as uint].state == SVC_RUNNING;
+                }
+                if dep_ok {
+                    sup.units[i].state = SVC_RUNNING;
+                    sup.units[i].pid = next_pid_base + started;
+                    started = started + 1;
+                    progress = true;
+                }
+            }
+            i = i + 1;
+        }
+    }
+    return started;
+}
+
+fn init_handle_crash(sup: *mut InitSupervisor, svc_id: uint, replacement_pid: uint) -> bool {
+    if svc_id >= sup.count { return false; }
+    if sup.units[svc_id].auto_restart {
+        sup.units[svc_id].restart_count = sup.units[svc_id].restart_count + 1;
+        sup.units[svc_id].pid = replacement_pid;
+        sup.units[svc_id].state = SVC_RUNNING;
+        return true;
+    }
+    sup.units[svc_id].state = SVC_FAILED;
+    return false;
+}
+

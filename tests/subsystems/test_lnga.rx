@@ -1,0 +1,42 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/subsystems/lnga/channel.rx";
+include "compiler/subsystems/lnga/neuromorphic.rx";
+
+fn main() -> int {
+    println("=== RUX COMPILER SUITE: LNGA (LIVING NEUROMORPHIC GRID) ===");
+
+    var storage: [SynapticSpike; 8];
+    var channel: SpikeChannel;
+    lnga_channel_init(&mut channel, &mut storage[0], 8);
+
+    let ok: bool = lnga_dispatch_spike(&mut channel, 12, 0xCAFE);
+    if !ok || channel.spikes_dispatched != 1 {
+        println("[FAIL] LNGA: SpikeChannel event dispatch failed");
+        return 1;
+    }
+    println("[PASS] LNGA: Lock-free SpikeChannel ring event dispatch verified");
+
+    var synapse: NeuromorphicSynapse;
+    synapse.weight = 100;
+    synapse.membrane_potential = 0;
+    synapse.threshold = 50;
+    synapse.total_spikes_fired = 0;
+
+    lnga_synapse_update_stdp(&mut synapse, 20);
+    if synapse.weight != 110 {
+        println("[FAIL] LNGA: STDP long-term potentiation failed");
+        return 2;
+    }
+    println("[PASS] LNGA: Spike-Timing-Dependent Plasticity (STDP) verified");
+
+    let fired: bool = lnga_neuron_integrate_and_fire(&mut synapse, 60);
+    if !fired || synapse.total_spikes_fired != 1 || synapse.membrane_potential != 0 {
+        println("[FAIL] LNGA: Integrate-and-fire action potential failed");
+        return 3;
+    }
+    println("[PASS] LNGA: Leaky integrate-and-fire action potential verified");
+
+    println("ALL LNGA NEUROMORPHIC GRID TESTS PASSED (100% OK)");
+    return 0;
+}

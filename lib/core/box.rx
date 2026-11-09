@@ -1,0 +1,29 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+
+struct Box {
+    ptr: *mut uint,
+}
+
+fn box_new(val: uint) -> Box {
+    var b: Box;
+    b.ptr = uses_substrate_alloc(8) as *mut uint;
+    b.ptr[0] = val;
+    return b;
+}
+
+fn box_get(b: *const Box) -> uint {
+    return b.ptr[0];
+}
+
+fn box_set(b: *mut Box, val: uint) {
+    b.ptr[0] = val;
+}
+
+fn box_free(b: *mut Box) {
+    if (b.ptr as uint) != 0 {
+        uses_substrate_free(b.ptr as *mut byte, 8);
+        b.ptr = 0 as *mut uint;
+    }
+}
+

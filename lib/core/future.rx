@@ -1,0 +1,70 @@
+struct Poll {
+    state: u32,
+    value: i64,
+}
+
+struct FutureTask {
+    poll_fn: *mut u8,
+    state_data: *mut u8,
+    is_completed: u32,
+    result: i64,
+}
+
+fn future_ready(val: i64) -> Poll {
+    var p: Poll;
+    p.state = 1;
+    p.value = val;
+    return p;
+}
+
+fn future_pending() -> Poll {
+    var p: Poll;
+    p.state = 0;
+    p.value = 0;
+    return p;
+}
+
+fn future_is_ready(p: *const Poll) -> bool {
+    return p.state == 1;
+}
+
+fn future_unwrap(p: *const Poll) -> i64 {
+    if p.state != 1 {
+        println("[PANIC: FUTURE] Attempted to unwrap pending poll state!");
+        sys_exit(1);
+    }
+    return p.value;
+}
+
+fn future_init(task: *mut FutureTask, poll_fn: *mut u8, state_data: *mut u8) {
+    task.poll_fn = poll_fn;
+    task.state_data = state_data;
+    task.is_completed = 0;
+    task.result = 0;
+}
+
+fn future_block_on(task: *mut FutureTask) -> i64 {
+    if task.is_completed == 1 {
+        return task.result;
+    }
+    var iters: u32 = 0;
+    while iters < 1000000 {
+        if task.poll_fn != (0 as *mut u8) {
+            let p_fn: fn(*mut u8) -> Poll = task.poll_fn as fn(*mut u8) -> Poll;
+            let res: Poll = p_fn(task.state_data);
+            if res.state == 1 {
+                task.is_completed = 1;
+                task.result = res.value;
+                return res.value;
+            }
+        } else {
+            task.is_completed = 1;
+            return task.result;
+        }
+        iters = iters + 1;
+    }
+    println("[PANIC: FUTURE] Executor deadlocked or timed out waiting for future!");
+    sys_exit(1);
+    return 0;
+}
+

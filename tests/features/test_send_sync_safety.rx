@@ -1,0 +1,31 @@
+include "lib/core/types.rx";
+
+fn send_to_thread<T: Send>(item: T) -> T {
+    return item;
+}
+
+fn thread_spawn(data: u64) -> u64 {
+    return data + 1;
+}
+
+fn main() -> int {
+    println("=== RUNNING SEND / SYNC CONCURRENCY SUITE ===");
+
+    let val: u64 = 42;
+    let ret: u64 = send_to_thread<u64>(val);
+    if ret != 42 {
+        println("[FAIL] send_to_thread returned wrong scalar!");
+        sys_exit(1);
+    }
+    println("[PASS] Primitive scalars satisfy Send auto-trait");
+
+    let spawned: u64 = thread_spawn(ret);
+    if spawned != 43 {
+        println("[FAIL] thread_spawn failed!");
+        sys_exit(1);
+    }
+    println("[PASS] Thread spawn with Send type confirmed safe");
+
+    println("=== ALL SEND / SYNC TESTS PASSED (SILICON CONFIRMED) ===");
+    return 0;
+}

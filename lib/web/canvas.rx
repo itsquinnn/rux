@@ -1,0 +1,43 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+
+struct Canvas2d {
+    width: uint,
+    height: uint,
+    fill_rgba: u32,
+    stroke_rgba: u32,
+    pixels: *mut u32,
+    draw_calls: uint,
+}
+
+fn canvas2d_init(cv: *mut Canvas2d, w: uint, h: uint) -> bool {
+    cv.width = w;
+    cv.height = h;
+    cv.fill_rgba = 4278190080 as u32;
+    cv.stroke_rgba = 4294967295 as u32;
+    cv.draw_calls = 0;
+    let bytes: uint = w * h * 4;
+    cv.pixels = uses_substrate_alloc(bytes) as *mut u32;
+    return (cv.pixels as uint) != 0;
+}
+
+fn canvas2d_fill_rect(cv: *mut Canvas2d, rx: uint, ry: uint, rw: uint, rh: uint) {
+    var y: uint = ry;
+    while y < (ry + rh) && y < cv.height {
+        var x: uint = rx;
+        while x < (rx + rw) && x < cv.width {
+            cv.pixels[(y * cv.width) + x] = cv.fill_rgba;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    cv.draw_calls = cv.draw_calls + 1;
+}
+
+fn canvas2d_destroy(cv: *mut Canvas2d) {
+    if (cv.pixels as uint) != 0 {
+        uses_substrate_free(cv.pixels as *mut byte, cv.width * cv.height * 4);
+        cv.pixels = 0 as *mut u32;
+    }
+}
+

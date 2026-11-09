@@ -1,0 +1,83 @@
+include "lib/core/types.rx";
+
+const MULTIBOOT1_HEADER_MAGIC: u32 = 464367618;
+const MULTIBOOT1_BOOT_MAGIC: u32   = 732803074;
+const MULTIBOOT2_HEADER_MAGIC: u32 = 3897708758;
+
+struct Multiboot1Header {
+    magic: u32,
+    flags: u32,
+    checksum: u32,
+}
+
+struct Multiboot2Header {
+    magic: u32,
+    architecture: u32,
+    header_length: u32,
+    checksum: u32,
+}
+
+struct MultibootMmapEntry {
+    size: u32,
+    base_addr: u64,
+    length: u64,
+    region_type: u32,
+}
+
+fn multiboot1_build_header(flags: u32) -> Multiboot1Header {
+    let sum: u64 = ((MULTIBOOT1_HEADER_MAGIC as u64) + (flags as u64)) & 0xFFFFFFFF;
+    let csum: u32 = ((0x100000000 - sum) & 0xFFFFFFFF) as u32;
+    return Multiboot1Header {
+        magic: MULTIBOOT1_HEADER_MAGIC,
+        flags: flags,
+        checksum: csum,
+    };
+}
+
+fn multiboot1_verify_header(hdr: *const Multiboot1Header) -> bool {
+    if hdr.magic != MULTIBOOT1_HEADER_MAGIC { return false; }
+    let total: u64 = ((hdr.magic as u64) + (hdr.flags as u64) + (hdr.checksum as u64)) & 0xFFFFFFFF;
+    return total == 0;
+}
+
+fn multiboot2_build_header(arch: u32, hdr_len: u32) -> Multiboot2Header {
+    let sum: u64 = ((MULTIBOOT2_HEADER_MAGIC as u64) + (arch as u64) + (hdr_len as u64)) & 0xFFFFFFFF;
+    let csum: u32 = ((0x100000000 - sum) & 0xFFFFFFFF) as u32;
+    return Multiboot2Header {
+        magic: MULTIBOOT2_HEADER_MAGIC,
+        architecture: arch,
+        header_length: hdr_len,
+        checksum: csum,
+    };
+}
+
+fn boot_cmdline_find_value(cmdline: *const byte, key: *const byte, out_buf: *mut byte, max_len: uint) -> bool {
+    var klen: uint = 0;
+    while key[klen] != 0 { klen = klen + 1; }
+    var i: uint = 0;
+    while cmdline[i] != 0 {
+        var match_ok: bool = true;
+        var j: uint = 0;
+        while j < klen {
+            if cmdline[i + j] != key[j] {
+                match_ok = false;
+                break;
+            }
+            j = j + 1;
+        }
+        if match_ok && cmdline[i + klen] == 61 {
+            var val_start: uint = i + klen + 1;
+            var out_i: uint = 0;
+            while cmdline[val_start] != 0 && cmdline[val_start] != 32 && (out_i + 1) < max_len {
+                out_buf[out_i] = cmdline[val_start];
+                out_i = out_i + 1;
+                val_start = val_start + 1;
+            }
+            out_buf[out_i] = 0;
+            return true;
+        }
+        while cmdline[i] != 0 && cmdline[i] != 32 { i = i + 1; }
+        while cmdline[i] == 32 { i = i + 1; }
+    }
+    return false;
+}

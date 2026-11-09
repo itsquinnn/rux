@@ -1,0 +1,30 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "lib/rxd/rxd.rx";
+
+fn rxd_cmd_validate(in_path: *const byte) -> int {
+    let text_buf: *mut u8 = uses_substrate_alloc(65536);
+    let test_plate: *mut u8 = uses_substrate_alloc(65536);
+    let nread: int = os_read_file(in_path, text_buf, 65536);
+    if nread <= 0 {
+        let err: str = "[FAIL] Unable to read input file";
+        os_println(err as *const byte);
+        uses_substrate_free(text_buf, 65536);
+        uses_substrate_free(test_plate, 65536);
+        return 1;
+    }
+    let size: u64 = rxd_vitrify(text_buf as *const byte, nread as u64, test_plate, 65536);
+    if size == 0 {
+        let err: str = "[FAIL] Syntax or unit evaluation error in .rxd document";
+        os_println(err as *const byte);
+        uses_substrate_free(text_buf, 65536);
+        uses_substrate_free(test_plate, 65536);
+        return 1;
+    }
+    let ok: str = "[PASS] Document is 100% valid RXD (Units & Silicon types verified)";
+    os_println(ok as *const byte);
+    uses_substrate_free(text_buf, 65536);
+    uses_substrate_free(test_plate, 65536);
+    return 0;
+}
+

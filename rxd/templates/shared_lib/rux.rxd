@@ -1,0 +1,13 @@
+package {
+    name: "shared_lib"
+    version: "0.1.0"
+    author: "Developer <dev@rux.org>"
+    edition: 2026
+}
+
+target "shared_lib" {
+    kind: "library"
+    entry: "rsc/lib.rx"
+    hologram: true
+    merkle_seal: true
+}

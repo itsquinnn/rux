@@ -1,0 +1,113 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/os/uses_substrate.rx";
+
+struct BTreeMap {
+    keys: *mut uint,
+    vals: *mut uint,
+    len: uint,
+    cap: uint,
+}
+
+fn btreemap_init(m: *mut BTreeMap, initial_cap: uint) {
+    var cap: uint = initial_cap;
+    if cap < 16 { cap = 16; }
+    m.keys = uses_substrate_alloc(cap * 8) as *mut uint;
+    m.vals = uses_substrate_alloc(cap * 8) as *mut uint;
+    m.len = 0;
+    m.cap = cap;
+}
+
+fn btreemap_grow(m: *mut BTreeMap) {
+    let old_cap: uint = m.cap;
+    let new_cap: uint = old_cap * 2;
+    let new_keys: *mut uint = uses_substrate_alloc(new_cap * 8) as *mut uint;
+    let new_vals: *mut uint = uses_substrate_alloc(new_cap * 8) as *mut uint;
+    var i: uint = 0;
+    while i < m.len {
+        new_keys[i] = m.keys[i];
+        new_vals[i] = m.vals[i];
+        i = i + 1;
+    }
+    uses_substrate_free(m.keys as *mut byte, old_cap * 8);
+    uses_substrate_free(m.vals as *mut byte, old_cap * 8);
+    m.keys = new_keys;
+    m.vals = new_vals;
+    m.cap = new_cap;
+}
+
+fn btreemap_insert(m: *mut BTreeMap, key: uint, val: uint) {
+    var lo: uint = 0;
+    var hi: uint = m.len;
+    while lo < hi {
+        let mid: uint = lo + ((hi - lo) / 2);
+        if m.keys[mid] == key {
+            m.vals[mid] = val;
+            return;
+        }
+        if m.keys[mid] < key {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if m.len >= m.cap {
+        btreemap_grow(m);
+    }
+    var j: uint = m.len;
+    while j > lo {
+        m.keys[j] = m.keys[j - 1];
+        m.vals[j] = m.vals[j - 1];
+        j = j - 1;
+    }
+    m.keys[lo] = key;
+    m.vals[lo] = val;
+    m.len = m.len + 1;
+}
+
+fn btreemap_get(m: *const BTreeMap, key: uint) -> Option {
+    var lo: uint = 0;
+    var hi: uint = m.len;
+    while lo < hi {
+        let mid: uint = lo + ((hi - lo) / 2);
+        if m.keys[mid] == key {
+            return option_some(m.vals[mid]);
+        }
+        if m.keys[mid] < key {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return option_none();
+}
+
+fn btreemap_contains_key(m: *const BTreeMap, key: uint) -> bool {
+    let opt: Option = btreemap_get(m, key);
+    return option_is_some(opt);
+}
+
+fn btreemap_min_key(m: *const BTreeMap) -> Option {
+    if m.len == 0 { return option_none(); }
+    return option_some(m.keys[0]);
+}
+
+fn btreemap_max_key(m: *const BTreeMap) -> Option {
+    if m.len == 0 { return option_none(); }
+    return option_some(m.keys[m.len - 1]);
+}
+
+fn btreemap_len(m: *const BTreeMap) -> uint {
+    return m.len;
+}
+
+fn btreemap_free(m: *mut BTreeMap) {
+    if (m.keys as uint) != 0 && m.cap > 0 {
+        uses_substrate_free(m.keys as *mut byte, m.cap * 8);
+        uses_substrate_free(m.vals as *mut byte, m.cap * 8);
+        m.keys = 0 as *mut uint;
+        m.vals = 0 as *mut uint;
+        m.len = 0;
+        m.cap = 0;
+    }
+}

@@ -1,0 +1,32 @@
+include "lib/core/types.rx";
+
+struct ByteSlice {
+    ptr: *const byte,
+    len: uint,
+}
+
+fn slice_from_raw(ptr: *const byte, len: uint) -> ByteSlice {
+    return ByteSlice { ptr: ptr, len: len };
+}
+
+fn slice_sub(s: ByteSlice, start: uint, end: uint) -> ByteSlice {
+    if start >= s.len || end > s.len || start > end {
+        return ByteSlice { ptr: 0 as *const byte, len: 0 };
+    }
+    let sub_ptr: *const byte = (s.ptr as uint + start) as *const byte;
+    return ByteSlice { ptr: sub_ptr, len: end - start };
+}
+
+fn slice_equals(a: ByteSlice, b: ByteSlice) -> bool {
+    if a.len != b.len {
+        return false;
+    }
+    var i: uint = 0;
+    while i < a.len {
+        if a.ptr[i] != b.ptr[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}

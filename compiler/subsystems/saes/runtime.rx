@@ -1,0 +1,56 @@
+include "compiler/subsystems/saes/dvam.rx";
+include "compiler/subsystems/saes/patcher.rx";
+
+enum SubstrateTarget {
+    HOST_NATIVE = 0,
+    ENCLAVE_ISOLATED = 1,
+    SPACETIME_PLATE = 2,
+}
+
+struct RuntimeExecutive {
+    arena: DvamMemoryArena,
+    entries: *mut SrtEntry,
+    entry_count: uint,
+    entry_capacity: uint,
+    holes_pool: *mut RelocHole,
+    holes_count: uint,
+    holes_capacity: uint,
+    total_swizzles: uint,
+}
+
+fn saes_runtime_init(
+    exec: *mut RuntimeExecutive,
+    memory_capacity_bytes: uint
+) -> bool {
+    let res: int = dvam_create(&mut exec.arena, memory_capacity_bytes);
+    if res != 0 {
+        return false;
+    }
+
+    exec.entry_count = 0;
+    exec.entry_capacity = 4096;
+    exec.holes_count = 0;
+    exec.holes_capacity = 16384;
+    exec.total_swizzles = 0;
+    return true;
+}
+
+fn saes_swizzle_symbol(
+    exec: *mut RuntimeExecutive,
+    symbol_id: uint,
+    new_v_exec: uint
+) -> bool {
+    var i: uint = 0;
+    while i < exec.entry_count {
+        let entry: *mut SrtEntry = &mut exec.entries[i];
+        if entry.symbol_id == symbol_id {
+            entry.v_exec_addr = new_v_exec;
+            entry.epoch = entry.epoch + 1;
+            exec.total_swizzles = exec.total_swizzles + 1;
+            saes_fence_instruction_stream();
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}

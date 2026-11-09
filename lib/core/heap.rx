@@ -1,0 +1,136 @@
+include "lib/core/types.rx";
+include "lib/core/allocator.rx";
+
+const HEAP_CHUNK_FREE: uint = 0xAA55AA55;
+const HEAP_CHUNK_USED: uint = 0x55AA55AA;
+const HEAP_MIN_ALLOC: uint  = 16;
+
+struct HeapChunk {
+    magic: uint,
+    size: uint,
+    next: *mut HeapChunk,
+    prev: *mut HeapChunk,
+}
+
+struct HeapAllocator {
+    base: *mut byte,
+    total_size: uint,
+    head: *mut HeapChunk,
+    used_bytes: uint,
+    alloc_count: uint,
+    free_count: uint,
+}
+
+fn heap_init(h: *mut HeapAllocator, memory: *mut byte, size: uint) -> bool {
+    if size < 128 {
+        return false;
+    }
+
+    h.base = memory;
+    h.total_size = size;
+    h.used_bytes = 0;
+    h.alloc_count = 0;
+    h.free_count = 0;
+
+    let initial_chunk: *mut HeapChunk = memory as *mut HeapChunk;
+    initial_chunk.magic = HEAP_CHUNK_FREE;
+    initial_chunk.size = size - 32;
+    initial_chunk.next = 0 as *mut HeapChunk;
+    initial_chunk.prev = 0 as *mut HeapChunk;
+
+    h.head = initial_chunk;
+    return true;
+}
+
+fn heap_alloc(h: *mut HeapAllocator, bytes: uint) -> *mut byte {
+    if bytes == 0 {
+        return 0 as *mut byte;
+    }
+
+    let aligned: uint = (bytes + 7) & (0 - 8);
+    let needed: uint = aligned;
+
+    var curr: *mut HeapChunk = h.head;
+    while curr != (0 as *mut HeapChunk) {
+        if curr.magic == HEAP_CHUNK_FREE && curr.size >= needed {
+            let rem: uint = curr.size - needed;
+            if rem >= (32 + HEAP_MIN_ALLOC) {
+                let next_ptr: *mut byte = ((curr as *mut byte) + 32 + needed);
+                let split: *mut HeapChunk = next_ptr as *mut HeapChunk;
+                split.magic = HEAP_CHUNK_FREE;
+                split.size = rem - 32;
+                split.next = curr.next;
+                split.prev = curr;
+
+                let old_next: *mut HeapChunk = curr.next;
+                if old_next != (0 as *mut HeapChunk) {
+                    old_next.prev = split;
+                }
+                curr.next = split;
+                curr.size = needed;
+            }
+
+            curr.magic = HEAP_CHUNK_USED;
+            h.used_bytes = h.used_bytes + curr.size;
+            h.alloc_count = h.alloc_count + 1;
+
+            let payload: *mut byte = (curr as *mut byte) + 32;
+            return payload;
+        }
+        curr = curr.next;
+    }
+
+    return 0 as *mut byte;
+}
+
+fn heap_free(h: *mut HeapAllocator, ptr: *mut byte) {
+    if (ptr as uint) == 0 {
+        return;
+    }
+
+    let chunk: *mut HeapChunk = (ptr - 32) as *mut HeapChunk;
+    if chunk.magic != HEAP_CHUNK_USED {
+        return;
+    }
+
+    chunk.magic = HEAP_CHUNK_FREE;
+    h.used_bytes = h.used_bytes - chunk.size;
+    h.free_count = h.free_count + 1;
+
+    let next_chunk: *mut HeapChunk = chunk.next;
+    if next_chunk != (0 as *mut HeapChunk) && next_chunk.magic == HEAP_CHUNK_FREE {
+        chunk.size = chunk.size + 32 + next_chunk.size;
+        let right_next: *mut HeapChunk = next_chunk.next;
+        chunk.next = right_next;
+        if right_next != (0 as *mut HeapChunk) {
+            right_next.prev = chunk;
+        }
+    }
+
+    let prev_chunk: *mut HeapChunk = chunk.prev;
+    if prev_chunk != (0 as *mut HeapChunk) && prev_chunk.magic == HEAP_CHUNK_FREE {
+        prev_chunk.size = prev_chunk.size + 32 + chunk.size;
+        let c_next: *mut HeapChunk = chunk.next;
+        prev_chunk.next = c_next;
+        if c_next != (0 as *mut HeapChunk) {
+            c_next.prev = prev_chunk;
+        }
+    }
+}
+
+fn heap_alloc_trampoline(ctx: *mut byte, size: uint) -> *mut byte {
+    let h: *mut HeapAllocator = ctx as *mut HeapAllocator;
+    return heap_alloc(h, size);
+}
+
+fn heap_free_trampoline(ctx: *mut byte, ptr: *mut byte, size: uint) {
+    let h: *mut HeapAllocator = ctx as *mut HeapAllocator;
+    heap_free(h, ptr);
+}
+
+fn allocator_from_heap(h: *mut HeapAllocator, out: *mut Allocator) {
+    out.ctx = h as *mut byte;
+    out.alloc_fn = heap_alloc_trampoline;
+    out.free_fn = heap_free_trampoline;
+    out.total_allocated = 0;
+}

@@ -1,0 +1,81 @@
+include "lib/core/types.rx";
+include "lib/sync/atomic.rx";
+include "lib/os/uses_substrate.rx";
+
+struct Channel {
+    storage: *mut uint,
+    capacity: uint,
+    head: uint,
+    tail: uint,
+}
+
+fn channel_init(chan: *mut Channel, storage: *mut uint, capacity: uint) {
+    chan.storage = storage;
+    chan.capacity = capacity;
+    chan.head = 0;
+    chan.tail = 0;
+}
+
+fn channel_send(chan: *mut Channel, val: uint) -> bool {
+    let next_head: uint = (chan.head + 1) % chan.capacity;
+    if next_head == atomic_load_u64(&chan.tail) {
+        return false;
+    }
+    chan.storage[chan.head] = val;
+    atomic_store_u64(&mut chan.head, next_head);
+    return true;
+}
+
+fn channel_recv(chan: *mut Channel, out_val: *mut uint) -> bool {
+    if chan.tail == atomic_load_u64(&chan.head) {
+        return false;
+    }
+    unsafe { *out_val = chan.storage[chan.tail]; }
+    let next_tail: uint = (chan.tail + 1) % chan.capacity;
+    atomic_store_u64(&mut chan.tail, next_tail);
+    return true;
+}
+
+struct Chan<T> {
+    buf: *mut T,
+    cap: uint,
+    head: uint,
+    tail: uint,
+    count: uint,
+    closed: bool,
+}
+
+fn chan_init_u64(c: *mut Chan<uint>, cap: uint) {
+    var actual_cap: uint = cap;
+    if actual_cap == 0 { actual_cap = 16; }
+    c.buf = uses_substrate_alloc(actual_cap * 8) as *mut uint;
+    c.cap = actual_cap;
+    c.head = 0;
+    c.tail = 0;
+    c.count = 0;
+    c.closed = false;
+}
+
+fn chan_try_send(c: *mut Chan<uint>, val: uint) -> bool {
+    if c.closed || c.count >= c.cap {
+        return false;
+    }
+    c.buf[c.tail] = val;
+    c.tail = (c.tail + 1) % c.cap;
+    c.count = c.count + 1;
+    return true;
+}
+
+fn chan_try_recv(c: *mut Chan<uint>, out_val: *mut uint) -> bool {
+    if c.count == 0 {
+        return false;
+    }
+    unsafe { *out_val = c.buf[c.head]; }
+    c.head = (c.head + 1) % c.cap;
+    c.count = c.count - 1;
+    return true;
+}
+
+fn chan_close(c: *mut Chan<uint>) {
+    c.closed = true;
+}

@@ -1,0 +1,48 @@
+include "lib/core/types.rx";
+
+const UINT_MAX: uint = 18446744073709551615;
+const INT_MAX: int   = 9223372036854775807;
+const INT_MIN: int   = 0 - 9223372036854775807 - 1;
+
+fn checked_add_u64(a: uint, b: uint, out: *mut uint) -> bool {
+    let res: uint = a + b;
+    out[0] = res;
+    return res < a;
+}
+
+fn checked_sub_u64(a: uint, b: uint, out: *mut uint) -> bool {
+    if a < b {
+        out[0] = (UINT_MAX - b) + a + 1;
+        return true;
+    }
+    out[0] = a - b;
+    return false;
+}
+
+fn checked_mul_u64(a: uint, b: uint, out: *mut uint) -> bool {
+    if a == 0 || b == 0 {
+        out[0] = 0;
+        return false;
+    }
+    if a > (UINT_MAX / b) {
+        out[0] = a * b;
+        return true;
+    }
+    out[0] = a * b;
+    return false;
+}
+
+fn saturating_add_u64(a: uint, b: uint) -> uint {
+    var sum: uint = 0;
+    if checked_add_u64(a, b, &mut sum) {
+        return UINT_MAX;
+    }
+    return sum;
+}
+
+fn saturating_sub_u64(a: uint, b: uint) -> uint {
+    if a < b {
+        return 0;
+    }
+    return a - b;
+}

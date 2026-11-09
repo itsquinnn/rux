@@ -1,0 +1,72 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "bootstrap/rxd/reader.rx";
+include "bootstrap/rxd/vitrifier.rx";
+
+struct BootstrapConfig {
+    stage: uint,
+    default_arch: str,
+    code_capacity: uint,
+    stack_capacity: uint,
+    spacetime_plate_size: uint,
+    cheri_capabilities: bool,
+    acrq_rings: bool,
+    vitrification_clwb: bool,
+    dual_virtual_aliasing: bool,
+    hologram_relocation: bool,
+}
+
+fn bootstrap_config_default() -> BootstrapConfig {
+    return BootstrapConfig {
+        stage: 0,
+        default_arch: "x86_64",
+        code_capacity: 16777216,
+        stack_capacity: 4194304,
+        spacetime_plate_size: 16777216,
+        cheri_capabilities: true,
+        acrq_rings: true,
+        vitrification_clwb: true,
+        dual_virtual_aliasing: true,
+        hologram_relocation: true,
+    };
+}
+
+fn bootstrap_load_config(plate_path: *const byte, cfg: *mut BootstrapConfig) -> int {
+    var file_buf: [u8; 8192];
+    let nread: int = os_read_file(plate_path, &mut file_buf[0], 8192);
+
+    if nread <= 64 {
+        let text_path: *const byte = "bootstrap/boot_config.rxd" as *const byte;
+        var text_buf: [u8; 4096];
+        let tnread: int = os_read_file(text_path, &mut text_buf[0], 4096);
+        if tnread <= 0 {
+            *cfg = bootstrap_config_default();
+            return 0;
+        }
+        let vit_size: u64 = bootstrap_rxd_vitrify(&mut text_buf[0], tnread as u64, &mut file_buf[0], 8192);
+        if vit_size == 0 {
+            *cfg = bootstrap_config_default();
+            return 0;
+        }
+    }
+
+    let plate: BootstrapRxdPlate = bootstrap_rxd_from_bytes(&mut file_buf[0], 8192);
+    if plate.byte_length == 0 {
+        *cfg = bootstrap_config_default();
+        return 0;
+    }
+
+    cfg.stage = bootstrap_rxd_get_uint(&plate, "stage" as *const byte, 0) as uint;
+    cfg.default_arch = bootstrap_rxd_get_str(&plate, "default_arch" as *const byte) as str;
+    cfg.code_capacity = bootstrap_rxd_get_uint(&plate, "code_capacity" as *const byte, 16777216) as uint;
+    cfg.stack_capacity = bootstrap_rxd_get_uint(&plate, "stack_capacity" as *const byte, 4194304) as uint;
+    cfg.spacetime_plate_size = bootstrap_rxd_get_uint(&plate, "spacetime_plate_size" as *const byte, 16777216) as uint;
+    cfg.cheri_capabilities = bootstrap_rxd_get_bool(&plate, "cheri_capabilities" as *const byte, true);
+    cfg.acrq_rings = bootstrap_rxd_get_bool(&plate, "acrq_rings" as *const byte, true);
+    cfg.vitrification_clwb = bootstrap_rxd_get_bool(&plate, "vitrification_clwb" as *const byte, true);
+    cfg.dual_virtual_aliasing = bootstrap_rxd_get_bool(&plate, "dual_virtual_aliasing" as *const byte, true);
+    cfg.hologram_relocation = bootstrap_rxd_get_bool(&plate, "hologram_relocation" as *const byte, true);
+
+    return 1;
+}
+

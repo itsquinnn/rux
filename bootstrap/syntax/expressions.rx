@@ -1,0 +1,124 @@
+include "bootstrap/syntax/ast.rx";
+include "bootstrap/scanner/reader.rx";
+include "bootstrap/memory/allocator.rx";
+
+struct ParserState {
+    reader: *mut SourceReader,
+    arena: *mut MemoryArena,
+    current_token: Token,
+    node_id_counter: uint,
+}
+
+fn create_node(p: *mut ParserState, kind: uint) -> *mut AstNode {
+    let raw_memory: *mut byte = allocator_bump(p.arena, 72);
+    if raw_memory == (0 as *mut byte) {
+        return 0 as *mut AstNode;
+    }
+    let node: *mut AstNode = raw_memory as *mut AstNode;
+    node.kind = kind;
+    node.is_mut = 0;
+    node.id = p.node_id_counter;
+    node.name_hash = 0;
+    node.value = 0;
+    node.child1 = 0 as *mut AstNode;
+    node.child2 = 0 as *mut AstNode;
+    node.child3 = 0 as *mut AstNode;
+    node.next = 0 as *mut AstNode;
+    p.node_id_counter = p.node_id_counter + 1;
+    return node;
+}
+
+fn skip_type(p: *mut ParserState) {
+    while p.current_token.kind != TOKEN_EQ && p.current_token.kind != TOKEN_SEMICOLON && p.current_token.kind != TOKEN_COMMA && p.current_token.kind != TOKEN_RPAREN && p.current_token.kind != TOKEN_LBRACE && p.current_token.kind != TOKEN_FAT_ARROW && p.current_token.kind != TOKEN_EOF {
+        scan_next_token(p.reader, &mut p.current_token);
+    }
+}
+
+fn expect_token(p: *mut ParserState, expected_kind: uint) {
+    if p.current_token.kind == expected_kind {
+        scan_next_token(p.reader, &mut p.current_token);
+    }
+}
+
+fn parse_primary(p: *mut ParserState) -> *mut AstNode {
+    if p.current_token.kind == TOKEN_INT {
+        let n: *mut AstNode = create_node(p, NODE_LIT_INT);
+        n.value = p.current_token.int_value;
+        scan_next_token(p.reader, &mut p.current_token);
+        return n;
+    }
+
+    if p.current_token.kind == TOKEN_IDENT {
+        let n: *mut AstNode = create_node(p, NODE_LIT_IDENT);
+        n.name_hash = p.current_token.name_hash;
+        scan_next_token(p.reader, &mut p.current_token);
+        if p.current_token.kind == TOKEN_LPAREN {
+            scan_next_token(p.reader, &mut p.current_token);
+            var last_arg: *mut AstNode = 0 as *mut AstNode;
+            while p.current_token.kind != TOKEN_RPAREN && p.current_token.kind != TOKEN_EOF {
+                let arg: *mut AstNode = parse_expression(p);
+                if last_arg == (0 as *mut AstNode) {
+                    n.child1 = arg;
+                } else {
+                    last_arg.next = arg;
+                }
+                last_arg = arg;
+                if p.current_token.kind == TOKEN_COMMA {
+                    scan_next_token(p.reader, &mut p.current_token);
+                }
+            }
+            expect_token(p, TOKEN_RPAREN);
+        }
+        return n;
+    }
+
+    if p.current_token.kind == TOKEN_STRING {
+        let n: *mut AstNode = create_node(p, NODE_LIT_STR);
+        n.name_hash = p.current_token.start as uint;
+        n.value = p.current_token.length;
+        scan_next_token(p.reader, &mut p.current_token);
+        return n;
+    }
+
+    if p.current_token.kind == TOKEN_LPAREN {
+        scan_next_token(p.reader, &mut p.current_token);
+        let n: *mut AstNode = parse_expression(p);
+        expect_token(p, TOKEN_RPAREN);
+        return n;
+    }
+
+    if p.current_token.kind == TOKEN_MUT || p.current_token.kind == TOKEN_STAR || p.current_token.kind == 99 {
+        scan_next_token(p.reader, &mut p.current_token);
+        return parse_primary(p);
+    }
+
+    scan_next_token(p.reader, &mut p.current_token);
+    return create_node(p, 0);
+}
+
+fn parse_expression(p: *mut ParserState) -> *mut AstNode {
+    var left: *mut AstNode = parse_primary(p);
+
+    if p.current_token.kind == TOKEN_PIPE {
+        scan_next_token(p.reader, &mut p.current_token);
+        let right_fn: *mut AstNode = parse_primary(p);
+        let pipe_node: *mut AstNode = create_node(p, NODE_PIPE);
+        pipe_node.child1 = left;
+        pipe_node.child2 = right_fn;
+        return pipe_node;
+    }
+
+    while p.current_token.kind >= TOKEN_PLUS && p.current_token.kind <= TOKEN_PERCENT {
+        let operator_kind: uint = p.current_token.kind;
+        scan_next_token(p.reader, &mut p.current_token);
+        let right: *mut AstNode = parse_primary(p);
+
+        let bin_node: *mut AstNode = create_node(p, NODE_BINARY);
+        bin_node.value = operator_kind;
+        bin_node.child1 = left;
+        bin_node.child2 = right;
+        left = bin_node;
+    }
+
+    return left;
+}

@@ -1,0 +1,21 @@
+include "lib/core/types.rx";
+
+shape Reader {
+    read_fn: fn(ctx: *mut byte, buf: *mut byte, max_len: uint) -> int,
+    context: *mut byte,
+}
+
+shape Writer {
+    write_fn: fn(ctx: *mut byte, buf: *const byte, len: uint) -> int,
+    context: *mut byte,
+}
+
+fn stream_read(r: Reader, dst: *mut byte, max_len: uint) -> int {
+    let f: fn(ctx: *mut byte, buf: *mut byte, max_len: uint) -> int = r.read_fn;
+    return f(r.context, dst, max_len);
+}
+
+fn stream_write(w: Writer, src: *const byte, len: uint) -> int {
+    let f: fn(ctx: *mut byte, buf: *const byte, len: uint) -> int = w.write_fn;
+    return f(w.context, src, len);
+}

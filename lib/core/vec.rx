@@ -1,0 +1,145 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/core/allocator.rx";
+include "lib/core/heap.rx";
+
+struct Vec<T> {
+    data: *mut T,
+    len: uint,
+    cap: uint,
+}
+
+fn vec_new<T>() -> Vec<T> {
+    var v: Vec<T>;
+    v.data = 0 as *mut T;
+    v.len = 0;
+    v.cap = 0;
+    return v;
+}
+
+fn vec_init(v: *mut Vec, initial_cap: uint) {
+    var cap: uint = initial_cap;
+    if cap == 0 {
+        cap = 4;
+    }
+    let bytes: uint = cap * 8;
+    v.data = uses_substrate_alloc(bytes) as *mut uint;
+    v.len = 0;
+    v.cap = cap;
+}
+
+fn vec_push(v: *mut Vec, item: uint) {
+    if v.len >= v.cap {
+        var new_cap: uint = v.cap * 2;
+        if new_cap < 4 { new_cap = 4; }
+        let old_bytes: uint = v.cap * 8;
+        let new_bytes: uint = new_cap * 8;
+        let new_data: *mut uint = uses_substrate_alloc(new_bytes) as *mut uint;
+        var i: uint = 0;
+        while i < v.len {
+            new_data[i] = v.data[i];
+            i = i + 1;
+        }
+        if (v.data as uint) != 0 && v.cap > 0 {
+            uses_substrate_free(v.data as *mut byte, old_bytes);
+        }
+        v.data = new_data;
+        v.cap = new_cap;
+    }
+    v.data[v.len] = item;
+    v.len = v.len + 1;
+}
+
+fn vec_pop(v: *mut Vec) -> Option {
+    if v.len == 0 {
+        return option_none();
+    }
+    v.len = v.len - 1;
+    let val: uint = v.data[v.len];
+    return option_some(val);
+}
+
+fn vec_get(v: *const Vec, idx: uint) -> Option {
+    if idx >= v.len {
+        return option_none();
+    }
+    return option_some(v.data[idx]);
+}
+
+fn vec_set(v: *mut Vec, idx: uint, val: uint) -> bool {
+    if idx >= v.len {
+        return false;
+    }
+    v.data[idx] = val;
+    return true;
+}
+
+fn vec_len(v: *const Vec) -> uint {
+    return v.len;
+}
+
+fn vec_with_capacity(cap: uint) -> Vec {
+    var v: Vec;
+    vec_init(&mut v, cap);
+    return v;
+}
+
+fn vec_reserve(v: *mut Vec, additional: uint) {
+    let req: uint = v.len + additional;
+    if req > v.cap {
+        var new_cap: uint = v.cap * 2;
+        if new_cap < req { new_cap = req; }
+        let old_bytes: uint = v.cap * 8;
+        let new_bytes: uint = new_cap * 8;
+        let new_data: *mut uint = uses_substrate_alloc(new_bytes) as *mut uint;
+        var i: uint = 0;
+        while i < v.len {
+            new_data[i] = v.data[i];
+            i = i + 1;
+        }
+        if (v.data as uint) != 0 && v.cap > 0 {
+            uses_substrate_free(v.data as *mut byte, old_bytes);
+        }
+        v.data = new_data;
+        v.cap = new_cap;
+    }
+}
+
+fn vec_shrink_to_fit(v: *mut Vec) {
+    if v.len < v.cap && v.len > 0 {
+        let old_bytes: uint = v.cap * 8;
+        let new_bytes: uint = v.len * 8;
+        let new_data: *mut uint = uses_substrate_alloc(new_bytes) as *mut uint;
+        var i: uint = 0;
+        while i < v.len {
+            new_data[i] = v.data[i];
+            i = i + 1;
+        }
+        uses_substrate_free(v.data as *mut byte, old_bytes);
+        v.data = new_data;
+        v.cap = v.len;
+    }
+}
+
+fn vec_as_slice(v: *const Vec) -> *const uint {
+    return v.data as *const uint;
+}
+
+fn vec_from(arr: *const uint, length: uint) -> Vec {
+    var v: Vec = vec_with_capacity(length);
+    var i: uint = 0;
+    while i < length {
+        vec_push(&mut v, arr[i]);
+        i = i + 1;
+    }
+    return v;
+}
+
+fn vec_free(v: *mut Vec) {
+    if (v.data as uint) != 0 && v.cap > 0 {
+        uses_substrate_free(v.data as *mut byte, v.cap * 8);
+        v.data = 0 as *mut uint;
+        v.len = 0;
+        v.cap = 0;
+    }
+}

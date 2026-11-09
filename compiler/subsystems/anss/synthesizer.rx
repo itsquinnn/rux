@@ -1,0 +1,30 @@
+struct DynamicStencil {
+    code_buffer: *mut byte,
+    code_length: uint,
+    threshold_value: uint,
+    specialized_cycles: uint,
+}
+
+fn anss_synthesize_filter_stencil(
+    stencil: *mut DynamicStencil,
+    dst_buf: *mut byte,
+    threshold: uint
+) -> uint {
+    let t0: uint = @silicon.rdtsc();
+
+    dst_buf[0] = 0x48 as byte; dst_buf[1] = 0x81 as byte; dst_buf[2] = 0xFF as byte;
+    dst_buf[3] = (threshold & 0xFF) as byte;
+    dst_buf[4] = ((threshold >> 8) & 0xFF) as byte;
+    dst_buf[5] = ((threshold >> 16) & 0xFF) as byte;
+    dst_buf[6] = ((threshold >> 24) & 0xFF) as byte;
+    dst_buf[7] = 0x0F as byte; dst_buf[8] = 0x9F as byte; dst_buf[9] = 0xC0 as byte;
+    dst_buf[10] = 0xC3 as byte;
+
+    stencil.code_buffer = dst_buf;
+    stencil.code_length = 11;
+    stencil.threshold_value = threshold;
+
+    let t1: uint = @silicon.rdtsc();
+    stencil.specialized_cycles = t1 - t0;
+    return 11;
+}

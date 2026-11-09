@@ -1,0 +1,52 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/subsystems/hsns/streamer.rx";
+include "compiler/subsystems/hsns/cooper_pair.rx";
+include "compiler/subsystems/hsns/swarm.rx";
+include "compiler/subsystems/hsns/virtual_ring.rx";
+
+fn main() -> int {
+    println("=== RUX COMPILER SUITE: HSNS (HYPER-STRIDE NATIVE SYNTHESIS) ===");
+
+    var code_buf: [byte; 64];
+    var cp: CooperPairCoalescer;
+    hsns_cooper_pair_init(&mut cp, &mut code_buf[0], 64);
+
+    var op_cmp: [byte; 3];
+    op_cmp[0] = 0x48 as byte; op_cmp[1] = 0x85 as byte; op_cmp[2] = 0xC0 as byte;
+
+    var op_jcc: [byte; 2];
+    op_jcc[0] = 0x74 as byte; op_jcc[1] = 0x05 as byte;
+
+    hsns_cooper_pair_fuse(&mut cp, &op_cmp[0], 3, &op_jcc[0], 2);
+    if cp.pairs_fused != 1 || cp.head != 5 {
+        println("[FAIL] HSNS: Cooper-Pair instruction fusion failed");
+        return 1;
+    }
+    println("[PASS] HSNS: Cooper-Pair instruction fusion verified");
+
+    var swarm_node: SwarmDistributedNode;
+    hsns_swarm_node_init(&mut swarm_node, 101, SwarmRole.COORDINATOR);
+    let sample_chunk: str = "fn add(a: int, b: int) => a + b;";
+    hsns_swarm_cluster_dispatch_task(&mut swarm_node, 1, sample_chunk as *const byte, 33);
+    if swarm_node.tasks_dispatched != 1 {
+        println("[FAIL] HSNS: Swarm cluster task dispatch failed");
+        return 2;
+    }
+    println("[PASS] HSNS: Multi-node compilation swarm protocol verified");
+
+    var patcher: ZcHpvrPatcher;
+    var initial_v: [byte; 16];
+    var staged_v: [byte; 16];
+    hsns_zc_hpvr_init(&mut patcher, &mut initial_v[0]);
+
+    let gen: uint = hsns_zc_hpvr_atomic_swizzle(&mut patcher, &mut staged_v[0]);
+    if gen != 2 || patcher.swizzle_count != 1 {
+        println("[FAIL] HSNS: ZC-HPVR atomic swizzle failed");
+        return 3;
+    }
+    println("[PASS] HSNS: Zero-copy hot-patching virtual ring swizzle verified");
+
+    println("ALL HSNS SOVEREIGN SYNTHESIS TESTS PASSED (100% OK)");
+    return 0;
+}

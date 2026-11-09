@@ -1,0 +1,44 @@
+include "lib/core/types.rx";
+
+const CLOUD_PROVIDER_AWS: u8   = 1;
+const CLOUD_PROVIDER_GCP: u8   = 2;
+const CLOUD_PROVIDER_AZURE: u8 = 3;
+
+struct K8sDeploymentSpec {
+    name_hash: uint,
+    desired_replicas: u32,
+    ready_replicas: u32,
+    container_port: u16,
+    cpu_millicores: u32,
+    memory_mib: u32,
+}
+
+struct CloudAuthRequest {
+    provider: u8,
+    region_hash: uint,
+    service_hash: uint,
+    payload_hash: uint,
+    timestamp_epoch: u64,
+}
+
+fn k8s_reconcile_delta(spec: *const K8sDeploymentSpec) -> int {
+    return (spec.desired_replicas as int) - (spec.ready_replicas as int);
+}
+
+fn k8s_apply_scale(spec: *mut K8sDeploymentSpec, healthy_delta: int) {
+    let next: int = (spec.ready_replicas as int) + healthy_delta;
+    if next < 0 {
+        spec.ready_replicas = 0;
+    } else {
+        spec.ready_replicas = next as u32;
+    }
+}
+
+fn cloud_sign_request_v4(req: *const CloudAuthRequest, secret_key_hash: u64) -> u64 {
+    var k_date: u64 = (secret_key_hash ^ req.timestamp_epoch) * 1099511628211;
+    let k_region: u64 = (k_date ^ (req.region_hash as u64)) * 1099511628211;
+    let k_service: u64 = (k_region ^ (req.service_hash as u64) ^ (req.provider as u64)) * 1099511628211;
+    let sig: u64 = (k_service ^ (req.payload_hash as u64)) * 1099511628211;
+    return sig;
+}
+

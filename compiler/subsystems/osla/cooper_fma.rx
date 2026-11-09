@@ -1,0 +1,19 @@
+struct CatalyticBarrier {
+    base_activation_energy: uint,
+    heat_coefficient: uint,
+    hot_transitions: uint,
+}
+
+fn osla_catalytic_barrier_init(
+    barrier: *mut CatalyticBarrier,
+    ea: uint,
+    coeff: uint
+) {
+    barrier.base_activation_energy = ea;
+    barrier.heat_coefficient = coeff;
+    barrier.hot_transitions = 0;
+}
+
+fn osla_cooper_pair_execute_fma(a: uint, b: uint, c: uint) -> uint {
+    return (a * b) + c;
+}

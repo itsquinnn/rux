@@ -1,0 +1,286 @@
+fn str_contains(hay: *u8, needle: *u8) -> u32 {
+    if needle[0] == 0 {
+        return 1;
+    }
+    var i: u64 = 0;
+    while hay[i] != 0 {
+        var j: u64 = 0;
+        while hay[i + j] != 0 && needle[j] != 0 && hay[i + j] == needle[j] {
+            j = j + 1;
+        }
+        if needle[j] == 0 {
+            return 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn fault_null_write() -> u64 {
+    let p: *mut u64 = 0 as *mut u64;
+    *p = 77;
+    return *p;
+}
+
+fn fault_null_offset() -> u64 {
+    let p: *u64 = 16 as *u64;
+    return *p;
+}
+
+fn fault_null_call() -> u64 {
+    let fp: *mut u8 = 0 as *mut u8;
+    return fp();
+}
+
+fn fault_bad_ptr() -> u64 {
+    let p: *u64 = 3735928559 as *u64;
+    return *p;
+}
+
+fn fault_div_zero(a: int, b: int) -> int {
+    return a / b;
+}
+
+fn fault_oob_read(idx: int) -> u64 {
+    var arr: [u64; 4];
+    arr[0] = 100;
+    arr[1] = 200;
+    arr[2] = 300;
+    arr[3] = 400;
+    return arr[idx];
+}
+
+fn fault_oob_write_neg(idx: int) -> u64 {
+    var buf: [u8; 5];
+    buf[idx] = 65;
+    return buf[0] as u64;
+}
+
+fn fault_stack_overflow(n: u64) -> u64 {
+    var local_pad: [u64; 8];
+    local_pad[0] = n;
+    if n == 0 {
+        return 0;
+    }
+    return local_pad[0] + fault_stack_overflow(n + 1);
+}
+
+fn fault_illegal_op() -> u64 {
+    @asm("ud2");
+    return 0;
+}
+
+fn dispatch_fault_case(mode: u32) -> int {
+    if mode == 1 { return fault_null_write() as int; }
+    if mode == 2 { return fault_null_offset() as int; }
+    if mode == 3 { return fault_null_call() as int; }
+    if mode == 4 { return fault_bad_ptr() as int; }
+    if mode == 5 { return fault_div_zero(99, 0); }
+    if mode == 6 { return fault_oob_read(11) as int; }
+    if mode == 7 { return fault_oob_write_neg(-3) as int; }
+    if mode == 8 { return fault_stack_overflow(1) as int; }
+    if mode == 9 { return fault_illegal_op() as int; }
+    return 0;
+}
+
+fn verify_fault_case(mode: u32, label: *u8, exp_msg: *u8, exp_fn: *u8) -> u32 {
+    var pipe_pack: u64 = 0;
+    let prc: i64 = syscall(22, (&mut pipe_pack) as u64);
+    if prc < 0 {
+        println("FAIL: pipe syscall failed");
+        return 1;
+    }
+    let rfd: u64 = pipe_pack & 4294967295;
+    let wfd: u64 = (pipe_pack >> 32) & 4294967295;
+
+    let pid: i64 = syscall(56, 17, 0, 0, 0, 0);
+    if pid == 0 {
+        syscall(3, rfd);
+        syscall(33, wfd, 2);
+        syscall(3, wfd);
+        let code: int = dispatch_fault_case(mode);
+        syscall(231, code as u64);
+    }
+
+    syscall(3, wfd);
+    var err_buf: [u8; 4096];
+    var total: u64 = 0;
+    var reading: u32 = 1;
+    while reading == 1 && total < 4000 {
+        let nr: i64 = syscall(0, rfd, (&mut err_buf[total]) as u64, 4000 - total);
+        if nr > 0 {
+            total = total + (nr as u64);
+        } else {
+            reading = 0;
+        }
+    }
+    err_buf[total] = 0;
+    syscall(3, rfd);
+
+    var wstatus: u64 = 0;
+    syscall(61, pid as u64, (&mut wstatus) as u64, 0, 0);
+    let ws: u64 = wstatus & 4294967295;
+    let term_sig: u64 = ws & 127;
+    let exit_code: u64 = (ws >> 8) & 255;
+
+    if term_sig != 0 {
+        print("FAIL [raw signal leaked] ");
+        println(label);
+        return 1;
+    }
+    if exit_code != 1 {
+        print("FAIL [unexpected exit code] ");
+        println(label);
+        return 1;
+    }
+    if str_contains(&err_buf[0], exp_msg) == 0 {
+        print("FAIL [missing error message] ");
+        println(label);
+        println(&err_buf[0]);
+        return 1;
+    }
+    if str_contains(&err_buf[0], exp_fn) == 0 {
+        print("FAIL [missing stack frame] ");
+        println(label);
+        println(&err_buf[0]);
+        return 1;
+    }
+    if str_contains(&err_buf[0], "test_runtime_errors.rx+0x") == 0 {
+        print("FAIL [missing source file in stack] ");
+        println(label);
+        println(&err_buf[0]);
+        return 1;
+    }
+
+    print("[PASS] ");
+    println(label);
+    return 0;
+}
+
+fn calc7(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64) -> u64 {
+    return a * 1 + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7;
+}
+
+fn calc10(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64, i: u64, j: u64) -> u64 {
+    return a + b * 2 + c * 3 + d * 4 + e * 5 + f * 6 + g * 7 + h * 8 + i * 9 + j * 10;
+}
+
+fn cstr_len(s: *u8) -> u64 {
+    var n: u64 = 0;
+    while s[n] != 0 {
+        n = n + 1;
+    }
+    return n;
+}
+
+fn verify_compile_diag_case(label: *u8, bad_src: *u8, exp_err: *u8, exp_loc: *u8) -> u32 {
+    let tmp_path: *u8 = "/tmp/rux_bad_diag_case.rx";
+    let fd: i64 = syscall(2, tmp_path as u64, 577, 420);
+    if fd < 0 {
+        println("FAIL: cannot create temp bad source file");
+        return 1;
+    }
+    syscall(1, fd as u64, bad_src as u64, cstr_len(bad_src));
+    syscall(3, fd as u64);
+
+    var pipe_pack: u64 = 0;
+    if syscall(22, (&mut pipe_pack) as u64) < 0 {
+        println("FAIL: pipe syscall failed");
+        return 1;
+    }
+    let rfd: u64 = pipe_pack & 4294967295;
+    let wfd: u64 = (pipe_pack >> 32) & 4294967295;
+
+    let pid: i64 = syscall(56, 17, 0, 0, 0, 0);
+    if pid == 0 {
+        syscall(3, rfd);
+        syscall(33, wfd, 2);
+        syscall(3, wfd);
+        let rux_bin: *u8 = "./bin/rux";
+        var c_argv: [u64; 3];
+        c_argv[0] = rux_bin as u64;
+        c_argv[1] = tmp_path as u64;
+        c_argv[2] = 0;
+        var c_envp: [u64; 1];
+        c_envp[0] = 0;
+        syscall(59, rux_bin as u64, (&c_argv[0]) as u64, (&c_envp[0]) as u64);
+        syscall(231, 127);
+    }
+
+    syscall(3, wfd);
+    var err_buf: [u8; 4096];
+    var total: u64 = 0;
+    var reading: u32 = 1;
+    while reading == 1 && total < 4000 {
+        let nr: i64 = syscall(0, rfd, (&mut err_buf[total]) as u64, 4000 - total);
+        if nr > 0 {
+            total = total + (nr as u64);
+        } else {
+            reading = 0;
+        }
+    }
+    err_buf[total] = 0;
+    syscall(3, rfd);
+
+    var wstatus: u64 = 0;
+    syscall(61, pid as u64, (&mut wstatus) as u64, 0, 0);
+    syscall(87, tmp_path as u64);
+
+    let ws: u64 = wstatus & 4294967295;
+    let term_sig: u64 = ws & 127;
+    let exit_code: u64 = (ws >> 8) & 255;
+
+    if term_sig != 0 || exit_code != 1 {
+        print("FAIL [wrong exit status] ");
+        println(label);
+        println(&err_buf[0]);
+        return 1;
+    }
+    if str_contains(&err_buf[0], exp_err) == 0 || str_contains(&err_buf[0], exp_loc) == 0 {
+        print("FAIL [missing diagnostic text] ");
+        println(label);
+        println(&err_buf[0]);
+        return 1;
+    }
+
+    print("[PASS] ");
+    println(label);
+    return 0;
+}
+
+fn main() -> int {
+    println("=== Rux Runtime & Compile-Time Error Verification ===");
+
+    var fails: u32 = 0;
+    fails = fails + verify_fault_case(1, "Null pointer write -> Uncaught TypeError", "Uncaught TypeError: Cannot read or write memory of null pointer (address 0x0)", "at fault_null_write");
+    fails = fails + verify_fault_case(2, "Null offset read -> Uncaught TypeError", "Uncaught TypeError: Cannot read or write memory of null pointer (address 0x10)", "at fault_null_offset");
+    fails = fails + verify_fault_case(3, "Null fn call -> Uncaught TypeError", "Uncaught TypeError: Cannot read or write memory of null pointer (address 0x0)", "at fault_null_call");
+    fails = fails + verify_fault_case(4, "Invalid pointer -> Uncaught ReferenceError", "Uncaught ReferenceError: Invalid memory access at address 0xdeadbeef", "at fault_bad_ptr");
+    fails = fails + verify_fault_case(5, "Division by zero -> Uncaught RangeError", "Uncaught RangeError: Division or modulo by zero", "at fault_div_zero");
+    fails = fails + verify_fault_case(6, "Array OOB read -> Uncaught RangeError", "Uncaught RangeError: Array index out of bounds (index 11, length 4)", "at fault_oob_read");
+    fails = fails + verify_fault_case(7, "Array negative OOB write -> Uncaught RangeError", "Uncaught RangeError: Array index out of bounds (index -3, length 5)", "at fault_oob_write_neg");
+    fails = fails + verify_fault_case(8, "Infinite recursion -> Maximum call stack size exceeded", "Uncaught RangeError: Maximum call stack size exceeded", "at fault_stack_overflow");
+    fails = fails + verify_fault_case(9, "Unreachable/UD2 -> Uncaught RuntimeError", "Uncaught RuntimeError: Illegal or privileged CPU instruction at 0x", "at fault_illegal_op");
+
+    let r7: u64 = calc7(1, 2, 3, 4, 5, 6, 7);
+    let r10: u64 = 1000 + calc10(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
+    if r7 != 140 || r10 != 1385 {
+        println("FAIL: >6 parameter ABI verification failed");
+        fails = fails + 1;
+    } else {
+        println("[PASS] 7-arg and nested 10-arg SysV stack parameter ABI");
+    }
+
+    fails = fails + verify_compile_diag_case("Undefined variable -> Uncaught ReferenceError", "fn main() -> int {\n    if dsscore8 != 36 {\n        return 1;\n    }\n    return 0;\n}\n", "Uncaught ReferenceError: dsscore8 is not defined", "rux_bad_diag_case.rx:2:8");
+    fails = fails + verify_compile_diag_case("Stray token after '}' -> Uncaught SyntaxError", "fn main() -> int {\n    if 1 == 2 {\n        return 1;\n    }bs\n    return 0;\n}\n", "Uncaught SyntaxError: Unexpected identifier 'bs'", "rux_bad_diag_case.rx:4:6");
+    fails = fails + verify_compile_diag_case("Undefined fn call -> Uncaught ReferenceError", "fn main() -> int {\n    missing_fn_xyz(1, 2);\n    return 0;\n}\n", "Uncaught ReferenceError: missing_fn_xyz is not defined", "rux_bad_diag_case.rx:2:5");
+    fails = fails + verify_compile_diag_case("Undefined assignment target -> Uncaught ReferenceError", "fn main() -> int {\n    typo_lhs = 99;\n    return 0;\n}\n", "Uncaught ReferenceError: typo_lhs is not defined", "rux_bad_diag_case.rx:2:5");
+    fails = fails + verify_compile_diag_case("Missing ')' delimiter -> Uncaught SyntaxError", "fn main() -> int {\n    println(123;\n    return 0;\n}\n", "Uncaught SyntaxError: Unexpected token ';', expected ')'", "rux_bad_diag_case.rx:2:16");
+    fails = fails + verify_compile_diag_case("Invalid symbol '$' -> Uncaught SyntaxError", "fn main() -> int {\n    let x: u64 = $;\n    return 0;\n}\n", "Uncaught SyntaxError: Invalid or unexpected token '$'", "rux_bad_diag_case.rx:2:18");
+
+    if fails > 0 {
+        return 1;
+    }
+    println("=== ALL 16 RUNTIME & COMPILE-TIME ERROR CHECKS PASSED ===");
+    return 0;
+}

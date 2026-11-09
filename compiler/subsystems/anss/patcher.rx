@@ -1,0 +1,14 @@
+fn anss_hot_patch_stencil(
+    target_site: *mut byte,
+    new_stencil: *const byte,
+    new_len: uint
+) -> bool {
+    let disp: int = (new_stencil as int) - ((target_site as int) + 5);
+
+    var patch_word: uint = 0xE9;
+    patch_word = patch_word | ((disp as uint & 0xFFFFFFFF) << 8);
+
+    @atomic.store_u64(target_site as *mut uint, patch_word);
+    @silicon.mfence();
+    return true;
+}

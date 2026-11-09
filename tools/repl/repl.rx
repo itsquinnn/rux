@@ -1,0 +1,66 @@
+include "lib/core/types.rx";
+
+struct ReplSession {
+    vars: [int; 26],
+    eval_count: uint,
+    last_result: int,
+}
+
+fn repl_init(s: *mut ReplSession) {
+    var i: uint = 0;
+    while i < 26 {
+        s.vars[i] = 0;
+        i = i + 1;
+    }
+    s.eval_count = 0;
+    s.last_result = 0;
+}
+
+fn repl_eval_line(s: *mut ReplSession, line: *const byte, len: uint) -> int {
+    var i: uint = 0;
+    while i < len && line[i] == 32 { i = i + 1; }
+    var assign_var: int = -1;
+    if (i + 2) < len && line[i] >= 97 && line[i] <= 122 {
+        var eq_i: uint = i + 1;
+        while eq_i < len && line[eq_i] == 32 { eq_i = eq_i + 1; }
+        if eq_i < len && line[eq_i] == 61 {
+            assign_var = (line[i] - 97) as int;
+            i = eq_i + 1;
+        }
+    }
+
+    var acc: int = 0;
+    var op: byte = 43;
+    while i < len {
+        while i < len && line[i] == 32 { i = i + 1; }
+        if i >= len { break; }
+        var val: int = 0;
+        if line[i] >= 48 && line[i] <= 57 {
+            while i < len && line[i] >= 48 && line[i] <= 57 {
+                val = (val * 10) + ((line[i] - 48) as int);
+                i = i + 1;
+            }
+        } else if line[i] >= 97 && line[i] <= 122 {
+            let v_idx: uint = (line[i] - 97) as uint;
+            val = s.vars[v_idx];
+            i = i + 1;
+        }
+        if op == 43 { acc = acc + val; }
+        else if op == 45 { acc = acc - val; }
+        else if op == 42 { acc = acc * val; }
+        else if op == 47 && val != 0 { acc = acc / val; }
+
+        while i < len && line[i] == 32 { i = i + 1; }
+        if i < len {
+            op = line[i];
+            i = i + 1;
+        }
+    }
+
+    if assign_var >= 0 {
+        s.vars[assign_var as uint] = acc;
+    }
+    s.eval_count = s.eval_count + 1;
+    s.last_result = acc;
+    return acc;
+}

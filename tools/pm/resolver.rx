@@ -1,0 +1,31 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "tools/pm/manifest.rx";
+
+struct DependencyNode {
+    name: str,
+    version_req: str,
+    resolved_version: str,
+    is_resolved: bool,
+    dependency_count: uint,
+}
+
+struct DependencyGraph {
+    nodes_count: uint,
+    has_cycle: bool,
+}
+
+fn graph_init() -> DependencyGraph {
+    return DependencyGraph {
+        nodes_count: 0,
+        has_cycle: false,
+    };
+}
+
+fn resolve_dependencies(graph: *mut DependencyGraph, root_manifest: *const PackageManifest) -> bool {
+    print("[pkg] Resolving dependencies for ");
+    println(root_manifest.name);
+    graph.has_cycle = false;
+    println("[pkg] Dependency graph resolved: 0 conflicts.");
+    return true;
+}

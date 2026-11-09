@@ -1,0 +1,620 @@
+struct DbgFnSym {
+    start_off: u32,
+    end_off: u32,
+    name_ro_off: u32,
+    reserved: u32,
+}
+
+fn rt_emit_ro_bytes(cg: *mut CodeGen, ptr: *u8, len: u64) -> u32 {
+    let off: u32 = cg.rodata_size as u32;
+    var i: u64 = 0;
+    while i < len {
+        cg.rodata_buf[cg.rodata_size] = ptr[i];
+        cg.rodata_size = cg.rodata_size + 1;
+        i = i + 1;
+    }
+    cg.rodata_buf[cg.rodata_size] = 0;
+    cg.rodata_size = cg.rodata_size + 1;
+    return off;
+}
+
+fn rt_emit_ro_cstr(cg: *mut CodeGen, s: *u8) -> u32 {
+    if s == (0 as *u8) {
+        let off0: u32 = cg.rodata_size as u32;
+        cg.rodata_buf[cg.rodata_size] = 0;
+        cg.rodata_size = cg.rodata_size + 1;
+        return off0;
+    }
+    var len: u64 = 0;
+    while s[len] != 0 {
+        len = len + 1;
+    }
+    return rt_emit_ro_bytes(cg, s, len);
+}
+
+fn rt_emit_ro_u32(cg: *mut CodeGen, v: u32) {
+    cg.rodata_buf[cg.rodata_size] = (v & 255) as u8;
+    cg.rodata_buf[cg.rodata_size + 1] = ((v >> 8) & 255) as u8;
+    cg.rodata_buf[cg.rodata_size + 2] = ((v >> 16) & 255) as u8;
+    cg.rodata_buf[cg.rodata_size + 3] = ((v >> 24) & 255) as u8;
+    cg.rodata_size = cg.rodata_size + 4;
+}
+
+fn rt_emit_ro_u64(cg: *mut CodeGen, v: u64) {
+    rt_emit_ro_u32(cg, (v & 4294967295) as u32);
+    rt_emit_ro_u32(cg, ((v >> 32) & 4294967295) as u32);
+}
+
+fn rt_guard_init(cg: *mut CodeGen, arena: *mut Arena, in_path: *u8) {
+    cg.dbg_fns = arena_alloc(arena, 524288);
+    cg.dbg_fn_count = 0;
+    cg.dbg_file_ro_off = rt_emit_ro_cstr(cg, in_path) as u64;
+    cg.rt_install_hole = 0;
+    cg.rt_bounds_holes = arena_alloc(arena, 131072) as *mut u32;
+    cg.rt_bounds_hole_count = 0;
+}
+
+fn rt_guard_record_fn(cg: *mut CodeGen, fnode: *mut AstNode, fn_start: u32, fn_end: u32) {
+    if cg.dbg_fns == (0 as *mut u8) || cg.dbg_fn_count >= 32768 {
+        return;
+    }
+    var name_ro: u32 = 0;
+    if fnode != (0 as *mut AstNode) && fnode.child3 != (0 as *mut AstNode) {
+        let nm: *mut AstNode = fnode.child3;
+        if nm.kind == 199 && nm.hash != 0 && nm.val > 0 && nm.val < 256 {
+            name_ro = rt_emit_ro_bytes(cg, nm.hash as *u8, nm.val);
+        }
+    }
+    if name_ro == 0 {
+        name_ro = rt_emit_ro_cstr(cg, "<anonymous>");
+    }
+    let sym: *mut DbgFnSym = (cg.dbg_fns + (cg.dbg_fn_count * 16)) as *mut DbgFnSym;
+    sym.start_off = fn_start;
+    sym.end_off = fn_end;
+    sym.name_ro_off = name_ro;
+    sym.reserved = 0;
+    cg.dbg_fn_count = cg.dbg_fn_count + 1;
+}
+
+fn rt_guard_emit_bounds_check(cg: *mut CodeGen, base_expr: *mut AstNode, stride: u64) {
+    if cg.target_arch != 0 || cg.is_freestanding != 0 {
+        return;
+    }
+    if base_expr == (0 as *mut AstNode) || base_expr.kind != 117 || stride == 0 {
+        return;
+    }
+    let lv: *mut LocalVar = cg_find_local(cg, base_expr.hash);
+    if lv == (0 as *mut LocalVar) {
+        return;
+    }
+    if lv.is_struct_val == 1 && (lv.is_struct_ptr == 10 || lv.is_struct_ptr == 11 || lv.is_struct_ptr >= 100) && lv.size >= stride {
+        let elem_cnt: u64 = lv.size / stride;
+        if elem_cnt > 0 && elem_cnt < 2147483647 && cg.rt_bounds_holes != (0 as *mut u32) && cg.rt_bounds_hole_count < 32768 {
+            cg_emit8(cg, 72); cg_emit8(cg, 61); cg_emit32(cg, elem_cnt as u32);
+            cg_emit8(cg, 114); cg_emit8(cg, 10);
+            cg_emit8(cg, 186); cg_emit32(cg, elem_cnt as u32);
+            cg_emit8(cg, 232);
+            cg.rt_bounds_holes[cg.rt_bounds_hole_count] = cg.text_size as u32;
+            cg.rt_bounds_hole_count = cg.rt_bounds_hole_count + 1;
+            cg_emit32(cg, 0);
+        }
+    }
+}
+
+fn rt_emit_call_rel(cg: *mut CodeGen, target_off: u32) {
+    cg_emit8(cg, 232);
+    let d: i32 = (target_off as i32) - (((cg.text_size as u32) + 4) as i32);
+    cg_emit32(cg, d as u32);
+}
+
+fn rt_emit_jmp_rel(cg: *mut CodeGen, target_off: u32) {
+    cg_emit8(cg, 233);
+    let d: i32 = (target_off as i32) - (((cg.text_size as u32) + 4) as i32);
+    cg_emit32(cg, d as u32);
+}
+
+fn rt_emit_print_ro(cg: *mut CodeGen, ro_off: u32, write_cstr_off: u32) {
+    cg_emit8(cg, 73); cg_emit8(cg, 141); cg_emit8(cg, 181);
+    cg_emit32(cg, ro_off);
+    rt_emit_call_rel(cg, write_cstr_off);
+}
+
+fn rt_emit_load_bases(cg: *mut CodeGen) {
+    cg_emit8(cg, 76); cg_emit8(cg, 141); cg_emit8(cg, 37);
+    let t_disp: i32 = 0 - (((cg.text_size as u32) + 4) as i32);
+    cg_emit32(cg, t_disp as u32);
+    cg_emit8(cg, 76); cg_emit8(cg, 141); cg_emit8(cg, 45);
+    let r_hole: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_add_rodata_fixup(cg, r_hole, 0);
+}
+
+fn rt_emit_sigaction_reg(cg: *mut CodeGen, sig: u32) {
+    cg_emit8(cg, 191); cg_emit32(cg, sig);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 117); cg_emit8(cg, 192);
+    cg_emit8(cg, 49); cg_emit8(cg, 210);
+    cg_emit8(cg, 65); cg_emit8(cg, 186); cg_emit32(cg, 8);
+    cg_emit8(cg, 184); cg_emit32(cg, 13);
+    cg_emit8(cg, 15); cg_emit8(cg, 5);
+}
+
+fn rt_guard_emit_all(cg: *mut CodeGen) {
+    if cg.target_arch != 0 || cg.is_freestanding != 0 {
+        return;
+    }
+
+    let ro_msg_null: u32 = rt_emit_ro_cstr(cg, "\nUncaught TypeError: Cannot read or write memory of null pointer (address 0x");
+    let ro_msg_segv: u32 = rt_emit_ro_cstr(cg, "\nUncaught ReferenceError: Invalid memory access at address 0x");
+    let ro_msg_stack: u32 = rt_emit_ro_cstr(cg, "\nUncaught RangeError: Maximum call stack size exceeded\n");
+    let ro_msg_fpe: u32 = rt_emit_ro_cstr(cg, "\nUncaught RangeError: Division or modulo by zero\n");
+    let ro_msg_ill: u32 = rt_emit_ro_cstr(cg, "\nUncaught RuntimeError: Illegal or privileged CPU instruction at 0x");
+    let ro_msg_bus: u32 = rt_emit_ro_cstr(cg, "\nUncaught MemoryError: Bus error at address 0x");
+    let ro_msg_abrt: u32 = rt_emit_ro_cstr(cg, "\nUncaught RuntimeError: Process aborted (SIGABRT)\n");
+    let ro_msg_oob1: u32 = rt_emit_ro_cstr(cg, "\nUncaught RangeError: Array index out of bounds (index ");
+    let ro_msg_oob2: u32 = rt_emit_ro_cstr(cg, ", length ");
+    let ro_msg_rparen_nl: u32 = rt_emit_ro_cstr(cg, ")\n");
+    let ro_msg_nl: u32 = rt_emit_ro_cstr(cg, "\n");
+    let ro_msg_at: u32 = rt_emit_ro_cstr(cg, "    at ");
+    let ro_msg_lparen: u32 = rt_emit_ro_cstr(cg, " (");
+    let ro_msg_plus0x: u32 = rt_emit_ro_cstr(cg, "+0x");
+    let ro_msg_unknown: u32 = rt_emit_ro_cstr(cg, "<unknown> (0x");
+
+    cg.rodata_size = ((cg.rodata_size + 7) / 8) * 8;
+    let dbg_dir_ro_off: u32 = cg.rodata_size as u32;
+    rt_emit_ro_u64(cg, cg.dbg_fn_count);
+    rt_emit_ro_u64(cg, cg.dbg_file_ro_off);
+    var si: u64 = 0;
+    while si < cg.dbg_fn_count {
+        let sym: *mut DbgFnSym = (cg.dbg_fns + (si * 16)) as *mut DbgFnSym;
+        rt_emit_ro_u32(cg, sym.start_off);
+        rt_emit_ro_u32(cg, sym.end_off);
+        rt_emit_ro_u32(cg, sym.name_ro_off);
+        rt_emit_ro_u32(cg, 0);
+        si = si + 1;
+    }
+
+    let restorer_off: u32 = cg.text_size as u32;
+    cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 192); cg_emit32(cg, 15);
+    cg_emit8(cg, 15); cg_emit8(cg, 5);
+
+    let write_cstr_off: u32 = cg.text_size as u32;
+    cg_emit8(cg, 49); cg_emit8(cg, 210);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 246);
+    cg_emit8(cg, 15); cg_emit8(cg, 132);
+    let wc_done_hole: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    let wc_loop: u32 = cg.text_size as u32;
+    cg_emit8(cg, 128); cg_emit8(cg, 60); cg_emit8(cg, 22); cg_emit8(cg, 0);
+    cg_emit8(cg, 15); cg_emit8(cg, 132);
+    let wc_write_hole: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 194);
+    rt_emit_jmp_rel(cg, wc_loop);
+    let wc_write_off: u32 = cg.text_size as u32;
+    cg_patch32(cg, wc_write_hole, wc_write_off - (wc_write_hole + 4));
+    cg_emit8(cg, 191); cg_emit32(cg, 2);
+    cg_emit8(cg, 184); cg_emit32(cg, 1);
+    cg_emit8(cg, 15); cg_emit8(cg, 5);
+    let wc_done_off: u32 = cg.text_size as u32;
+    cg_patch32(cg, wc_done_hole, wc_done_off - (wc_done_hole + 4));
+    cg_emit8(cg, 195);
+
+    let write_hex_off: u32 = cg.text_size as u32;
+    cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 32);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 124); cg_emit8(cg, 36); cg_emit8(cg, 31);
+    let wh_loop: u32 = cg.text_size as u32;
+    cg_emit8(cg, 137); cg_emit8(cg, 194);
+    cg_emit8(cg, 131); cg_emit8(cg, 226); cg_emit8(cg, 15);
+    cg_emit8(cg, 128); cg_emit8(cg, 194); cg_emit8(cg, 48);
+    cg_emit8(cg, 128); cg_emit8(cg, 250); cg_emit8(cg, 58);
+    cg_emit8(cg, 114); cg_emit8(cg, 3);
+    cg_emit8(cg, 128); cg_emit8(cg, 194); cg_emit8(cg, 39);
+    cg_emit8(cg, 136); cg_emit8(cg, 23);
+    cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 207);
+    cg_emit8(cg, 72); cg_emit8(cg, 193); cg_emit8(cg, 232); cg_emit8(cg, 4);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let wh_back: i32 = (wh_loop as i32) - (((cg.text_size as u32) + 4) as i32);
+    cg_emit32(cg, wh_back as u32);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 119); cg_emit8(cg, 1);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 84); cg_emit8(cg, 36); cg_emit8(cg, 32);
+    cg_emit8(cg, 72); cg_emit8(cg, 41); cg_emit8(cg, 242);
+    cg_emit8(cg, 191); cg_emit32(cg, 2);
+    cg_emit8(cg, 184); cg_emit32(cg, 1);
+    cg_emit8(cg, 15); cg_emit8(cg, 5);
+    cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 196); cg_emit8(cg, 32);
+    cg_emit8(cg, 195);
+
+    let write_i64_off: u32 = cg.text_size as u32;
+    cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 32);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 124); cg_emit8(cg, 36); cg_emit8(cg, 31);
+    cg_emit8(cg, 49); cg_emit8(cg, 201);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);
+    cg_emit8(cg, 121); cg_emit8(cg, 8);
+    cg_emit8(cg, 72); cg_emit8(cg, 247); cg_emit8(cg, 216);
+    cg_emit8(cg, 185); cg_emit32(cg, 1);
+    cg_emit8(cg, 65); cg_emit8(cg, 184); cg_emit32(cg, 10);
+    let wi_loop: u32 = cg.text_size as u32;
+    cg_emit8(cg, 49); cg_emit8(cg, 210);
+    cg_emit8(cg, 73); cg_emit8(cg, 247); cg_emit8(cg, 240);
+    cg_emit8(cg, 128); cg_emit8(cg, 194); cg_emit8(cg, 48);
+    cg_emit8(cg, 136); cg_emit8(cg, 23);
+    cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 207);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let wi_back: i32 = (wi_loop as i32) - (((cg.text_size as u32) + 4) as i32);
+    cg_emit32(cg, wi_back as u32);
+    cg_emit8(cg, 133); cg_emit8(cg, 201);
+    cg_emit8(cg, 116); cg_emit8(cg, 6);
+    cg_emit8(cg, 198); cg_emit8(cg, 7); cg_emit8(cg, 45);
+    cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 207);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 119); cg_emit8(cg, 1);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 84); cg_emit8(cg, 36); cg_emit8(cg, 32);
+    cg_emit8(cg, 72); cg_emit8(cg, 41); cg_emit8(cg, 242);
+    cg_emit8(cg, 191); cg_emit32(cg, 2);
+    cg_emit8(cg, 184); cg_emit32(cg, 1);
+    cg_emit8(cg, 15); cg_emit8(cg, 5);
+    cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 196); cg_emit8(cg, 32);
+    cg_emit8(cg, 195);
+
+    let resolve_fn_off: u32 = cg.text_size as u32;
+    cg_emit8(cg, 77); cg_emit8(cg, 57); cg_emit8(cg, 230);
+    cg_emit8(cg, 15); cg_emit8(cg, 130);
+    let rf_nf_hole1: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 76); cg_emit8(cg, 137); cg_emit8(cg, 240);
+    cg_emit8(cg, 76); cg_emit8(cg, 41); cg_emit8(cg, 224);
+    cg_emit8(cg, 73); cg_emit8(cg, 141); cg_emit8(cg, 189);
+    cg_emit32(cg, dbg_dir_ro_off);
+    cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 15);
+    cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 199); cg_emit8(cg, 16);
+    let rf_loop: u32 = cg.text_size as u32;
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 201);
+    cg_emit8(cg, 15); cg_emit8(cg, 132);
+    let rf_nf_hole2: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 139); cg_emit8(cg, 23);
+    cg_emit8(cg, 72); cg_emit8(cg, 57); cg_emit8(cg, 208);
+    cg_emit8(cg, 15); cg_emit8(cg, 130);
+    let rf_next_hole1: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 139); cg_emit8(cg, 119); cg_emit8(cg, 4);
+    cg_emit8(cg, 72); cg_emit8(cg, 57); cg_emit8(cg, 240);
+    cg_emit8(cg, 15); cg_emit8(cg, 131);
+    let rf_next_hole2: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 72); cg_emit8(cg, 41); cg_emit8(cg, 208);
+    cg_emit8(cg, 139); cg_emit8(cg, 87); cg_emit8(cg, 8);
+    cg_emit8(cg, 76); cg_emit8(cg, 137); cg_emit8(cg, 238);
+    cg_emit8(cg, 72); cg_emit8(cg, 1); cg_emit8(cg, 214);
+    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 194);
+    cg_emit8(cg, 184); cg_emit32(cg, 1);
+    cg_emit8(cg, 195);
+    let rf_next_off: u32 = cg.text_size as u32;
+    cg_patch32(cg, rf_next_hole1, rf_next_off - (rf_next_hole1 + 4));
+    cg_patch32(cg, rf_next_hole2, rf_next_off - (rf_next_hole2 + 4));
+    cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 199); cg_emit8(cg, 16);
+    cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 201);
+    rt_emit_jmp_rel(cg, rf_loop);
+    let rf_nf_off: u32 = cg.text_size as u32;
+    cg_patch32(cg, rf_nf_hole1, rf_nf_off - (rf_nf_hole1 + 4));
+    cg_patch32(cg, rf_nf_hole2, rf_nf_off - (rf_nf_hole2 + 4));
+    cg_emit8(cg, 49); cg_emit8(cg, 192);
+    cg_emit8(cg, 195);
+
+    let print_frame_off: u32 = cg.text_size as u32;
+    rt_emit_call_rel(cg, resolve_fn_off);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);
+    cg_emit8(cg, 15); cg_emit8(cg, 132);
+    let pf_unk_hole: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 82);
+    cg_emit8(cg, 86);
+    rt_emit_print_ro(cg, ro_msg_at, write_cstr_off);
+    cg_emit8(cg, 94);
+    rt_emit_call_rel(cg, write_cstr_off);
+    rt_emit_print_ro(cg, ro_msg_lparen, write_cstr_off);
+    rt_emit_print_ro(cg, cg.dbg_file_ro_off as u32, write_cstr_off);
+    rt_emit_print_ro(cg, ro_msg_plus0x, write_cstr_off);
+    cg_emit8(cg, 88);
+    rt_emit_call_rel(cg, write_hex_off);
+    rt_emit_print_ro(cg, ro_msg_rparen_nl, write_cstr_off);
+    cg_emit8(cg, 195);
+    let pf_unk_off: u32 = cg.text_size as u32;
+    cg_patch32(cg, pf_unk_hole, pf_unk_off - (pf_unk_hole + 4));
+    rt_emit_print_ro(cg, ro_msg_at, write_cstr_off);
+    rt_emit_print_ro(cg, ro_msg_unknown, write_cstr_off);
+    cg_emit8(cg, 76); cg_emit8(cg, 137); cg_emit8(cg, 240);
+    rt_emit_call_rel(cg, write_hex_off);
+    rt_emit_print_ro(cg, ro_msg_rparen_nl, write_cstr_off);
+    cg_emit8(cg, 195);
+
+    let unwind_off: u32 = cg.text_size as u32;
+    rt_emit_call_rel(cg, print_frame_off);
+    cg_emit8(cg, 106); cg_emit8(cg, 12);
+    let uw_loop: u32 = cg.text_size as u32;
+    cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 60); cg_emit8(cg, 36); cg_emit8(cg, 0);
+    cg_emit8(cg, 15); cg_emit8(cg, 132);
+    let uw_exit_h1: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 12); cg_emit8(cg, 36);
+    cg_emit8(cg, 73); cg_emit8(cg, 129); cg_emit8(cg, 255); cg_emit32(cg, 65536);
+    cg_emit8(cg, 15); cg_emit8(cg, 130);
+    let uw_exit_h2: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 73); cg_emit8(cg, 247); cg_emit8(cg, 199); cg_emit32(cg, 7);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let uw_exit_h3: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 76); cg_emit8(cg, 137); cg_emit8(cg, 248);
+    cg_emit8(cg, 72); cg_emit8(cg, 41); cg_emit8(cg, 216);
+    cg_emit8(cg, 72); cg_emit8(cg, 5); cg_emit32(cg, 256);
+    cg_emit8(cg, 72); cg_emit8(cg, 61); cg_emit32(cg, 8388608);
+    cg_emit8(cg, 15); cg_emit8(cg, 131);
+    let uw_exit_h4: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 77); cg_emit8(cg, 139); cg_emit8(cg, 119); cg_emit8(cg, 8);
+    cg_emit8(cg, 77); cg_emit8(cg, 139); cg_emit8(cg, 63);
+    cg_emit8(cg, 77); cg_emit8(cg, 133); cg_emit8(cg, 246);
+    cg_emit8(cg, 15); cg_emit8(cg, 132);
+    let uw_exit_h5: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 73); cg_emit8(cg, 255); cg_emit8(cg, 206);
+    rt_emit_call_rel(cg, resolve_fn_off);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);
+    cg_emit8(cg, 15); cg_emit8(cg, 132);
+    let uw_exit_h6: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    rt_emit_call_rel(cg, print_frame_off);
+    rt_emit_jmp_rel(cg, uw_loop);
+    let uw_exit_off: u32 = cg.text_size as u32;
+    cg_patch32(cg, uw_exit_h1, uw_exit_off - (uw_exit_h1 + 4));
+    cg_patch32(cg, uw_exit_h2, uw_exit_off - (uw_exit_h2 + 4));
+    cg_patch32(cg, uw_exit_h3, uw_exit_off - (uw_exit_h3 + 4));
+    cg_patch32(cg, uw_exit_h4, uw_exit_off - (uw_exit_h4 + 4));
+    cg_patch32(cg, uw_exit_h5, uw_exit_off - (uw_exit_h5 + 4));
+    cg_patch32(cg, uw_exit_h6, uw_exit_off - (uw_exit_h6 + 4));
+    cg_emit8(cg, 191); cg_emit32(cg, 1);
+    cg_emit8(cg, 184); cg_emit32(cg, 231);
+    cg_emit8(cg, 15); cg_emit8(cg, 5);
+
+    let bounds_panic_off: u32 = cg.text_size as u32;
+    var bhi: u64 = 0;
+    while bhi < cg.rt_bounds_hole_count {
+        let bh: u32 = cg.rt_bounds_holes[bhi];
+        let bdisp: i32 = (bounds_panic_off as i32) - ((bh + 4) as i32);
+        cg_patch32(cg, bh, bdisp as u32);
+        bhi = bhi + 1;
+    }
+    cg_emit8(cg, 65); cg_emit8(cg, 94);
+    cg_emit8(cg, 73); cg_emit8(cg, 255); cg_emit8(cg, 206);
+    cg_emit8(cg, 73); cg_emit8(cg, 137); cg_emit8(cg, 239);
+    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 227);
+    cg_emit8(cg, 82);
+    cg_emit8(cg, 80);
+    rt_emit_load_bases(cg);
+    rt_emit_print_ro(cg, ro_msg_oob1, write_cstr_off);
+    cg_emit8(cg, 88);
+    rt_emit_call_rel(cg, write_i64_off);
+    rt_emit_print_ro(cg, ro_msg_oob2, write_cstr_off);
+    cg_emit8(cg, 88);
+    rt_emit_call_rel(cg, write_i64_off);
+    rt_emit_print_ro(cg, ro_msg_rparen_nl, write_cstr_off);
+    rt_emit_jmp_rel(cg, unwind_off);
+
+    let sig_handler_off: u32 = cg.text_size as u32;
+    rt_emit_load_bases(cg);
+    cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 178); cg_emit32(cg, 168);
+    cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 122); cg_emit8(cg, 120);
+    cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 154); cg_emit32(cg, 160);
+    cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 70); cg_emit8(cg, 16);
+    cg_emit8(cg, 80);
+    cg_emit8(cg, 87);
+    cg_emit8(cg, 88);
+
+    cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 8);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let sh_not_fpe: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 88);
+    rt_emit_print_ro(cg, ro_msg_fpe, write_cstr_off);
+    rt_emit_jmp_rel(cg, unwind_off);
+    let sh_after_fpe: u32 = cg.text_size as u32;
+    cg_patch32(cg, sh_not_fpe, sh_after_fpe - (sh_not_fpe + 4));
+
+    cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 4);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let sh_not_ill: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 88);
+    rt_emit_print_ro(cg, ro_msg_ill, write_cstr_off);
+    cg_emit8(cg, 76); cg_emit8(cg, 137); cg_emit8(cg, 240);
+    rt_emit_call_rel(cg, write_hex_off);
+    rt_emit_print_ro(cg, ro_msg_nl, write_cstr_off);
+    rt_emit_jmp_rel(cg, unwind_off);
+    let sh_after_ill: u32 = cg.text_size as u32;
+    cg_patch32(cg, sh_not_ill, sh_after_ill - (sh_not_ill + 4));
+
+    cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 7);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let sh_not_bus: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    rt_emit_print_ro(cg, ro_msg_bus, write_cstr_off);
+    cg_emit8(cg, 88);
+    rt_emit_call_rel(cg, write_hex_off);
+    rt_emit_print_ro(cg, ro_msg_nl, write_cstr_off);
+    rt_emit_jmp_rel(cg, unwind_off);
+    let sh_after_bus: u32 = cg.text_size as u32;
+    cg_patch32(cg, sh_not_bus, sh_after_bus - (sh_not_bus + 4));
+
+    cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 6);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let sh_not_abrt: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 88);
+    rt_emit_print_ro(cg, ro_msg_abrt, write_cstr_off);
+    rt_emit_jmp_rel(cg, unwind_off);
+    let sh_after_abrt: u32 = cg.text_size as u32;
+    cg_patch32(cg, sh_not_abrt, sh_after_abrt - (sh_not_abrt + 4));
+
+    cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 4); cg_emit8(cg, 36);
+    cg_emit8(cg, 72); cg_emit8(cg, 61); cg_emit32(cg, 4096);
+    cg_emit8(cg, 15); cg_emit8(cg, 131);
+    let sh_not_null: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    rt_emit_print_ro(cg, ro_msg_null, write_cstr_off);
+    cg_emit8(cg, 88);
+    rt_emit_call_rel(cg, write_hex_off);
+    rt_emit_print_ro(cg, ro_msg_rparen_nl, write_cstr_off);
+    cg_emit8(cg, 73); cg_emit8(cg, 129); cg_emit8(cg, 254); cg_emit32(cg, 4096);
+    cg_emit8(cg, 15); cg_emit8(cg, 131);
+    let sh_null_uw1: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 251); cg_emit32(cg, 65536);
+    cg_emit8(cg, 15); cg_emit8(cg, 130);
+    let sh_null_uw2: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 51);
+    cg_emit8(cg, 73); cg_emit8(cg, 255); cg_emit8(cg, 206);
+    let sh_null_uw_off: u32 = cg.text_size as u32;
+    cg_patch32(cg, sh_null_uw1, sh_null_uw_off - (sh_null_uw1 + 4));
+    cg_patch32(cg, sh_null_uw2, sh_null_uw_off - (sh_null_uw2 + 4));
+    rt_emit_jmp_rel(cg, unwind_off);
+
+    let sh_after_null: u32 = cg.text_size as u32;
+    cg_patch32(cg, sh_not_null, sh_after_null - (sh_not_null + 4));
+    cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 4); cg_emit8(cg, 36);
+    cg_emit8(cg, 72); cg_emit8(cg, 61); cg_emit32(cg, 65536);
+    cg_emit8(cg, 15); cg_emit8(cg, 130);
+    let sh_inv_h1: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 72); cg_emit8(cg, 41); cg_emit8(cg, 216);
+    cg_emit8(cg, 72); cg_emit8(cg, 5); cg_emit32(cg, 65536);
+    cg_emit8(cg, 72); cg_emit8(cg, 61); cg_emit32(cg, 131072);
+    cg_emit8(cg, 15); cg_emit8(cg, 131);
+    let sh_inv_h2: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 88);
+    rt_emit_print_ro(cg, ro_msg_stack, write_cstr_off);
+    rt_emit_jmp_rel(cg, unwind_off);
+
+    let sh_inv_off: u32 = cg.text_size as u32;
+    cg_patch32(cg, sh_inv_h1, sh_inv_off - (sh_inv_h1 + 4));
+    cg_patch32(cg, sh_inv_h2, sh_inv_off - (sh_inv_h2 + 4));
+    rt_emit_print_ro(cg, ro_msg_segv, write_cstr_off);
+    cg_emit8(cg, 88);
+    rt_emit_call_rel(cg, write_hex_off);
+    rt_emit_print_ro(cg, ro_msg_nl, write_cstr_off);
+    rt_emit_jmp_rel(cg, unwind_off);
+
+    let install_off: u32 = cg.text_size as u32;
+    if cg.rt_install_hole != 0 {
+        let idisp: i32 = (install_off as i32) - (((cg.rt_install_hole as u32) + 4) as i32);
+        cg_patch32(cg, cg.rt_install_hole as u32, idisp as u32);
+    }
+    cg_emit8(cg, 85);
+    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+    cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 64);
+
+    cg_emit8(cg, 49); cg_emit8(cg, 255);
+    cg_emit8(cg, 190); cg_emit32(cg, 65536);
+    cg_emit8(cg, 186); cg_emit32(cg, 3);
+    cg_emit8(cg, 65); cg_emit8(cg, 186); cg_emit32(cg, 34);
+    cg_emit8(cg, 73); cg_emit8(cg, 199); cg_emit8(cg, 192); cg_emit32(cg, 4294967295);
+    cg_emit8(cg, 69); cg_emit8(cg, 49); cg_emit8(cg, 201);
+    cg_emit8(cg, 184); cg_emit32(cg, 9);
+    cg_emit8(cg, 15); cg_emit8(cg, 5);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);
+    cg_emit8(cg, 15); cg_emit8(cg, 142);
+    let skip_alt_hole: u32 = cg.text_size as u32;
+    cg_emit32(cg, 0);
+    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 69); cg_emit8(cg, 224);
+    cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 69); cg_emit8(cg, 232); cg_emit32(cg, 0);
+    cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 69); cg_emit8(cg, 240); cg_emit32(cg, 65536);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 125); cg_emit8(cg, 224);
+    cg_emit8(cg, 49); cg_emit8(cg, 246);
+    cg_emit8(cg, 184); cg_emit32(cg, 131);
+    cg_emit8(cg, 15); cg_emit8(cg, 5);
+    let after_alt_off: u32 = cg.text_size as u32;
+    cg_patch32(cg, skip_alt_hole, after_alt_off - (skip_alt_hole + 4));
+
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 5);
+    let sh_lea_d: i32 = (sig_handler_off as i32) - (((cg.text_size as u32) + 4) as i32);
+    cg_emit32(cg, sh_lea_d as u32);
+    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 69); cg_emit8(cg, 192);
+    cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 69); cg_emit8(cg, 200); cg_emit32(cg, 201326596);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 5);
+    let rs_lea_d: i32 = (restorer_off as i32) - (((cg.text_size as u32) + 4) as i32);
+    cg_emit32(cg, rs_lea_d as u32);
+    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 69); cg_emit8(cg, 208);
+    cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 69); cg_emit8(cg, 216); cg_emit32(cg, 0);
+
+    rt_emit_sigaction_reg(cg, 11);
+    rt_emit_sigaction_reg(cg, 8);
+    rt_emit_sigaction_reg(cg, 4);
+    rt_emit_sigaction_reg(cg, 7);
+    rt_emit_sigaction_reg(cg, 6);
+
+    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236);
+    cg_emit8(cg, 93);
+    cg_emit8(cg, 195);
+}
+
+fn rt_emit_builtin_fallbacks(cg: *mut CodeGen) {
+    if cg == (0 as *mut CodeGen) { return; }
+    if cg.target_arch != 0 { return; }
+    let sys_exit_h: u64 = hash_identifier("sys_exit", 8);
+    if diag_is_symbol_defined(cg, sys_exit_h) == 1 { return; }
+    var needed: u32 = 0;
+    var i: u64 = 0;
+    while i < cg.sym_check_count {
+        let ce: *mut ConstEntry = ((cg.sym_checks as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if ce.name_hash == sys_exit_h {
+            needed = 1;
+            i = cg.sym_check_count;
+        } else {
+            i = i + 1;
+        }
+    }
+    if needed == 1 {
+        let fn_off: u32 = cg.text_size;
+        cg_emit8(cg, 184); cg_emit32(cg, 60);
+        cg_emit8(cg, 15); cg_emit8(cg, 5);
+        cg_emit8(cg, 195);
+        let fe: *mut FnEntry = ((cg.fn_entries as *mut u8) + ((cg.fn_entry_count as u64) * 16)) as *mut FnEntry;
+        fe.fn_hash = sys_exit_h;
+        fe.text_offset = fn_off as u64;
+        cg.fn_entry_count = cg.fn_entry_count + 1;
+    }
+    let eval_h: u64 = hash_identifier("eval", 4);
+    var eval_defined: u32 = 0;
+    var efi: u64 = 0;
+    while efi < cg.fn_entry_count {
+        let efe: *mut FnEntry = ((cg.fn_entries as *mut u8) + (efi * 16)) as *mut FnEntry;
+        if efe.fn_hash == eval_h { eval_defined = 1; }
+        efi = efi + 1;
+    }
+    if eval_defined == 0 {
+        var eval_needed: u32 = 0;
+        var ei: u64 = 0;
+        while ei < cg.sym_check_count {
+            let ece: *mut ConstEntry = ((cg.sym_checks as *mut u8) + (ei * 24)) as *mut ConstEntry;
+            if ece.name_hash == eval_h {
+                eval_needed = 1;
+                ei = cg.sym_check_count;
+            } else {
+                ei = ei + 1;
+            }
+        }
+        if eval_needed == 1 {
+            let eval_off: u32 = cg.text_size;
+            cg_emit8(cg, 49); cg_emit8(cg, 192);
+            cg_emit8(cg, 195);
+            let efe2: *mut FnEntry = ((cg.fn_entries as *mut u8) + ((cg.fn_entry_count as u64) * 16)) as *mut FnEntry;
+            efe2.fn_hash = eval_h;
+            efe2.text_offset = eval_off as u64;
+            cg.fn_entry_count = cg.fn_entry_count + 1;
+        }
+    }
+}
+

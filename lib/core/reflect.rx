@@ -1,0 +1,68 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+
+struct ReflectCapability {
+    token: u64,
+    permitted_mask: u32,
+}
+
+fn reflect_capability_root() -> ReflectCapability {
+    return ReflectCapability {
+        token: 18446744073709551615,
+        permitted_mask: 4294967295,
+    };
+}
+
+fn reflect_check_permission(cap: *const ReflectCapability, required_mask: u32) -> bool {
+    if (cap.permitted_mask & required_mask) == required_mask {
+        return true;
+    }
+    return false;
+}
+
+struct FieldReflectInfo {
+    name_hash: u64,
+    type_hash: u64,
+    offset: u32,
+    size: u32,
+    is_public: bool,
+}
+
+struct TypeReflectInfo {
+    type_id: u64,
+    size: usize,
+    alignment: usize,
+    field_count: u32,
+    is_enum: bool,
+    stable_id: u64,
+}
+
+fn type_reflect_query(type_id: u64) -> TypeReflectInfo {
+    var info: TypeReflectInfo;
+    info.type_id = type_id;
+    info.size = 8;
+    info.alignment = 8;
+    info.field_count = 0;
+    info.is_enum = false;
+    info.stable_id = type_id;
+    return info;
+}
+
+struct FnReflectInfo {
+    fn_hash: u64,
+    param_count: u32,
+    return_type_hash: u64,
+    is_async: bool,
+    is_unsafe: bool,
+}
+
+fn fn_reflect_query(fn_hash: u64, param_cnt: u32, ret_type: u64, is_async: bool, is_unsafe: bool) -> FnReflectInfo {
+    var info: FnReflectInfo;
+    info.fn_hash = fn_hash;
+    info.param_count = param_cnt;
+    info.return_type_hash = ret_type;
+    info.is_async = is_async;
+    info.is_unsafe = is_unsafe;
+    return info;
+}
+

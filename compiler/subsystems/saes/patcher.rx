@@ -1,0 +1,46 @@
+struct RelocHole {
+    instruction_offset: uint,
+    target_symbol_id: uint,
+    addend: int,
+    is_patched: bool,
+}
+
+struct SrtEntry {
+    symbol_id: uint,
+    v_exec_addr: uint,
+    v_write_addr: uint,
+    hole_count: uint,
+    epoch: uint,
+    holes_start_idx: uint,
+    code_size: uint,
+    total_patches: uint,
+    last_swizzle_cycles: uint,
+}
+
+fn saes_patch_immediate_hole(
+    entry: *mut SrtEntry,
+    hole: *mut RelocHole,
+    target_exec_addr: uint
+) {
+    let call_site_exec: uint = entry.v_exec_addr + hole.instruction_offset;
+    let disp: int = (target_exec_addr as int) - ((call_site_exec + 4) as int) + hole.addend;
+
+    let patch_ptr: *mut byte = (entry.v_write_addr + hole.instruction_offset) as *mut byte;
+
+    patch_ptr[0] = (disp & 0xFF) as byte;
+    patch_ptr[1] = ((disp >> 8) & 0xFF) as byte;
+    patch_ptr[2] = ((disp >> 16) & 0xFF) as byte;
+    patch_ptr[3] = ((disp >> 24) & 0xFF) as byte;
+
+    hole.is_patched = true;
+    entry.total_patches = entry.total_patches + 1;
+}
+
+fn saes_fence_instruction_stream() {
+    @silicon.mfence();
+    @silicon.cpuid_serialize();
+}
+
+fn saes_sync_instruction_pipeline() {
+    saes_fence_instruction_stream();
+}

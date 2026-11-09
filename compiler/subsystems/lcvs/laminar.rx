@@ -1,0 +1,31 @@
+struct LaminarRingBuffer {
+    storage: *mut uint,
+    capacity: uint,
+    head: uint,
+    tail: uint,
+    burst_tokens_absorbed: uint,
+}
+
+fn lcvs_laminar_ring_init(
+    buf: *mut LaminarRingBuffer,
+    storage: *mut uint,
+    capacity: uint
+) {
+    buf.storage = storage;
+    buf.capacity = capacity;
+    buf.head = 0;
+    buf.tail = 0;
+    buf.burst_tokens_absorbed = 0;
+}
+
+fn lcvs_laminar_dampen_burst(buf: *mut LaminarRingBuffer, token: uint) -> bool {
+    let next_head: uint = (buf.head + 1) % buf.capacity;
+    if next_head == buf.tail {
+        return false;
+    }
+
+    buf.storage[buf.head] = token;
+    buf.head = next_head;
+    buf.burst_tokens_absorbed = buf.burst_tokens_absorbed + 1;
+    return true;
+}

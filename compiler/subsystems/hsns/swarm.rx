@@ -1,0 +1,35 @@
+enum SwarmRole {
+    COORDINATOR = 1,
+    WORKER = 2,
+    VERIFIER = 3,
+}
+
+struct SwarmDistributedNode {
+    node_id: uint,
+    role: SwarmRole,
+    cluster_epoch: uint,
+    tasks_dispatched: uint,
+    tasks_completed: uint,
+}
+
+fn hsns_swarm_node_init(
+    node: *mut SwarmDistributedNode,
+    id: uint,
+    role: SwarmRole
+) {
+    node.node_id = id;
+    node.role = role;
+    node.cluster_epoch = 1;
+    node.tasks_dispatched = 0;
+    node.tasks_completed = 0;
+}
+
+fn hsns_swarm_cluster_dispatch_task(
+    coord: *mut SwarmDistributedNode,
+    task_id: uint,
+    src_bytes: *const byte,
+    len: uint
+) -> bool {
+    coord.tasks_dispatched = coord.tasks_dispatched + 1;
+    return true;
+}

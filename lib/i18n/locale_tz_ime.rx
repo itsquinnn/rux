@@ -1,0 +1,116 @@
+include "lib/core/types.rx";
+
+const PLURAL_ZERO: u8  = 0;
+const PLURAL_ONE: u8   = 1;
+const PLURAL_TWO: u8   = 2;
+const PLURAL_FEW: u8   = 3;
+const PLURAL_MANY: u8  = 4;
+const PLURAL_OTHER: u8 = 5;
+
+struct LocaleTag {
+    lang_code: u16,
+    region_code: u16,
+    is_rtl: bool,
+}
+
+struct TimezoneOffset {
+    zone_hash: uint,
+    utc_offset_minutes: int,
+    dst_extra_minutes: int,
+}
+
+struct ImeSession {
+    preedit_bytes: [byte; 64],
+    preedit_len: uint,
+    committed_bytes: [byte; 64],
+    committed_len: uint,
+    candidate_index: uint,
+    composing: bool,
+}
+
+fn locale_parse_bcp47(tag: *const byte, out: *mut LocaleTag) -> bool {
+    if tag[0] == 0 || tag[1] == 0 {
+        return false;
+    }
+    out.lang_code = ((tag[0] as u16) << 8) | (tag[1] as u16);
+    out.region_code = 0;
+    if tag[2] == 45 || tag[2] == 95 {
+        if tag[3] != 0 && tag[4] != 0 {
+            out.region_code = ((tag[3] as u16) << 8) | (tag[4] as u16);
+        }
+    }
+    let ar: u16 = (97 << 8) | 114;
+    let he: u16 = (104 << 8) | 101;
+    let fa: u16 = (102 << 8) | 97;
+    let ur: u16 = (117 << 8) | 114;
+    out.is_rtl = out.lang_code == ar || out.lang_code == he || out.lang_code == fa || out.lang_code == ur;
+    return true;
+}
+
+fn locale_plural_category(loc: *const LocaleTag, n: int) -> u8 {
+    let ar: u16 = (97 << 8) | 114;
+    if loc.lang_code == ar {
+        if n == 0 { return PLURAL_ZERO; }
+        if n == 1 { return PLURAL_ONE; }
+        if n == 2 { return PLURAL_TWO; }
+        let mod100: int = n % 100;
+        if mod100 >= 3 && mod100 <= 10 { return PLURAL_FEW; }
+        if mod100 >= 11 && mod100 <= 99 { return PLURAL_MANY; }
+        return PLURAL_OTHER;
+    }
+    if n == 1 {
+        return PLURAL_ONE;
+    }
+    return PLURAL_OTHER;
+}
+
+fn tz_make_offset(zone_hash: uint, hours: int, minutes: int, dst_mins: int) -> TimezoneOffset {
+    var tz: TimezoneOffset;
+    tz.zone_hash = zone_hash;
+    if hours < 0 {
+        tz.utc_offset_minutes = (hours * 60) - minutes;
+    } else {
+        tz.utc_offset_minutes = (hours * 60) + minutes;
+    }
+    tz.dst_extra_minutes = dst_mins;
+    return tz;
+}
+
+fn tz_utc_to_local_epoch(utc_sec: int, tz: *const TimezoneOffset, is_dst: bool) -> int {
+    var total_min: int = tz.utc_offset_minutes;
+    if is_dst {
+        total_min = total_min + tz.dst_extra_minutes;
+    }
+    return utc_sec + (total_min * 60);
+}
+
+fn ime_init(ime: *mut ImeSession) {
+    ime.preedit_len = 0;
+    ime.committed_len = 0;
+    ime.candidate_index = 0;
+    ime.composing = false;
+}
+
+fn ime_feed_key(ime: *mut ImeSession, ch: byte) {
+    if ime.preedit_len < 63 {
+        ime.preedit_bytes[ime.preedit_len] = ch;
+        ime.preedit_len = ime.preedit_len + 1;
+        ime.preedit_bytes[ime.preedit_len] = 0;
+        ime.composing = true;
+    }
+}
+
+fn ime_commit_candidate(ime: *mut ImeSession, replacement_utf8: *const byte, rep_len: uint) -> uint {
+    var i: uint = 0;
+    while i < rep_len && (ime.committed_len + i) < 63 {
+        ime.committed_bytes[ime.committed_len + i] = replacement_utf8[i];
+        i = i + 1;
+    }
+    ime.committed_len = ime.committed_len + i;
+    ime.committed_bytes[ime.committed_len] = 0;
+    ime.preedit_len = 0;
+    ime.candidate_index = 0;
+    ime.composing = false;
+    return ime.committed_len;
+}
+

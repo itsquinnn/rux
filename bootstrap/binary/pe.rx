@@ -1,0 +1,46 @@
+const PE_DOS_MAGIC: uint             = 0x5A4D;
+const PE_NT_SIGNATURE: uint         = 0x00004550;
+const PE_OPTIONAL_HDR64_MAGIC: uint = 0x020B;
+
+const PE_MACHINE_AMD64: uint        = 0x8664;
+const PE_MACHINE_ARM64: uint        = 0xAA64;
+
+const PE_SUBSYSTEM_NATIVE: uint     = 1;
+const PE_SUBSYSTEM_WINDOWS_GUI: uint= 2;
+const PE_SUBSYSTEM_WINDOWS_CUI: uint= 3;
+
+const PE_FILE_EXECUTABLE_IMAGE: uint    = 0x0002;
+const PE_FILE_LARGE_ADDRESS_AWARE: uint = 0x0020;
+
+const PE_SCN_CNT_CODE: uint         = 0x00000020;
+const PE_SCN_MEM_EXECUTE: uint      = 0x20000000;
+const PE_SCN_MEM_READ: uint         = 0x40000000;
+const PE_SCN_MEM_WRITE: uint        = 0x80000000;
+
+struct PeDosHeader {
+    magic: uint,
+    lfanew: uint,
+}
+
+struct PeFileHeader {
+    machine: uint,
+    number_of_sections: uint,
+    time_date_stamp: uint,
+    pointer_to_symtab: uint,
+    number_of_symbols: uint,
+    size_of_optional_hdr: uint,
+    characteristics: uint,
+}
+
+struct PeSectionHeader {
+    name_bytes: [byte; 8],
+    virtual_size: uint,
+    virtual_address: uint,
+    size_of_raw_data: uint,
+    pointer_to_raw_data: uint,
+    pointer_to_relocs: uint,
+    pointer_to_lineno: uint,
+    number_of_relocs: uint,
+    number_of_lineno: uint,
+    characteristics: uint,
+}

@@ -1,0 +1,44 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/core/btreemap.rx";
+
+struct BTreeSet {
+    map: BTreeMap,
+}
+
+fn btreeset_init(s: *mut BTreeSet, initial_cap: uint) {
+    btreemap_init(&mut s.map, initial_cap);
+}
+
+fn btreeset_insert(s: *mut BTreeSet, val: uint) -> bool {
+    if btreemap_contains_key(&s.map, val) {
+        return false;
+    }
+    btreemap_insert(&mut s.map, val, 1);
+    return true;
+}
+
+fn btreeset_contains(s: *const BTreeSet, val: uint) -> bool {
+    return btreemap_contains_key(&s.map, val);
+}
+
+fn btreeset_min(s: *const BTreeSet) -> Option {
+    return btreemap_min_key(&s.map);
+}
+
+fn btreeset_max(s: *const BTreeSet) -> Option {
+    return btreemap_max_key(&s.map);
+}
+
+fn btreeset_len(s: *const BTreeSet) -> uint {
+    return btreemap_len(&s.map);
+}
+
+fn btreeset_is_empty(s: *const BTreeSet) -> bool {
+    return btreemap_len(&s.map) == 0;
+}
+
+fn btreeset_free(s: *mut BTreeSet) {
+    btreemap_free(&mut s.map);
+}
+

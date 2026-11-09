@@ -1,0 +1,32 @@
+struct TectonicArena {
+    crust_base: *mut byte,
+    mantle_base: *mut byte,
+    core_base: *mut byte,
+    crust_head: uint,
+    subductions_count: uint,
+}
+
+fn osla_tectonic_arena_init(
+    arena: *mut TectonicArena,
+    crust: *mut byte,
+    mantle: *mut byte,
+    core: *mut byte
+) {
+    arena.crust_base = crust;
+    arena.mantle_base = mantle;
+    arena.core_base = core;
+    arena.crust_head = 0;
+    arena.subductions_count = 0;
+}
+
+fn osla_tectonic_bump_crust(arena: *mut TectonicArena, size: uint) -> *mut byte {
+    let aligned: uint = ((size + 7) / 8) * 8;
+    let ptr: *mut byte = (arena.crust_base as uint + arena.crust_head) as *mut byte;
+    arena.crust_head = arena.crust_head + aligned;
+    return ptr;
+}
+
+fn osla_tectonic_subduct_trench(arena: *mut TectonicArena) {
+    arena.crust_head = 0;
+    arena.subductions_count = arena.subductions_count + 1;
+}

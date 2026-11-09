@@ -1,0 +1,59 @@
+include "lib/core/types.rx";
+
+const SYSCALL_ERR_ENOSYS: int = -38;
+const SYSCALL_ERR_EPERM: int  = -1;
+
+struct SyscallSlot {
+    handler: fn(int, int, int) -> int,
+    required_cap_mask: u64,
+    registered: bool,
+    call_count: u64,
+}
+
+struct SyscallTable {
+    slots: [SyscallSlot; 64],
+    total_dispatched: u64,
+}
+
+fn syscall_nop_handler(a0: int, a1: int, a2: int) -> int {
+    return SYSCALL_ERR_ENOSYS;
+}
+
+fn syscall_table_init(tbl: *mut SyscallTable) {
+    tbl.total_dispatched = 0;
+    var i: uint = 0;
+    while i < 64 {
+        tbl.slots[i].handler = syscall_nop_handler;
+        tbl.slots[i].required_cap_mask = 0;
+        tbl.slots[i].registered = false;
+        tbl.slots[i].call_count = 0;
+        i = i + 1;
+    }
+}
+
+fn syscall_register(tbl: *mut SyscallTable, num: uint, fn_ptr: fn(int, int, int) -> int, cap_mask: u64) -> bool {
+    if num >= 64 {
+        return false;
+    }
+    tbl.slots[num].handler = fn_ptr;
+    tbl.slots[num].required_cap_mask = cap_mask;
+    tbl.slots[num].registered = true;
+    return true;
+}
+
+fn syscall_dispatch(tbl: *mut SyscallTable, num: uint, caller_caps: u64, a0: int, a1: int, a2: int) -> int {
+    if num >= 64 {
+        return SYSCALL_ERR_ENOSYS;
+    }
+    if !tbl.slots[num].registered {
+        return SYSCALL_ERR_ENOSYS;
+    }
+    let req: u64 = tbl.slots[num].required_cap_mask;
+    if (caller_caps & req) != req {
+        return SYSCALL_ERR_EPERM;
+    }
+    tbl.slots[num].call_count = tbl.slots[num].call_count + 1;
+    tbl.total_dispatched = tbl.total_dispatched + 1;
+    let h: fn(int, int, int) -> int = tbl.slots[num].handler;
+    return h(a0, a1, a2);
+}

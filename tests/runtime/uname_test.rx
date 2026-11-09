@@ -1,0 +1,9 @@
+fn main() -> int {
+    var buf: [u8; 512];
+    if @os.uname(&buf[0]) == 0 {
+        println("Uname USES @os.uname succeeded: Host is Linux!");
+        return 0;
+    }
+    println("Uname call failed");
+    return 1;
+}

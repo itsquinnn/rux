@@ -1,0 +1,15 @@
+include "lib/core/types.rx";
+
+struct Duration {
+    nanoseconds: uint,
+}
+
+fn from_nanos(ns: uint) -> Duration => Duration { nanoseconds: ns };
+
+fn from_millis(ms: uint) -> Duration => Duration { nanoseconds: ms * 1000000 };
+
+fn from_secs(s: uint) -> Duration => Duration { nanoseconds: s * 1000000000 };
+
+fn to_millis(d: Duration) -> uint => d.nanoseconds / 1000000;
+
+fn to_secs(d: Duration) -> uint => d.nanoseconds / 1000000000;

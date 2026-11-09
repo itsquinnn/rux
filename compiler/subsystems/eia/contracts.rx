@@ -1,0 +1,39 @@
+struct SymbolContract {
+    symbol_hash: uint,
+    type_sig_hash: uint,
+    vaddr: uint,
+    code_size: uint,
+    flags: u32,
+    param_conv: u32,
+    contract_digest: uint,
+}
+
+fn eia_contract_init(
+    contract: *mut SymbolContract,
+    sym_hash: uint,
+    sig_hash: uint,
+    vaddr: uint,
+    size: uint,
+    digest: uint
+) {
+    contract.symbol_hash = sym_hash;
+    contract.type_sig_hash = sig_hash;
+    contract.vaddr = vaddr;
+    contract.code_size = size;
+    contract.flags = 0;
+    contract.param_conv = 0;
+    contract.contract_digest = digest;
+}
+
+fn eia_contract_verify_match(
+    client: *const SymbolContract,
+    provider: *const SymbolContract
+) -> bool {
+    if client.symbol_hash != provider.symbol_hash {
+        return false;
+    }
+    if client.type_sig_hash != provider.type_sig_hash {
+        return false;
+    }
+    return true;
+}

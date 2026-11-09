@@ -1,0 +1,157 @@
+include "lib/core/types.rx";
+include "lib/core/slice.rx";
+
+fn json_find_key(
+    json_text: *const byte,
+    json_len: uint,
+    key: str,
+    out_val_offset: *mut uint,
+    out_val_len: *mut uint
+) -> bool {
+    let k_ptr: *const byte = key as *const byte;
+    var k_len: uint = 0;
+    while k_ptr[k_len] != 0 as byte { k_len = k_len + 1; }
+
+    var i: uint = 0;
+    while i < json_len {
+        if json_text[i] == 34 as byte {
+            var matches: bool = true;
+            var j: uint = 0;
+            while j < k_len {
+                if (i + 1 + j) >= json_len || json_text[i + 1 + j] != k_ptr[j] {
+                    matches = false;
+                    break;
+                }
+                j = j + 1;
+            }
+
+            if matches && (i + 1 + k_len) < json_len && json_text[i + 1 + k_len] == 34 as byte {
+                var p: uint = i + 1 + k_len + 1;
+                while p < json_len && (json_text[p] == 32 as byte || json_text[p] == 9 as byte || json_text[p] == 10 as byte || json_text[p] == 13 as byte || json_text[p] == 58 as byte) {
+                    p = p + 1;
+                }
+
+                out_val_offset[0] = p;
+
+                var v_end: uint = p;
+                if json_text[p] == 34 as byte {
+                    v_end = p + 1;
+                    while v_end < json_len && json_text[v_end] != 34 as byte {
+                        v_end = v_end + 1;
+                    }
+                    if v_end < json_len { v_end = v_end + 1; }
+                } else {
+                    while v_end < json_len && json_text[v_end] != 44 as byte && json_text[v_end] != 125 as byte && json_text[v_end] != 93 as byte && json_text[v_end] != 10 as byte {
+                        v_end = v_end + 1;
+                    }
+                }
+
+                while v_end > p && (json_text[v_end - 1] == 32 as byte || json_text[v_end - 1] == 10 as byte || json_text[v_end - 1] == 13 as byte) {
+                    v_end = v_end - 1;
+                }
+
+                out_val_len[0] = v_end - p;
+                return true;
+            }
+        }
+        i = i + 1;
+    }
+
+    return false;
+}
+
+fn json_parse_uint(ptr: *const byte, len: uint) -> uint {
+    var res: uint = 0;
+    var i: uint = 0;
+    while i < len {
+        let b: byte = ptr[i];
+        if b >= 48 as byte && b <= 57 as byte {
+            res = (res * 10) + ((b as uint) - 48);
+        }
+        i = i + 1;
+    }
+    return res;
+}
+
+struct JsonWriter {
+    buffer: *mut byte,
+    head: uint,
+    capacity: uint,
+    has_fields: bool,
+}
+
+fn json_writer_init(w: *mut JsonWriter, buf: *mut byte, cap: uint) {
+    w.buffer = buf;
+    w.head = 0;
+    w.capacity = cap;
+    w.has_fields = false;
+    w.buffer[0] = 123 as byte;
+    w.head = 1;
+}
+
+fn json_writer_append_str(w: *mut JsonWriter, key: str, val: str) {
+    if w.has_fields {
+        w.buffer[w.head] = 44 as byte;
+        w.head = w.head + 1;
+    }
+    w.has_fields = true;
+
+    w.buffer[w.head] = 34 as byte; w.head = w.head + 1;
+    let kp: *const byte = key as *const byte;
+    var ki: uint = 0;
+    while kp[ki] != 0 as byte { w.buffer[w.head] = kp[ki]; w.head = w.head + 1; ki = ki + 1; }
+    w.buffer[w.head] = 34 as byte; w.head = w.head + 1;
+    w.buffer[w.head] = 58 as byte; w.head = w.head + 1;
+    w.buffer[w.head] = 34 as byte; w.head = w.head + 1;
+    let vp: *const byte = val as *const byte;
+    var vi: uint = 0;
+    while vp[vi] != 0 as byte { w.buffer[w.head] = vp[vi]; w.head = w.head + 1; vi = vi + 1; }
+    w.buffer[w.head] = 34 as byte; w.head = w.head + 1;
+}
+
+fn json_writer_append_int(w: *mut JsonWriter, key: str, val: int) {
+    if w.has_fields {
+        w.buffer[w.head] = 44 as byte;
+        w.head = w.head + 1;
+    }
+    w.has_fields = true;
+
+    w.buffer[w.head] = 34 as byte; w.head = w.head + 1;
+    let kp: *const byte = key as *const byte;
+    var ki: uint = 0;
+    while kp[ki] != 0 as byte { w.buffer[w.head] = kp[ki]; w.head = w.head + 1; ki = ki + 1; }
+    w.buffer[w.head] = 34 as byte; w.head = w.head + 1;
+    w.buffer[w.head] = 58 as byte; w.head = w.head + 1;
+
+    var v: uint = val as uint;
+    if val < 0 {
+        w.buffer[w.head] = 45 as byte;
+        w.head = w.head + 1;
+        v = (-val) as uint;
+    }
+
+    if v == 0 {
+        w.buffer[w.head] = 48 as byte;
+        w.head = w.head + 1;
+    } else {
+        var digits: [byte; 20];
+        var di: uint = 0;
+        while v > 0 {
+            digits[di] = ((v % 10) + 48) as byte;
+            v = v / 10;
+            di = di + 1;
+        }
+        while di > 0 {
+            di = di - 1;
+            w.buffer[w.head] = digits[di];
+            w.head = w.head + 1;
+        }
+    }
+}
+
+fn json_writer_finish(w: *mut JsonWriter) -> uint {
+    w.buffer[w.head] = 125 as byte;
+    w.head = w.head + 1;
+    w.buffer[w.head] = 0 as byte;
+    return w.head;
+}

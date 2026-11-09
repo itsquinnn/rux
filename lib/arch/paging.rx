@@ -1,0 +1,121 @@
+include "lib/core/types.rx";
+
+const PTE_PRESENT: u64       = 1;
+const PTE_WRITABLE: u64      = 2;
+const PTE_USER: u64          = 4;
+const PTE_WRITE_THROUGH: u64 = 8;
+const PTE_CACHE_DISABLE: u64 = 16;
+const PTE_HUGE_PAGE: u64     = 128;
+const PTE_GLOBAL: u64        = 256;
+const PTE_NO_EXEC: u64       = 9223372036854775808;
+const PTE_ADDR_MASK: u64     = 4503599627366400;
+
+struct PageTablePage {
+    entries: [u64; 512],
+}
+
+struct VirtualMemorySpace {
+    pml4: PageTablePage,
+    pdpt_pool: [PageTablePage; 4],
+    pd_pool: [PageTablePage; 8],
+    pt_pool: [PageTablePage; 16],
+    pdpt_used: uint,
+    pd_used: uint,
+    pt_used: uint,
+    mapped_count: uint,
+    tlb_flushes: uint,
+}
+
+fn vmm_zero_table(pt: *mut PageTablePage) {
+    var i: uint = 0;
+    while i < 512 {
+        pt.entries[i] = 0;
+        i = i + 1;
+    }
+}
+
+fn vmm_space_init(vm: *mut VirtualMemorySpace) {
+    vmm_zero_table(&mut vm.pml4);
+    vm.pdpt_used = 0;
+    vm.pd_used = 0;
+    vm.pt_used = 0;
+    vm.mapped_count = 0;
+    vm.tlb_flushes = 0;
+}
+
+fn vmm_map_4k(vm: *mut VirtualMemorySpace, vaddr: u64, paddr: u64, flags: u64) -> bool {
+    let i4: uint = ((vaddr >> 39) & 511) as uint;
+    let i3: uint = ((vaddr >> 30) & 511) as uint;
+    let i2: uint = ((vaddr >> 21) & 511) as uint;
+    let i1: uint = ((vaddr >> 12) & 511) as uint;
+
+    if (vm.pml4.entries[i4] & PTE_PRESENT) == 0 {
+        if vm.pdpt_used >= 4 { return false; }
+        let idx3: uint = vm.pdpt_used;
+        vm.pdpt_used = idx3 + 1;
+        vmm_zero_table(&mut vm.pdpt_pool[idx3]);
+        vm.pml4.entries[i4] = ((&vm.pdpt_pool[idx3]) as u64) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+    }
+    let pdpt: *mut PageTablePage = (vm.pml4.entries[i4] & (0 - 4096)) as *mut PageTablePage;
+
+    if (pdpt.entries[i3] & PTE_PRESENT) == 0 {
+        if vm.pd_used >= 8 { return false; }
+        let idx2: uint = vm.pd_used;
+        vm.pd_used = idx2 + 1;
+        vmm_zero_table(&mut vm.pd_pool[idx2]);
+        pdpt.entries[i3] = ((&vm.pd_pool[idx2]) as u64) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+    }
+    let pd: *mut PageTablePage = (pdpt.entries[i3] & (0 - 4096)) as *mut PageTablePage;
+
+    if (pd.entries[i2] & PTE_PRESENT) == 0 {
+        if vm.pt_used >= 16 { return false; }
+        let idx1: uint = vm.pt_used;
+        vm.pt_used = idx1 + 1;
+        vmm_zero_table(&mut vm.pt_pool[idx1]);
+        pd.entries[i2] = ((&vm.pt_pool[idx1]) as u64) | PTE_PRESENT | PTE_WRITABLE | PTE_USER;
+    }
+    let pt: *mut PageTablePage = (pd.entries[i2] & (0 - 4096)) as *mut PageTablePage;
+
+    pt.entries[i1] = (paddr & PTE_ADDR_MASK) | flags | PTE_PRESENT;
+    vm.mapped_count = vm.mapped_count + 1;
+    return true;
+}
+
+fn vmm_translate(vm: *const VirtualMemorySpace, vaddr: u64, out_paddr: *mut u64) -> bool {
+    let i4: uint = ((vaddr >> 39) & 511) as uint;
+    let i3: uint = ((vaddr >> 30) & 511) as uint;
+    let i2: uint = ((vaddr >> 21) & 511) as uint;
+    let i1: uint = ((vaddr >> 12) & 511) as uint;
+
+    if (vm.pml4.entries[i4] & PTE_PRESENT) == 0 { return false; }
+    let pdpt: *const PageTablePage = (vm.pml4.entries[i4] & (0 - 4096)) as *const PageTablePage;
+    if (pdpt.entries[i3] & PTE_PRESENT) == 0 { return false; }
+    let pd: *const PageTablePage = (pdpt.entries[i3] & (0 - 4096)) as *const PageTablePage;
+    if (pd.entries[i2] & PTE_PRESENT) == 0 { return false; }
+    let pt: *const PageTablePage = (pd.entries[i2] & (0 - 4096)) as *const PageTablePage;
+    let pte: u64 = pt.entries[i1];
+    if (pte & PTE_PRESENT) == 0 { return false; }
+
+    out_paddr[0] = (pte & PTE_ADDR_MASK) | (vaddr & 4095);
+    return true;
+}
+
+fn vmm_unmap_4k(vm: *mut VirtualMemorySpace, vaddr: u64) -> bool {
+    let i4: uint = ((vaddr >> 39) & 511) as uint;
+    let i3: uint = ((vaddr >> 30) & 511) as uint;
+    let i2: uint = ((vaddr >> 21) & 511) as uint;
+    let i1: uint = ((vaddr >> 12) & 511) as uint;
+
+    if (vm.pml4.entries[i4] & PTE_PRESENT) == 0 { return false; }
+    let pdpt: *mut PageTablePage = (vm.pml4.entries[i4] & (0 - 4096)) as *mut PageTablePage;
+    if (pdpt.entries[i3] & PTE_PRESENT) == 0 { return false; }
+    let pd: *mut PageTablePage = (pdpt.entries[i3] & (0 - 4096)) as *mut PageTablePage;
+    if (pd.entries[i2] & PTE_PRESENT) == 0 { return false; }
+    let pt: *mut PageTablePage = (pd.entries[i2] & (0 - 4096)) as *mut PageTablePage;
+    if (pt.entries[i1] & PTE_PRESENT) == 0 { return false; }
+
+    pt.entries[i1] = 0;
+    if vm.mapped_count > 0 { vm.mapped_count = vm.mapped_count - 1; }
+    vm.tlb_flushes = vm.tlb_flushes + 1;
+    return true;
+}

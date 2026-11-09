@@ -1,0 +1,36 @@
+struct AgentContext {
+    rax: uint,
+    rcx: uint,
+    rdx: uint,
+    rbx: uint,
+    rsp: uint,
+    rbp: uint,
+    rsi: uint,
+    rdi: uint,
+    r8:  uint,
+    r9:  uint,
+    r10: uint,
+    r11: uint,
+    r12: uint,
+    r13: uint,
+    r14: uint,
+    r15: uint,
+    rip: uint,
+    rflags: uint,
+}
+
+fn anss_snapshot_context(ctx: *mut AgentContext) {
+    @silicon.capture_registers(ctx as *mut byte);
+}
+
+fn anss_inspect_register(ctx: *const AgentContext, reg_idx: uint) -> uint {
+    if reg_idx == 0 { return ctx.rax; }
+    if reg_idx == 1 { return ctx.rcx; }
+    if reg_idx == 2 { return ctx.rdx; }
+    if reg_idx == 3 { return ctx.rbx; }
+    if reg_idx == 4 { return ctx.rsp; }
+    if reg_idx == 5 { return ctx.rbp; }
+    if reg_idx == 6 { return ctx.rsi; }
+    if reg_idx == 7 { return ctx.rdi; }
+    return 0;
+}

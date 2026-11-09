@@ -1,0 +1,79 @@
+include "lib/core/types.rx";
+include "lib/math/scalar.rx";
+
+struct Decimal {
+    value: int,
+    scale: u32,
+}
+
+const DECIMAL_DEFAULT_SCALE: u32 = 4;
+const DECIMAL_SCALE_FACTOR_4: int = 10000;
+
+fn decimal_from_parts(units: int, fraction: int) -> Decimal {
+    var sign: int = 1;
+    if units < 0 {
+        sign = -1;
+    }
+    let val: int = (units * DECIMAL_SCALE_FACTOR_4) + (sign * abs_int(fraction));
+    return Decimal {
+        value: val,
+        scale: DECIMAL_DEFAULT_SCALE,
+    };
+}
+
+fn decimal_from_int(val: int) -> Decimal {
+    return Decimal {
+        value: val * DECIMAL_SCALE_FACTOR_4,
+        scale: DECIMAL_DEFAULT_SCALE,
+    };
+}
+
+fn decimal_add(a: Decimal, b: Decimal) -> Decimal {
+    return Decimal {
+        value: a.value + b.value,
+        scale: DECIMAL_DEFAULT_SCALE,
+    };
+}
+
+fn decimal_sub(a: Decimal, b: Decimal) -> Decimal {
+    return Decimal {
+        value: a.value - b.value,
+        scale: DECIMAL_DEFAULT_SCALE,
+    };
+}
+
+fn decimal_mul(a: Decimal, b: Decimal) -> Decimal {
+    let raw: int = a.value * b.value;
+    return Decimal {
+        value: raw / DECIMAL_SCALE_FACTOR_4,
+        scale: DECIMAL_DEFAULT_SCALE,
+    };
+}
+
+fn decimal_div(a: Decimal, b: Decimal) -> Decimal {
+    if b.value == 0 {
+        return Decimal { value: 0, scale: DECIMAL_DEFAULT_SCALE };
+    }
+    let scaled: int = a.value * DECIMAL_SCALE_FACTOR_4;
+    return Decimal {
+        value: scaled / b.value,
+        scale: DECIMAL_DEFAULT_SCALE,
+    };
+}
+
+fn decimal_to_float(d: Decimal) -> float {
+    return (d.value as float) / (DECIMAL_SCALE_FACTOR_4 as float);
+}
+
+fn decimal_round_int(d: Decimal) -> int {
+    var sign: int = 1;
+    if d.value < 0 {
+        sign = -1;
+    }
+    let rem: int = abs_int(d.value) % DECIMAL_SCALE_FACTOR_4;
+    var base: int = d.value / DECIMAL_SCALE_FACTOR_4;
+    if rem >= (DECIMAL_SCALE_FACTOR_4 / 2) {
+        base = base + sign;
+    }
+    return base;
+}

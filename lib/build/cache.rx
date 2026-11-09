@@ -1,0 +1,84 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+
+struct CacheEntry {
+    key_hash: uint,
+    content_hash: uint,
+    valid: bool,
+}
+
+struct BuildCache {
+    entries: [CacheEntry; 64],
+    count: uint,
+    hits: uint,
+    misses: uint,
+}
+
+fn cache_init(bc: *mut BuildCache) {
+    bc.count = 0;
+    bc.hits = 0;
+    bc.misses = 0;
+    var i: uint = 0;
+    while i < 64 {
+        bc.entries[i].key_hash = 0;
+        bc.entries[i].content_hash = 0;
+        bc.entries[i].valid = false;
+        i = i + 1;
+    }
+}
+
+fn cache_hash_bytes(data: *const byte, len: uint) -> uint {
+    var h: uint = 14695981039346656037;
+    var i: uint = 0;
+    while i < len {
+        h = (h ^ (data[i] as uint)) * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn cache_hash_cstr(s: *const byte) -> uint {
+    var len: uint = 0;
+    while s[len] != 0 { len = len + 1; }
+    return cache_hash_bytes(s, len);
+}
+
+fn cache_hash_file(path: *const byte) -> uint {
+    let buf: *mut byte = uses_substrate_alloc(65536);
+    if (buf as uint) == 0 { return 0; }
+    let n: int = uses_substrate_read_file(path, buf, 65536);
+    var h: uint = 0;
+    if n > 0 {
+        h = cache_hash_bytes(buf, n as uint);
+    } else {
+        h = cache_hash_cstr(path);
+    }
+    uses_substrate_free(buf, 65536);
+    return h;
+}
+
+fn cache_check_and_update(bc: *mut BuildCache, step_name: *const byte, content_hash: uint) -> bool {
+    let kh: uint = cache_hash_cstr(step_name);
+    var i: uint = 0;
+    while i < bc.count {
+        if bc.entries[i].valid && bc.entries[i].key_hash == kh {
+            if bc.entries[i].content_hash == content_hash {
+                bc.hits = bc.hits + 1;
+                return true;
+            }
+            bc.entries[i].content_hash = content_hash;
+            bc.misses = bc.misses + 1;
+            return false;
+        }
+        i = i + 1;
+    }
+    if bc.count < 64 {
+        bc.entries[bc.count].key_hash = kh;
+        bc.entries[bc.count].content_hash = content_hash;
+        bc.entries[bc.count].valid = true;
+        bc.count = bc.count + 1;
+    }
+    bc.misses = bc.misses + 1;
+    return false;
+}
+

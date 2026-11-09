@@ -1,0 +1,30 @@
+include "lib/core/types.rx";
+
+struct ResourceGuard {
+    resource: uint,
+    drop_fn: fn(res: uint),
+    is_active: bool,
+}
+
+fn guard_init(g: *mut ResourceGuard, resource_handle: uint, destructor: fn(res: uint)) {
+    g.resource = resource_handle;
+    g.drop_fn = destructor;
+    g.is_active = true;
+}
+
+fn guard_dismiss(g: *mut ResourceGuard) -> uint {
+    g.is_active = false;
+    return g.resource;
+}
+
+fn guard_drop(g: *mut ResourceGuard) {
+    if g.is_active {
+        let dtor: fn(res: uint) = g.drop_fn;
+        dtor(g.resource);
+        g.is_active = false;
+    }
+}
+
+fn guard_is_active(g: *const ResourceGuard) -> bool {
+    return g.is_active;
+}

@@ -1,0 +1,30 @@
+include "lib/core/types.rx";
+
+const WIN_STD_INPUT_HANDLE: int   = -10;
+const WIN_STD_OUTPUT_HANDLE: int  = -11;
+const WIN_STD_ERROR_HANDLE: int   = -12;
+
+const WIN_GENERIC_READ: uint      = 0x80000000;
+const WIN_GENERIC_WRITE: uint     = 0x40000000;
+const WIN_GENERIC_EXECUTE: uint   = 0x20000000;
+const WIN_FILE_SHARE_READ: uint   = 1;
+const WIN_FILE_SHARE_WRITE: uint  = 2;
+const WIN_CREATE_NEW: uint        = 1;
+const WIN_CREATE_ALWAYS: uint     = 2;
+const WIN_OPEN_EXISTING: uint     = 3;
+const WIN_OPEN_ALWAYS: uint       = 4;
+const WIN_TRUNCATE_EXISTING: uint = 5;
+
+const WIN_MEM_COMMIT: uint        = 0x1000;
+const WIN_MEM_RESERVE: uint       = 0x2000;
+const WIN_MEM_RELEASE: uint       = 0x8000;
+const WIN_PAGE_NOACCESS: uint     = 0x01;
+const WIN_PAGE_READONLY: uint     = 0x02;
+const WIN_PAGE_READWRITE: uint    = 0x04;
+const WIN_PAGE_EXECUTE_READWRITE: uint = 0x40;
+
+struct Win32FileHandle {
+    handle: int,
+    is_open: bool,
+    mode: uint,
+}

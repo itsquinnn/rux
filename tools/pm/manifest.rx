@@ -1,0 +1,20 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+
+struct PackageManifest {
+    name: str,
+    version: str,
+    author: str,
+    entry_point: str,
+    memory_limit_mb: uint,
+}
+
+fn manifest_default() -> PackageManifest {
+    return PackageManifest {
+        name: "unnamed_project",
+        version: "0.1.0",
+        author: "",
+        entry_point: "rsc/main.rx",
+        memory_limit_mb: 16,
+    };
+}

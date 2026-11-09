@@ -1,0 +1,9 @@
+include "lib/core/types.rx";
+include "compiler/pipeline/options.rx";
+
+fn main() -> int {
+    println("Step 1");
+    let detected_os: TargetEnv = detect_host_os();
+    println("Step 2");
+    return 0;
+}

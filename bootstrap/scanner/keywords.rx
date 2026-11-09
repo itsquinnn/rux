@@ -1,0 +1,40 @@
+include "bootstrap/scanner/tokens.rx";
+
+fn hash_string(start: *byte, len: uint) -> uint {
+    var h: uint = 14695981039346656037;
+    var i: uint = 0;
+    while i < len {
+        let b: byte = start[i];
+        h = h ^ (b as uint);
+        h = h * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn classify_keyword(h: uint) -> uint {
+    if h == 7938019069247444294 || h == 14058172984575203104 { return TOKEN_SHAPE; }
+    if h == 619343937915704565 { return TOKEN_FN; }
+    if h == 1329270083436697466 { return TOKEN_LET; }
+    if h == 7567199770864868670 { return TOKEN_VAR; }
+    if h == 7334518323283222324 { return TOKEN_CONST; }
+    if h == 628269773227005934  { return TOKEN_IS; }
+    if h == 569227173069198361  { return TOKEN_MUT; }
+    if h == 628023482707099174 { return TOKEN_IF; }
+    if h == 9163537027783908656 { return TOKEN_ELSE; }
+    if h == 14882043299657492846 { return TOKEN_WHILE; }
+    if h == 14251563519059995999 { return TOKEN_RETURN; }
+    if h == 6740575782527371194 { return TOKEN_SYSCALL; }
+    if h == 620464340264662349 { return TOKEN_AS; }
+
+    if h == 3143511548502526014 || h == 3089943341986682694 { return TOKEN_TYPE_INT; }
+    if h == 4128981603702996129 || h == 5563585020063213298 { return TOKEN_TYPE_UINT; }
+    if h == 5560783464435099345 || h == 3094732814638223685 || h == 17483980429552467645 { return TOKEN_TYPE_U32; }
+    if h == 7505435266999523071 || h == 631772817358541784 || h == 14785269867199075517 { return TOKEN_TYPE_BYTE; }
+    if h == 3563412735833858527 { return TOKEN_TYPE_VOID; }
+    if h == 9398593617327382768 { return TOKEN_TYPE_STR; }
+
+    if h == 8602815819212105030 || h == 3388837930293092456 { return TOKEN_PRINTLN; }
+
+    return TOKEN_IDENT;
+}

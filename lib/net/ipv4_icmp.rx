@@ -1,0 +1,146 @@
+include "lib/core/types.rx";
+
+const IP_PROTO_ICMP: u8 = 1;
+const IP_PROTO_TCP: u8  = 6;
+const IP_PROTO_UDP: u8  = 17;
+
+const ICMP_TYPE_ECHO_REPLY: u8   = 0;
+const ICMP_TYPE_ECHO_REQUEST: u8 = 8;
+
+struct Ipv4Route {
+    network: u32,
+    netmask: u32,
+    gateway: u32,
+    prefix_len: u8,
+    iface_id: u8,
+    active: bool,
+}
+
+struct Ipv4RouteTable {
+    routes: [Ipv4Route; 16],
+    count: uint,
+}
+
+fn net_pack_ipv4_be(a: u8, b: u8, c: u8, d: u8) -> u32 {
+    return ((a as u32) << 24) | ((b as u32) << 16) | ((c as u32) << 8) | (d as u32);
+}
+
+fn ipv4_checksum_rfc1071(buf: *const byte, len: uint) -> u16 {
+    var sum: u32 = 0;
+    var i: uint = 0;
+    while (i + 1) < len {
+        let word: u32 = ((buf[i] as u32) << 8) | (buf[i + 1] as u32);
+        sum = sum + word;
+        i = i + 2;
+    }
+    if i < len {
+        sum = sum + ((buf[i] as u32) << 8);
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 65535) + (sum >> 16);
+    }
+    return (65535 ^ (sum & 65535)) as u16;
+}
+
+fn ipv4_build_header(dst: *mut byte, payload_len: u16, proto: u8, ttl: u8, src_be: u32, dst_be: u32) -> uint {
+    let total_len: u16 = 20 + payload_len;
+    dst[0] = 0x45;
+    dst[1] = 0;
+    dst[2] = ((total_len >> 8) & 255) as byte;
+    dst[3] = (total_len & 255) as byte;
+    dst[4] = 0; dst[5] = 1;
+    dst[6] = 0x40; dst[7] = 0;
+    dst[8] = ttl;
+    dst[9] = proto;
+    dst[10] = 0; dst[11] = 0;
+    dst[12] = ((src_be >> 24) & 255) as byte;
+    dst[13] = ((src_be >> 16) & 255) as byte;
+    dst[14] = ((src_be >> 8) & 255) as byte;
+    dst[15] = (src_be & 255) as byte;
+    dst[16] = ((dst_be >> 24) & 255) as byte;
+    dst[17] = ((dst_be >> 16) & 255) as byte;
+    dst[18] = ((dst_be >> 8) & 255) as byte;
+    dst[19] = (dst_be & 255) as byte;
+
+    let csum: u16 = ipv4_checksum_rfc1071(dst, 20);
+    dst[10] = ((csum >> 8) & 255) as byte;
+    dst[11] = (csum & 255) as byte;
+    return 20;
+}
+
+fn ipv4_route_init(rt: *mut Ipv4RouteTable) {
+    rt.count = 0;
+}
+
+fn ipv4_route_add(rt: *mut Ipv4RouteTable, network_be: u32, prefix_len: u8, gateway_be: u32, iface_id: u8) -> bool {
+    if rt.count >= 16 { return false; }
+    var mask: u32 = 0;
+    if prefix_len > 0 {
+        if prefix_len >= 32 {
+            mask = 4294967295;
+        } else {
+            mask = 4294967295 << (32 - prefix_len);
+        }
+    }
+    let idx: uint = rt.count;
+    rt.routes[idx].network = network_be & mask;
+    rt.routes[idx].netmask = mask;
+    rt.routes[idx].gateway = gateway_be;
+    rt.routes[idx].prefix_len = prefix_len;
+    rt.routes[idx].iface_id = iface_id;
+    rt.routes[idx].active = true;
+    rt.count = idx + 1;
+    return true;
+}
+
+fn ipv4_route_lookup(rt: *const Ipv4RouteTable, dst_be: u32, out_next_hop: *mut u32, out_iface: *mut u8) -> bool {
+    var best_plen: int = -1;
+    var best_idx: uint = 0;
+    var i: uint = 0;
+    while i < rt.count {
+        if rt.routes[i].active {
+            if (dst_be & rt.routes[i].netmask) == rt.routes[i].network {
+                let plen: int = rt.routes[i].prefix_len as int;
+                if plen > best_plen {
+                    best_plen = plen;
+                    best_idx = i;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    if best_plen < 0 { return false; }
+    if rt.routes[best_idx].gateway == 0 {
+        out_next_hop[0] = dst_be;
+    } else {
+        out_next_hop[0] = rt.routes[best_idx].gateway;
+    }
+    out_iface[0] = rt.routes[best_idx].iface_id;
+    return true;
+}
+
+fn icmp_build_echo(pkt: *mut byte, is_reply: bool, ident: u16, seq: u16, payload: *const byte, payload_len: uint) -> uint {
+    if is_reply {
+        pkt[0] = ICMP_TYPE_ECHO_REPLY;
+    } else {
+        pkt[0] = ICMP_TYPE_ECHO_REQUEST;
+    }
+    pkt[1] = 0;
+    pkt[2] = 0;
+    pkt[3] = 0;
+    pkt[4] = ((ident >> 8) & 255) as byte;
+    pkt[5] = (ident & 255) as byte;
+    pkt[6] = ((seq >> 8) & 255) as byte;
+    pkt[7] = (seq & 255) as byte;
+    var i: uint = 0;
+    while i < payload_len {
+        pkt[8 + i] = payload[i];
+        i = i + 1;
+    }
+    let total: uint = 8 + payload_len;
+    let csum: u16 = ipv4_checksum_rfc1071(pkt, total);
+    pkt[2] = ((csum >> 8) & 255) as byte;
+    pkt[3] = (csum & 255) as byte;
+    return total;
+}
+

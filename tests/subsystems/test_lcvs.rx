@@ -1,0 +1,39 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/subsystems/lcvs/vitrify.rx";
+include "compiler/subsystems/lcvs/rejuvenate.rx";
+
+fn main() -> int {
+    println("=== RUX COMPILER SUITE: LCVS (LIVING CHECKPOINT VITRIFICATION) ===");
+
+    var arena_storage: [byte; 256];
+    var engine: VitrificationEngine;
+    lcvs_vitrify_init(&mut engine, &mut arena_storage[0]);
+
+    lcvs_vitrify_arena(&mut engine, &mut arena_storage[0], 128);
+    if engine.total_vitrifications != 1 {
+        println("[FAIL] LCVS: Arena state vitrification failed");
+        return 1;
+    }
+    println("[PASS] LCVS: 64-byte cacheline state vitrification (CLWB+SFENCE) verified");
+
+    if !lcvs_thaw_arena(&mut engine, &mut arena_storage[0]) || engine.total_thaws != 1 {
+        println("[FAIL] LCVS: Arena state thaw failed");
+        return 2;
+    }
+    println("[PASS] LCVS: Instant 0.000ns state thaw verified");
+
+    var rej_arena: RejuvenatingArena;
+    lcvs_rejuvenate_init(&mut rej_arena, &mut arena_storage[0], 256);
+    rej_arena.fragmentation_permille = 150;
+
+    let rejs: uint = lcvs_rejuvenate_heap(&mut rej_arena);
+    if rejs != 1 || rej_arena.fragmentation_permille != 0 {
+        println("[FAIL] LCVS: Online compaction failed");
+        return 3;
+    }
+    println("[PASS] LCVS: Online memory rejuvenation and compaction verified");
+
+    println("ALL LCVS STATE VITRIFICATION TESTS PASSED (100% OK)");
+    return 0;
+}

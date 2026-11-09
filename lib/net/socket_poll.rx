@@ -1,0 +1,192 @@
+include "lib/core/types.rx";
+
+const K_SOCK_UNUSED: u8    = 0;
+const K_SOCK_OPEN: u8      = 1;
+const K_SOCK_BOUND: u8     = 2;
+const K_SOCK_LISTENING: u8 = 3;
+const K_SOCK_CONNECTED: u8 = 4;
+
+const EPOLL_IN: u32  = 1;
+const EPOLL_OUT: u32 = 4;
+const EPOLL_ERR: u32 = 8;
+
+const BPF_ACT_DROP: u8   = 0;
+const BPF_ACT_ACCEPT: u8 = 1;
+
+struct KernelSocket {
+    state: u8,
+    proto: u8,
+    local_port: u16,
+    remote_ip_be: u32,
+    remote_port: u16,
+    rx_buf: [byte; 256],
+    rx_len: uint,
+    peer_slot: int,
+}
+
+struct EpollWatch {
+    sock_id: uint,
+    events_mask: u32,
+    active: bool,
+}
+
+struct PacketFilterRule {
+    proto: u8,
+    dst_port: u16,
+    action: u8,
+    active: bool,
+}
+
+struct KernelSocketTable {
+    socks: [KernelSocket; 16],
+    watches: [EpollWatch; 16],
+    rules: [PacketFilterRule; 16],
+    rule_count: uint,
+}
+
+fn ksock_table_init(t: *mut KernelSocketTable) {
+    t.rule_count = 0;
+    var i: uint = 0;
+    while i < 16 {
+        t.socks[i].state = K_SOCK_UNUSED;
+        t.socks[i].rx_len = 0;
+        t.socks[i].peer_slot = -1;
+        t.watches[i].active = false;
+        t.rules[i].active = false;
+        i = i + 1;
+    }
+}
+
+fn ksock_open(t: *mut KernelSocketTable, proto: u8) -> int {
+    var i: uint = 0;
+    while i < 16 {
+        if t.socks[i].state == K_SOCK_UNUSED {
+            t.socks[i].state = K_SOCK_OPEN;
+            t.socks[i].proto = proto;
+            t.socks[i].local_port = 0;
+            t.socks[i].rx_len = 0;
+            t.socks[i].peer_slot = -1;
+            return i as int;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn ksock_bind_listen(t: *mut KernelSocketTable, sd: uint, port: u16) -> bool {
+    if sd >= 16 || t.socks[sd].state == K_SOCK_UNUSED { return false; }
+    t.socks[sd].local_port = port;
+    t.socks[sd].state = K_SOCK_LISTENING;
+    return true;
+}
+
+fn ksock_connect_loopback(t: *mut KernelSocketTable, client_sd: uint, dst_port: u16) -> int {
+    if client_sd >= 16 { return -1; }
+    var srv: int = -1;
+    var i: uint = 0;
+    while i < 16 {
+        if t.socks[i].state == K_SOCK_LISTENING && t.socks[i].local_port == dst_port {
+            srv = i as int;
+        }
+        i = i + 1;
+    }
+    if srv < 0 { return -111; }
+    let accepted: int = ksock_open(t, t.socks[client_sd].proto);
+    if accepted < 0 { return -24; }
+    let acc_u: uint = accepted as uint;
+    t.socks[client_sd].state = K_SOCK_CONNECTED;
+    t.socks[client_sd].remote_port = dst_port;
+    t.socks[client_sd].peer_slot = accepted;
+    t.socks[acc_u].state = K_SOCK_CONNECTED;
+    t.socks[acc_u].local_port = dst_port;
+    t.socks[acc_u].peer_slot = client_sd as int;
+    return accepted;
+}
+
+fn ksock_send(t: *mut KernelSocketTable, sd: uint, data: *const byte, len: uint) -> int {
+    if sd >= 16 || t.socks[sd].state != K_SOCK_CONNECTED { return -1; }
+    let peer_i: int = t.socks[sd].peer_slot;
+    if peer_i < 0 { return -1; }
+    let peer: uint = peer_i as uint;
+    var copied: uint = 0;
+    while copied < len && (t.socks[peer].rx_len + copied) < 256 {
+        t.socks[peer].rx_buf[t.socks[peer].rx_len + copied] = data[copied];
+        copied = copied + 1;
+    }
+    t.socks[peer].rx_len = t.socks[peer].rx_len + copied;
+    return copied as int;
+}
+
+fn ksock_recv(t: *mut KernelSocketTable, sd: uint, dst: *mut byte, max_len: uint) -> int {
+    if sd >= 16 { return -1; }
+    let avail: uint = t.socks[sd].rx_len;
+    var n: uint = avail;
+    if max_len < n { n = max_len; }
+    var i: uint = 0;
+    while i < n {
+        dst[i] = t.socks[sd].rx_buf[i];
+        i = i + 1;
+    }
+    let rem: uint = avail - n;
+    var j: uint = 0;
+    while j < rem {
+        t.socks[sd].rx_buf[j] = t.socks[sd].rx_buf[n + j];
+        j = j + 1;
+    }
+    t.socks[sd].rx_len = rem;
+    return n as int;
+}
+
+fn ksock_epoll_ctl_add(t: *mut KernelSocketTable, sd: uint, events_mask: u32) -> bool {
+    if sd >= 16 { return false; }
+    t.watches[sd].sock_id = sd;
+    t.watches[sd].events_mask = events_mask;
+    t.watches[sd].active = true;
+    return true;
+}
+
+fn ksock_epoll_wait_ready(t: *const KernelSocketTable) -> uint {
+    var ready_count: uint = 0;
+    var i: uint = 0;
+    while i < 16 {
+        if t.watches[i].active {
+            let sd: uint = t.watches[i].sock_id;
+            let mask: u32 = t.watches[i].events_mask;
+            var hit: bool = false;
+            if (mask & EPOLL_IN) != 0 && t.socks[sd].rx_len > 0 {
+                hit = true;
+            }
+            if (mask & EPOLL_OUT) != 0 && t.socks[sd].state == K_SOCK_CONNECTED {
+                hit = true;
+            }
+            if hit {
+                ready_count = ready_count + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return ready_count;
+}
+
+fn bpf_add_filter_rule(t: *mut KernelSocketTable, proto: u8, dst_port: u16, action: u8) -> bool {
+    if t.rule_count >= 16 { return false; }
+    let idx: uint = t.rule_count;
+    t.rules[idx].proto = proto;
+    t.rules[idx].dst_port = dst_port;
+    t.rules[idx].action = action;
+    t.rules[idx].active = true;
+    t.rule_count = idx + 1;
+    return true;
+}
+
+fn bpf_eval_packet(t: *const KernelSocketTable, proto: u8, dst_port: u16) -> u8 {
+    var i: uint = 0;
+    while i < t.rule_count {
+        if t.rules[i].active && t.rules[i].proto == proto && t.rules[i].dst_port == dst_port {
+            return t.rules[i].action;
+        }
+        i = i + 1;
+    }
+    return BPF_ACT_ACCEPT;
+}
+

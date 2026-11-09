@@ -1,0 +1,144 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+include "lib/core/option.rx";
+include "lib/core/result.rx";
+include "lib/core/ptr.rx";
+include "lib/core/any.rx";
+include "lib/core/reflect.rx";
+include "lib/core/ops.rx";
+include "lib/core/range.rx";
+include "lib/core/tensor.rx";
+include "lib/core/convert.rx";
+include "lib/sync/atomic.rx";
+include "lib/sync/mutex.rx";
+include "lib/core/unsafe.rx";
+
+fn main() -> int {
+    var raw_target: int = 12345;
+    let nn: NonNull<int> = non_null_new<int>(&mut raw_target);
+    let p_unwrapped: *mut int = non_null_as_ptr<int>(nn);
+    if p_unwrapped[0] != 12345 {
+        panic("NonNull failed");
+    }
+
+    if !is_aligned(64, 64) || !is_aligned(128, 64) {
+        panic("Alignment check failed");
+    }
+    if align_up(65, 64) != 128 {
+        panic("align_up failed");
+    }
+    if align_down(127, 64) != 64 {
+        panic("align_down failed");
+    }
+
+    let a_val: AnyValue = any_from_i64(777);
+    if !any_is(&a_val, TYPE_ID_I64) {
+        panic("AnyValue type check failed");
+    }
+    let dc_res: Option<i64> = any_downcast_i64(&a_val);
+    if !dc_res.has_val || dc_res.value != 777 {
+        panic("AnyValue downcast failed");
+    }
+    let dc_bad: Option<u64> = any_downcast_u64(&a_val);
+    if dc_bad.has_val {
+        panic("AnyValue downcast mismatch should fail");
+    }
+
+    let root_cap: ReflectCapability = reflect_capability_root();
+    if !reflect_check_permission(&root_cap, 1) {
+        panic("Reflection capability check failed");
+    }
+
+    let idx_pos: Option<usize> = normalize_negative_index(2, 5);
+    if !idx_pos.has_val || idx_pos.value != 2 {
+        panic("Positive index normalization failed");
+    }
+    let idx_neg1: Option<usize> = normalize_negative_index(-1, 5);
+    if !idx_neg1.has_val || idx_neg1.value != 4 {
+        panic("Negative -1 index normalization failed");
+    }
+    let idx_neg2: Option<usize> = normalize_negative_index(-2, 5);
+    if !idx_neg2.has_val || idx_neg2.value != 3 {
+        panic("Negative -2 index normalization failed");
+    }
+
+    let r: Range = range_new(10, 13);
+    var it: RangeIterator = range_iter(&r);
+    let v0: Option<isize> = range_iter_next(&mut it);
+    let v1: Option<isize> = range_iter_next(&mut it);
+    let v2: Option<isize> = range_iter_next(&mut it);
+    let v3: Option<isize> = range_iter_next(&mut it);
+    if !v0.has_val || v0.value != 10 { panic("Range iter 0 failed"); }
+    if !v1.has_val || v1.value != 11 { panic("Range iter 1 failed"); }
+    if !v2.has_val || v2.value != 12 { panic("Range iter 2 failed"); }
+    if v3.has_val { panic("Range iter end failed"); }
+
+    var t_row: Tensor2D = tensor2d_new(2, 3);
+    tensor2d_set(&mut t_row, 0, 0, 100);
+    tensor2d_set(&mut t_row, 1, 2, 200);
+    if tensor2d_get(&t_row, 0, 0) != 100 || tensor2d_get(&t_row, 1, 2) != 200 {
+        panic("Row-major Tensor2D failed");
+    }
+
+    var t_col: Tensor2D = tensor2d_new_column_major(2, 3);
+    tensor2d_set(&mut t_col, 0, 0, 500);
+    tensor2d_set(&mut t_col, 1, 2, 600);
+    if tensor2d_get(&t_col, 0, 0) != 500 || tensor2d_get(&t_col, 1, 2) != 600 {
+        panic("Column-major Tensor2D failed");
+    }
+
+    var boxed_val: int = 9999;
+    var dbox: DerefBox<int> = deref_box_new<int>(&mut boxed_val);
+    let p_inner: *const int = deref_box_get<int>(&dbox);
+    if p_inner[0] != 9999 {
+        panic("DerefBox failed");
+    }
+
+    let s_marker: SealedMarker = sealed_marker_new();
+    if !sealed_verify(&s_marker) {
+        panic("Sealed trait marker failed");
+    }
+
+    var atom_val: AtomicI64 = atomic_i64_new(10);
+    let old_val: int = atomic_i64_fetch_add(&mut atom_val, 5);
+    if old_val != 10 || atomic_i64_load(&atom_val, ORDERING_SEQ_CST) != 15 {
+        panic("Atomic fetch_add failed");
+    }
+    if !atomic_i64_cas(&mut atom_val, 15, 20) {
+        panic("Atomic CAS failed");
+    }
+    if atomic_i64_load(&atom_val, ORDERING_SEQ_CST) != 20 {
+        panic("Atomic post-CAS value failed");
+    }
+
+    var m: Mutex<int> = mutex_new<int>(42);
+    let data_ptr: *mut int = mutex_lock<int>(&mut m);
+    data_ptr[0] = 84;
+    mutex_unlock<int>(&mut m);
+    let data_ptr2: *mut int = mutex_lock<int>(&mut m);
+    if data_ptr2[0] != 84 {
+        panic("Mutex lock/unlock failed");
+    }
+    mutex_unlock<int>(&mut m);
+
+    var storage: u64 = 0;
+    storage = bitfield_insert(storage, 8, 4, 15);
+    let extracted: u64 = bitfield_extract(storage, 8, 4);
+    if extracted != 15 {
+        panic("Bitfield insert/extract failed");
+    }
+
+    contract_requires(1 == 1, "Tautology requires");
+    contract_ensures(2 == 2, "Tautology ensures");
+    contract_invariant(3 == 3, "Tautology invariant");
+
+    var vol_target: u64 = 0xDEADBEEF;
+    let vol_res: u64 = volatile_read_u64(&vol_target);
+    if vol_res != 0xDEADBEEF {
+        panic("Volatile read failed");
+    }
+
+    println("Rux Step 2 Master Specification Completely Verified!");
+    return 0;
+}
+

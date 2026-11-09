@@ -1,0 +1,56 @@
+enum StencilCategory {
+    ALU = 1,
+    CONTROL = 2,
+    MEMORY = 3,
+    SYSCALL = 4,
+}
+
+struct MachineStencil {
+    opcode_bytes: *mut byte,
+    length: uint,
+    hole_offset: uint,
+    target_reg_offset: uint,
+    category: StencilCategory,
+    splice_cycles: uint,
+}
+
+fn zwns_stencil_init(
+    stencil: *mut MachineStencil,
+    opcodes: *mut byte,
+    len: uint,
+    hole_off: uint,
+    reg_off: uint,
+    cat: StencilCategory
+) {
+    stencil.opcode_bytes = opcodes;
+    stencil.length = len;
+    stencil.hole_offset = hole_off;
+    stencil.target_reg_offset = reg_off;
+    stencil.category = cat;
+    stencil.splice_cycles = 0;
+}
+
+fn zwns_stencil_splice(
+    stencil: *const MachineStencil,
+    dst: *mut byte,
+    immediate_operand: u32
+) -> uint {
+    let src: *const byte = stencil.opcode_bytes;
+    let n: uint = stencil.length;
+
+    var i: uint = 0;
+    while i < n {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+
+    if stencil.hole_offset > 0 && (stencil.hole_offset + 4) <= n {
+        let h: uint = stencil.hole_offset;
+        dst[h + 0] = (immediate_operand & 0xFF) as byte;
+        dst[h + 1] = ((immediate_operand >> 8) & 0xFF) as byte;
+        dst[h + 2] = ((immediate_operand >> 16) & 0xFF) as byte;
+        dst[h + 3] = ((immediate_operand >> 24) & 0xFF) as byte;
+    }
+
+    return n;
+}

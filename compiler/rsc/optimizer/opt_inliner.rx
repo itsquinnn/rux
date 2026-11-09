@@ -1,0 +1,93 @@
+fn opt_is_inline_leaf_or_bin(n: *mut AstNode, depth: u32) -> u32 {
+    if n == (0 as *mut AstNode) || depth > 3 { return 0; }
+    if n.kind == 116 || n.kind == 117 { return 1; }
+    if n.kind == 106 {
+        let op: u32 = n.val as u32;
+        if op == 33 || op == 34 || op == 49 || op == 57 { return 0; }
+        if opt_is_inline_leaf_or_bin(n.child1, depth + 1) == 1 && opt_is_inline_leaf_or_bin(n.child2, depth + 1) == 1 {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+fn opt_clone_subst_ast(p: *mut Parser, src: *mut AstNode, p0_h: u64, a0: *mut AstNode, p1_h: u64, a1: *mut AstNode) -> *mut AstNode {
+    if src == (0 as *mut AstNode) { return 0 as *mut AstNode; }
+    if src.kind == 117 {
+        if p0_h != 0 && src.hash == p0_h && a0 != (0 as *mut AstNode) {
+            let c0: *mut AstNode = alloc_node(p, a0.kind as u32);
+            opt_copy_node(c0, a0);
+            return c0;
+        }
+        if p1_h != 0 && src.hash == p1_h && a1 != (0 as *mut AstNode) {
+            let c1: *mut AstNode = alloc_node(p, a1.kind as u32);
+            opt_copy_node(c1, a1);
+            return c1;
+        }
+    }
+    let out: *mut AstNode = alloc_node(p, src.kind as u32);
+    opt_copy_node(out, src);
+    out.child1 = opt_clone_subst_ast(p, src.child1, p0_h, a0, p1_h, a1);
+    out.child2 = opt_clone_subst_ast(p, src.child2, p0_h, a0, p1_h, a1);
+    out.child3 = 0 as *mut AstNode;
+    out.next = 0 as *mut AstNode;
+    return out;
+}
+
+fn opt_inline_expr(p: *mut Parser, cur_fn_hash: u64, node: *mut AstNode) {
+    if p == (0 as *mut Parser) || node == (0 as *mut AstNode) { return; }
+    opt_inline_expr(p, cur_fn_hash, node.child1);
+    opt_inline_expr(p, cur_fn_hash, node.child2);
+    opt_inline_expr(p, cur_fn_hash, node.child3);
+
+    if node.kind != 113 { return; }
+    if node.child1 != (0 as *mut AstNode) && node.child1.kind == 114 { return; }
+    if node.hash == 0 || node.hash == cur_fn_hash { return; }
+
+    var a: *mut AstNode = node.child2;
+    while a != (0 as *mut AstNode) {
+        opt_inline_expr(p, cur_fn_hash, a);
+        a = a.next;
+    }
+
+    let callee: *mut AstNode = find_comptime_fn(p, node.hash);
+    if callee == (0 as *mut AstNode) { return; }
+    let body: *mut AstNode = callee.child1;
+    if body == (0 as *mut AstNode) || body.kind != 109 || body.next != (0 as *mut AstNode) { return; }
+    let ret_e: *mut AstNode = body.child1;
+    if opt_is_inline_leaf_or_bin(ret_e, 0) == 0 { return; }
+
+    var p0_h: u64 = 0;
+    var p1_h: u64 = 0;
+    var pcnt: u32 = 0;
+    var pm: *mut AstNode = callee.child2;
+    while pm != (0 as *mut AstNode) {
+        if pm.is_mut != 0 { return; }
+        if pcnt == 0 { p0_h = pm.hash; }
+        else if pcnt == 1 { p1_h = pm.hash; }
+        else { return; }
+        pcnt = pcnt + 1;
+        pm = pm.next;
+    }
+
+    var arg0: *mut AstNode = 0 as *mut AstNode;
+    var arg1: *mut AstNode = 0 as *mut AstNode;
+    var acnt: u32 = 0;
+    var ca: *mut AstNode = node.child2;
+    while ca != (0 as *mut AstNode) {
+        if ca.kind != 116 && ca.kind != 117 { return; }
+        if acnt == 0 { arg0 = ca; }
+        else if acnt == 1 { arg1 = ca; }
+        else { return; }
+        acnt = acnt + 1;
+        ca = ca.next;
+    }
+    if acnt != pcnt { return; }
+
+    let cloned: *mut AstNode = opt_clone_subst_ast(p, ret_e, p0_h, arg0, p1_h, arg1);
+    if cloned != (0 as *mut AstNode) {
+        opt_copy_node(node, cloned);
+        opt_simplify_expr(node);
+    }
+}
+

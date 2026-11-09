@@ -1,0 +1,246 @@
+include "lib/core/types.rx";
+
+const HTTP_METHOD_UNKNOWN: uint = 0;
+const HTTP_METHOD_GET: uint     = 1;
+const HTTP_METHOD_POST: uint    = 2;
+const HTTP_METHOD_PUT: uint     = 3;
+const HTTP_METHOD_DELETE: uint  = 4;
+
+struct HttpHeader {
+    name_off: uint,
+    name_len: uint,
+    val_off: uint,
+    val_len: uint,
+}
+
+struct HttpRequest {
+    method: uint,
+    path_off: uint,
+    path_len: uint,
+    body_off: uint,
+    body_len: uint,
+    header_count: uint,
+    headers: [HttpHeader; 16],
+}
+
+fn http_str_eq(p1: *const byte, len1: uint, s2: str) -> bool {
+    let p2: *const byte = s2 as *const byte;
+    var i: uint = 0;
+    while i < len1 {
+        if p2[i] == 0 as byte || p1[i] != p2[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return p2[i] == 0 as byte;
+}
+
+fn http_parse_request_path(
+    raw: *const byte,
+    len: uint,
+    out_path_off: *mut uint,
+    out_path_len: *mut uint
+) -> bool {
+    var i: uint = 0;
+    while i < len && raw[i] != 32 as byte {
+        i = i + 1;
+    }
+    if i >= len { return false; }
+
+    i = i + 1;
+    let path_start: uint = i;
+
+    while i < len && raw[i] != 32 as byte && raw[i] != 13 as byte && raw[i] != 10 as byte {
+        i = i + 1;
+    }
+    if i == path_start { return false; }
+
+    out_path_off[0] = path_start;
+    out_path_len[0] = i - path_start;
+    return true;
+}
+
+fn http_parse_full_request(raw: *const byte, len: uint, req: *mut HttpRequest) -> bool {
+    if len < 14 {
+        return false;
+    }
+
+    req.header_count = 0;
+    req.body_off = 0;
+    req.body_len = 0;
+
+    if raw[0] == 71 as byte && raw[1] == 69 as byte && raw[2] == 84 as byte {
+        req.method = HTTP_METHOD_GET;
+    } else if raw[0] == 80 as byte && raw[1] == 79 as byte && raw[2] == 83 as byte && raw[3] == 84 as byte {
+        req.method = HTTP_METHOD_POST;
+    } else if raw[0] == 80 as byte && raw[1] == 85 as byte && raw[2] == 84 as byte {
+        req.method = HTTP_METHOD_PUT;
+    } else if raw[0] == 68 as byte && raw[1] == 69 as byte && raw[2] == 76 as byte {
+        req.method = HTTP_METHOD_DELETE;
+    } else {
+        req.method = HTTP_METHOD_UNKNOWN;
+    }
+
+    var poff: [uint; 1];
+    var plen: [uint; 1];
+    if !http_parse_request_path(raw, len, &mut poff[0], &mut plen[0]) {
+        return false;
+    }
+    req.path_off = poff[0];
+    req.path_len = plen[0];
+
+    var i: uint = poff[0] + plen[0];
+    while i < len && raw[i] != 10 as byte {
+        i = i + 1;
+    }
+    if i < len && raw[i] == 10 as byte {
+        i = i + 1;
+    }
+
+    while i < len && req.header_count < 16 {
+        if raw[i] == 13 as byte && (i + 1) < len && raw[i + 1] == 10 as byte {
+            i = i + 2;
+            break;
+        }
+        if raw[i] == 10 as byte {
+            i = i + 1;
+            break;
+        }
+
+        let name_start: uint = i;
+        while i < len && raw[i] != 58 as byte && raw[i] != 10 as byte {
+            i = i + 1;
+        }
+        if i >= len || raw[i] != 58 as byte {
+            break;
+        }
+        let name_end: uint = i;
+
+        i = i + 1;
+        while i < len && (raw[i] == 32 as byte || raw[i] == 9 as byte) {
+            i = i + 1;
+        }
+        let val_start: uint = i;
+        while i < len && raw[i] != 13 as byte && raw[i] != 10 as byte {
+            i = i + 1;
+        }
+        let val_end: uint = i;
+
+        let slot: uint = req.header_count;
+        let p_hdrs: *mut byte = ((req as *mut byte) + 48);
+        let h_base: *mut uint = (p_hdrs + (slot * 32)) as *mut uint;
+        h_base[0] = name_start;
+        h_base[1] = name_end - name_start;
+        h_base[2] = val_start;
+        h_base[3] = val_end - val_start;
+        req.header_count = req.header_count + 1;
+
+        if i < len && raw[i] == 13 as byte { i = i + 1; }
+        if i < len && raw[i] == 10 as byte { i = i + 1; }
+    }
+
+    if i < len {
+        req.body_off = i;
+        req.body_len = len - i;
+    }
+
+    return true;
+}
+
+fn http_find_header(
+    req: *const HttpRequest,
+    raw: *const byte,
+    header_name: str,
+    out_val_off: *mut uint,
+    out_val_len: *mut uint
+) -> bool {
+    var i: uint = 0;
+    let p_hdrs: *const byte = ((req as *const byte) + 48);
+    while i < req.header_count {
+        let h_base: *const uint = (p_hdrs + (i * 32)) as *const uint;
+        let noff: uint = h_base[0];
+        let nlen: uint = h_base[1];
+        if http_str_eq(raw + noff, nlen, header_name) {
+            out_val_off[0] = h_base[2];
+            out_val_len[0] = h_base[3];
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn http_append_str(dst: *mut byte, head: *mut uint, s: str) {
+    let p: *const byte = s as *const byte;
+    var i: uint = 0;
+    var h: uint = head[0];
+    while p[i] != 0 as byte {
+        dst[h] = p[i];
+        h = h + 1;
+        i = i + 1;
+    }
+    head[0] = h;
+}
+
+fn http_append_uint(dst: *mut byte, head: *mut uint, val: uint) {
+    var h: uint = head[0];
+    if val == 0 {
+        dst[h] = 48 as byte;
+        head[0] = h + 1;
+        return;
+    }
+
+    var digits: [byte; 20];
+    var di: uint = 0;
+    var v: uint = val;
+    while v > 0 {
+        digits[di] = ((v % 10) + 48) as byte;
+        v = v / 10;
+        di = di + 1;
+    }
+    while di > 0 {
+        di = di - 1;
+        dst[h] = digits[di];
+        h = h + 1;
+    }
+    head[0] = h;
+}
+
+fn http_build_response_200(body: str, out_buf: *mut byte, cap: uint) -> uint {
+    let bp: *const byte = body as *const byte;
+    var blen: uint = 0;
+    while bp[blen] != 0 as byte { blen = blen + 1; }
+
+    var h: [uint; 1];
+    h[0] = 0;
+
+    http_append_str(out_buf, &mut h[0], "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: ");
+    http_append_uint(out_buf, &mut h[0], blen);
+    http_append_str(out_buf, &mut h[0], "\r\nConnection: close\r\n\r\n");
+    http_append_str(out_buf, &mut h[0], body);
+
+    return h[0];
+}
+
+fn http_build_response_json(json_body: str, out_buf: *mut byte, cap: uint) -> uint {
+    let bp: *const byte = json_body as *const byte;
+    var blen: uint = 0;
+    while bp[blen] != 0 as byte { blen = blen + 1; }
+
+    var h: [uint; 1];
+    h[0] = 0;
+
+    http_append_str(out_buf, &mut h[0], "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ");
+    http_append_uint(out_buf, &mut h[0], blen);
+    http_append_str(out_buf, &mut h[0], "\r\nConnection: close\r\n\r\n");
+    http_append_str(out_buf, &mut h[0], json_body);
+
+    return h[0];
+}
+
+fn http_build_response_404(out_buf: *mut byte, cap: uint) -> uint {
+    var h: [uint; 1];
+    h[0] = 0;
+    http_append_str(out_buf, &mut h[0], "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 9\r\n\r\nNot Found");
+    return h[0];
+}

@@ -1,0 +1,89 @@
+include "lib/core/types.rx";
+
+const VGA_COLOR_BLACK: u8       = 0;
+const VGA_COLOR_BLUE: u8        = 1;
+const VGA_COLOR_GREEN: u8       = 2;
+const VGA_COLOR_CYAN: u8        = 3;
+const VGA_COLOR_RED: u8         = 4;
+const VGA_COLOR_LIGHT_GREY: u8  = 7;
+const VGA_COLOR_WHITE: u8       = 15;
+
+const VGA_TEXT_WIDTH: uint  = 80;
+const VGA_TEXT_HEIGHT: uint = 25;
+
+struct VgaTextConsole {
+    cells: [u16; 2000],
+    cursor_x: uint,
+    cursor_y: uint,
+    attr: u8,
+}
+
+fn vga_entry_attr(fg: u8, bg: u8) -> u8 {
+    return (fg & 15) | ((bg & 15) << 4);
+}
+
+fn vga_entry_cell(ch: byte, attr: u8) -> u16 {
+    return (ch as u16) | ((attr as u16) << 8);
+}
+
+fn vga_console_init(con: *mut VgaTextConsole, fg: u8, bg: u8) {
+    con.cursor_x = 0;
+    con.cursor_y = 0;
+    con.attr = vga_entry_attr(fg, bg);
+    let blank: u16 = vga_entry_cell(32, con.attr);
+    var i: uint = 0;
+    while i < 2000 {
+        con.cells[i] = blank;
+        i = i + 1;
+    }
+}
+
+fn vga_console_scroll(con: *mut VgaTextConsole) {
+    var r: uint = 0;
+    while r < 24 {
+        var c: uint = 0;
+        while c < 80 {
+            con.cells[r * 80 + c] = con.cells[(r + 1) * 80 + c];
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+    let blank: u16 = vga_entry_cell(32, con.attr);
+    var c2: uint = 0;
+    while c2 < 80 {
+        con.cells[24 * 80 + c2] = blank;
+        c2 = c2 + 1;
+    }
+    con.cursor_y = 24;
+}
+
+fn vga_console_putc(con: *mut VgaTextConsole, ch: byte) {
+    if ch == 10 {
+        con.cursor_x = 0;
+        con.cursor_y = con.cursor_y + 1;
+    } else if ch == 13 {
+        con.cursor_x = 0;
+    } else {
+        let idx: uint = con.cursor_y * 80 + con.cursor_x;
+        if idx < 2000 {
+            con.cells[idx] = vga_entry_cell(ch, con.attr);
+        }
+        con.cursor_x = con.cursor_x + 1;
+        if con.cursor_x >= 80 {
+            con.cursor_x = 0;
+            con.cursor_y = con.cursor_y + 1;
+        }
+    }
+    if con.cursor_y >= 25 {
+        vga_console_scroll(con);
+    }
+}
+
+fn vga_console_write(con: *mut VgaTextConsole, text: *const byte) {
+    var i: uint = 0;
+    while text[i] != 0 {
+        vga_console_putc(con, text[i]);
+        i = i + 1;
+    }
+}
+

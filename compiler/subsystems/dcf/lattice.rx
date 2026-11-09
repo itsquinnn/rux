@@ -1,0 +1,138 @@
+include "lib/core/types.rx";
+
+struct DcfVectorClock {
+    n0: uint,
+    n1: uint,
+    n2: uint,
+    n3: uint,
+    n4: uint,
+    n5: uint,
+    n6: uint,
+    n7: uint,
+}
+
+struct DcfPnCounter {
+    p0: uint, p1: uint, p2: uint, p3: uint,
+    n0: uint, n1: uint, n2: uint, n3: uint,
+}
+
+struct DcfLwwRegister {
+    value: uint,
+    hlc_timestamp: uint,
+    node_id: uint,
+    merkle_digest: uint,
+}
+
+fn dcf_max_u64(a: uint, b: uint) -> uint {
+    if a >= b {
+        return a;
+    }
+    return b;
+}
+
+fn dcf_vclock_init(vc: *mut DcfVectorClock) {
+    vc.n0 = 0; vc.n1 = 0; vc.n2 = 0; vc.n3 = 0;
+    vc.n4 = 0; vc.n5 = 0; vc.n6 = 0; vc.n7 = 0;
+}
+
+fn dcf_vclock_tick(vc: *mut DcfVectorClock, node_id: uint) -> uint {
+    if node_id == 0 { vc.n0 = vc.n0 + 1; return vc.n0; }
+    if node_id == 1 { vc.n1 = vc.n1 + 1; return vc.n1; }
+    if node_id == 2 { vc.n2 = vc.n2 + 1; return vc.n2; }
+    if node_id == 3 { vc.n3 = vc.n3 + 1; return vc.n3; }
+    if node_id == 4 { vc.n4 = vc.n4 + 1; return vc.n4; }
+    if node_id == 5 { vc.n5 = vc.n5 + 1; return vc.n5; }
+    if node_id == 6 { vc.n6 = vc.n6 + 1; return vc.n6; }
+    vc.n7 = vc.n7 + 1;
+    return vc.n7;
+}
+
+fn dcf_vclock_is_concurrent(a: *const DcfVectorClock, b: *const DcfVectorClock) -> bool {
+    var a_gt_b: uint = 0;
+    var b_gt_a: uint = 0;
+
+    if a.n0 > b.n0 { a_gt_b = 1; } if b.n0 > a.n0 { b_gt_a = 1; }
+    if a.n1 > b.n1 { a_gt_b = 1; } if b.n1 > a.n1 { b_gt_a = 1; }
+    if a.n2 > b.n2 { a_gt_b = 1; } if b.n2 > a.n2 { b_gt_a = 1; }
+    if a.n3 > b.n3 { a_gt_b = 1; } if b.n3 > a.n3 { b_gt_a = 1; }
+    if a.n4 > b.n4 { a_gt_b = 1; } if b.n4 > a.n4 { b_gt_a = 1; }
+    if a.n5 > b.n5 { a_gt_b = 1; } if b.n5 > a.n5 { b_gt_a = 1; }
+    if a.n6 > b.n6 { a_gt_b = 1; } if b.n6 > a.n6 { b_gt_a = 1; }
+    if a.n7 > b.n7 { a_gt_b = 1; } if b.n7 > a.n7 { b_gt_a = 1; }
+
+    return (a_gt_b == 1) && (b_gt_a == 1);
+}
+
+fn dcf_vclock_join(dst: *mut DcfVectorClock, remote: *const DcfVectorClock) {
+    dst.n0 = dcf_max_u64(dst.n0, remote.n0);
+    dst.n1 = dcf_max_u64(dst.n1, remote.n1);
+    dst.n2 = dcf_max_u64(dst.n2, remote.n2);
+    dst.n3 = dcf_max_u64(dst.n3, remote.n3);
+    dst.n4 = dcf_max_u64(dst.n4, remote.n4);
+    dst.n5 = dcf_max_u64(dst.n5, remote.n5);
+    dst.n6 = dcf_max_u64(dst.n6, remote.n6);
+    dst.n7 = dcf_max_u64(dst.n7, remote.n7);
+}
+
+fn dcf_pncounter_init(c: *mut DcfPnCounter) {
+    c.p0 = 0; c.p1 = 0; c.p2 = 0; c.p3 = 0;
+    c.n0 = 0; c.n1 = 0; c.n2 = 0; c.n3 = 0;
+}
+
+fn dcf_pncounter_add(c: *mut DcfPnCounter, node_id: uint, delta: uint) {
+    if node_id == 0 { c.p0 = c.p0 + delta; return; }
+    if node_id == 1 { c.p1 = c.p1 + delta; return; }
+    if node_id == 2 { c.p2 = c.p2 + delta; return; }
+    c.p3 = c.p3 + delta;
+}
+
+fn dcf_pncounter_sub(c: *mut DcfPnCounter, node_id: uint, delta: uint) {
+    if node_id == 0 { c.n0 = c.n0 + delta; return; }
+    if node_id == 1 { c.n1 = c.n1 + delta; return; }
+    if node_id == 2 { c.n2 = c.n2 + delta; return; }
+    c.n3 = c.n3 + delta;
+}
+
+fn dcf_pncounter_value(c: *const DcfPnCounter) -> int {
+    let pos_sum: uint = c.p0 + c.p1 + c.p2 + c.p3;
+    let neg_sum: uint = c.n0 + c.n1 + c.n2 + c.n3;
+    return (pos_sum as int) - (neg_sum as int);
+}
+
+fn dcf_pncounter_join(dst: *mut DcfPnCounter, remote: *const DcfPnCounter) {
+    dst.p0 = dcf_max_u64(dst.p0, remote.p0);
+    dst.p1 = dcf_max_u64(dst.p1, remote.p1);
+    dst.p2 = dcf_max_u64(dst.p2, remote.p2);
+    dst.p3 = dcf_max_u64(dst.p3, remote.p3);
+    dst.n0 = dcf_max_u64(dst.n0, remote.n0);
+    dst.n1 = dcf_max_u64(dst.n1, remote.n1);
+    dst.n2 = dcf_max_u64(dst.n2, remote.n2);
+    dst.n3 = dcf_max_u64(dst.n3, remote.n3);
+}
+
+fn dcf_lww_write(reg: *mut DcfLwwRegister, val: uint, hlc_ts: uint, node_id: uint) {
+    reg.value = val;
+    reg.hlc_timestamp = hlc_ts;
+    reg.node_id = node_id;
+    reg.merkle_digest = (val ^ (hlc_ts * 1099511628211)) ^ node_id;
+}
+
+fn dcf_lww_join(dst: *mut DcfLwwRegister, remote: *const DcfLwwRegister) {
+    var take_remote: bool = false;
+    if remote.hlc_timestamp > dst.hlc_timestamp {
+        take_remote = true;
+    } else if remote.hlc_timestamp == dst.hlc_timestamp {
+        if remote.node_id > dst.node_id {
+            take_remote = true;
+        } else if remote.node_id == dst.node_id && remote.merkle_digest > dst.merkle_digest {
+            take_remote = true;
+        }
+    }
+
+    if take_remote {
+        dst.value = remote.value;
+        dst.hlc_timestamp = remote.hlc_timestamp;
+        dst.node_id = remote.node_id;
+        dst.merkle_digest = remote.merkle_digest;
+    }
+}

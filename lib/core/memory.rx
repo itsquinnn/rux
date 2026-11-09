@@ -1,0 +1,148 @@
+include "lib/core/types.rx";
+
+fn align_forward(val: uint, alignment: uint) -> uint {
+    return ((val + alignment - 1) / alignment) * alignment;
+}
+
+fn align_cacheline(addr: uint) -> uint => align_forward(addr, 64);
+
+fn copy_memory(dst: *mut byte, src: *const byte, count: uint) {
+    var i: uint = 0;
+    while i < count {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+}
+
+fn fill_memory(dst: *mut byte, val: byte, count: uint) {
+    var i: uint = 0;
+    while i < count {
+        dst[i] = val;
+        i = i + 1;
+    }
+}
+
+struct BumpArena {
+    base: *mut byte,
+    head: uint,
+    capacity: uint,
+}
+
+fn arena_init(arena: *mut BumpArena, buf: *mut byte, cap: uint) {
+    arena.base = buf;
+    arena.head = 0;
+    arena.capacity = cap;
+}
+
+fn arena_bump(arena: *mut BumpArena, size: uint) -> *mut byte {
+    let aligned: uint = align_forward(size, 8);
+    if (arena.head + aligned) > arena.capacity {
+        return 0 as *mut byte;
+    }
+    let ptr: *mut byte = (arena.base as uint + arena.head) as *mut byte;
+    arena.head = arena.head + aligned;
+    return ptr;
+}
+
+fn arena_reset(arena: *mut BumpArena) {
+    arena.head = 0;
+}
+
+struct SlabAllocator {
+    arena: BumpArena,
+    free_64: uint,
+    free_256: uint,
+    free_1024: uint,
+    free_4096: uint,
+    active_blocks: uint,
+    recycled_hits: uint,
+}
+
+fn slab_init(slab: *mut SlabAllocator, buf: *mut byte, cap: uint) {
+    slab.arena.base = buf;
+    slab.arena.head = 0;
+    slab.arena.capacity = cap;
+    slab.free_64 = 0;
+    slab.free_256 = 0;
+    slab.free_1024 = 0;
+    slab.free_4096 = 0;
+    slab.active_blocks = 0;
+    slab.recycled_hits = 0;
+}
+
+fn slab_alloc(slab: *mut SlabAllocator, size: uint) -> *mut byte {
+    if size <= 64 {
+        if slab.free_64 != 0 {
+            let recycled: *mut uint = slab.free_64 as *mut uint;
+            slab.free_64 = recycled[0];
+            slab.active_blocks = slab.active_blocks + 1;
+            slab.recycled_hits = slab.recycled_hits + 1;
+            return recycled as *mut byte;
+        }
+        let fresh: *mut byte = arena_bump(&mut slab.arena, 64);
+        if (fresh as uint) != 0 { slab.active_blocks = slab.active_blocks + 1; }
+        return fresh;
+    }
+    if size <= 256 {
+        if slab.free_256 != 0 {
+            let recycled: *mut uint = slab.free_256 as *mut uint;
+            slab.free_256 = recycled[0];
+            slab.active_blocks = slab.active_blocks + 1;
+            slab.recycled_hits = slab.recycled_hits + 1;
+            return recycled as *mut byte;
+        }
+        let fresh: *mut byte = arena_bump(&mut slab.arena, 256);
+        if (fresh as uint) != 0 { slab.active_blocks = slab.active_blocks + 1; }
+        return fresh;
+    }
+    if size <= 1024 {
+        if slab.free_1024 != 0 {
+            let recycled: *mut uint = slab.free_1024 as *mut uint;
+            slab.free_1024 = recycled[0];
+            slab.active_blocks = slab.active_blocks + 1;
+            slab.recycled_hits = slab.recycled_hits + 1;
+            return recycled as *mut byte;
+        }
+        let fresh: *mut byte = arena_bump(&mut slab.arena, 1024);
+        if (fresh as uint) != 0 { slab.active_blocks = slab.active_blocks + 1; }
+        return fresh;
+    }
+    if size <= 4096 {
+        if slab.free_4096 != 0 {
+            let recycled: *mut uint = slab.free_4096 as *mut uint;
+            slab.free_4096 = recycled[0];
+            slab.active_blocks = slab.active_blocks + 1;
+            slab.recycled_hits = slab.recycled_hits + 1;
+            return recycled as *mut byte;
+        }
+        let fresh: *mut byte = arena_bump(&mut slab.arena, 4096);
+        if (fresh as uint) != 0 { slab.active_blocks = slab.active_blocks + 1; }
+        return fresh;
+    }
+    let large: *mut byte = arena_bump(&mut slab.arena, align_cacheline(size));
+    if (large as uint) != 0 { slab.active_blocks = slab.active_blocks + 1; }
+    return large;
+}
+
+fn slab_free(slab: *mut SlabAllocator, ptr: *mut byte, size: uint) {
+    if (ptr as uint) == 0 {
+        return;
+    }
+    let slot: *mut uint = ptr as *mut uint;
+    if size <= 64 {
+        slot[0] = slab.free_64;
+        slab.free_64 = ptr as uint;
+    } else if size <= 256 {
+        slot[0] = slab.free_256;
+        slab.free_256 = ptr as uint;
+    } else if size <= 1024 {
+        slot[0] = slab.free_1024;
+        slab.free_1024 = ptr as uint;
+    } else if size <= 4096 {
+        slot[0] = slab.free_4096;
+        slab.free_4096 = ptr as uint;
+    }
+    if slab.active_blocks > 0 {
+        slab.active_blocks = slab.active_blocks - 1;
+    }
+}

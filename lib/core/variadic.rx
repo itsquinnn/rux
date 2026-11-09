@@ -1,0 +1,43 @@
+struct VariadicSlice {
+    ptr: *const i64,
+    len: usize,
+}
+
+fn variadic_from_raw(ptr: *const i64, len: usize) -> VariadicSlice {
+    var vs: VariadicSlice;
+    vs.ptr = ptr;
+    vs.len = len;
+    return vs;
+}
+
+fn variadic_len(vs: *const VariadicSlice) -> usize {
+    return vs.len;
+}
+
+fn variadic_get(vs: *const VariadicSlice, idx: usize) -> i64 {
+    if idx >= vs.len {
+        return 0;
+    }
+    return vs.ptr[idx];
+}
+
+fn variadic_sum_i32(vs: *const VariadicSlice) -> i32 {
+    var sum: i32 = 0;
+    var i: usize = 0;
+    while i < vs.len {
+        sum = sum + (vs.ptr[i] as i32);
+        i = i + 1;
+    }
+    return sum;
+}
+
+fn variadic_sum_i64(vs: *const VariadicSlice) -> i64 {
+    var sum: i64 = 0;
+    var i: usize = 0;
+    while i < vs.len {
+        sum = sum + vs.ptr[i];
+        i = i + 1;
+    }
+    return sum;
+}
+

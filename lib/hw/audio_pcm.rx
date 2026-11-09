@@ -1,0 +1,57 @@
+include "lib/core/types.rx";
+
+struct AudioPcmBuffer {
+    samples_lr: [int; 512],
+    sample_rate_hz: u32,
+    channels: u8,
+    write_pos: uint,
+    read_pos: uint,
+    master_gain_pct: int,
+}
+
+fn audio_pcm_init(buf: *mut AudioPcmBuffer, sample_rate_hz: u32, channels: u8) {
+    buf.sample_rate_hz = sample_rate_hz;
+    buf.channels = channels;
+    buf.write_pos = 0;
+    buf.read_pos = 0;
+    buf.master_gain_pct = 100;
+    var i: uint = 0;
+    while i < 512 {
+        buf.samples_lr[i] = 0;
+        i = i + 1;
+    }
+}
+
+fn audio_clamp_i16(val: int) -> int {
+    if val > 32767 { return 32767; }
+    if val < (0 - 32768) { return 0 - 32768; }
+    return val;
+}
+
+fn audio_mix_i16(a: int, b: int) -> int {
+    return audio_clamp_i16(a + b);
+}
+
+fn audio_pcm_push_stereo(buf: *mut AudioPcmBuffer, left: int, right: int) -> bool {
+    let next: uint = (buf.write_pos + 2) & 511;
+    if next == buf.read_pos {
+        return false;
+    }
+    let scaled_l: int = audio_clamp_i16((left * buf.master_gain_pct) / 100);
+    let scaled_r: int = audio_clamp_i16((right * buf.master_gain_pct) / 100);
+    buf.samples_lr[buf.write_pos] = scaled_l;
+    buf.samples_lr[(buf.write_pos + 1) & 511] = scaled_r;
+    buf.write_pos = next;
+    return true;
+}
+
+fn audio_pcm_pop_stereo(buf: *mut AudioPcmBuffer, out_left: *mut int, out_right: *mut int) -> bool {
+    if buf.read_pos == buf.write_pos {
+        return false;
+    }
+    out_left[0] = buf.samples_lr[buf.read_pos];
+    out_right[0] = buf.samples_lr[(buf.read_pos + 1) & 511];
+    buf.read_pos = (buf.read_pos + 2) & 511;
+    return true;
+}
+

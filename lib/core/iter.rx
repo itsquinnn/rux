@@ -1,0 +1,199 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/os/uses_substrate.rx";
+
+struct RangeIterator {
+    current: uint,
+    end_bound: uint,
+    step: uint,
+}
+
+fn range_iter_init(it: *mut RangeIterator, start: uint, end_bound: uint) {
+    it.current = start;
+    it.end_bound = end_bound;
+    it.step = 1;
+}
+
+fn range_iter_next(it: *mut RangeIterator, out_val: *mut uint) -> bool {
+    if it.current >= it.end_bound {
+        return false;
+    }
+    out_val[0] = it.current;
+    it.current = it.current + it.step;
+    return true;
+}
+
+fn range_iter_fold(it: *mut RangeIterator, init_val: uint, folder: fn(acc: uint, item: uint) -> uint) -> uint {
+    var acc: uint = init_val;
+    var item: [uint; 1];
+    while range_iter_next(it, &mut item[0]) {
+        acc = folder(acc, item[0]);
+    }
+    return acc;
+}
+
+fn range_iter_count(it: *mut RangeIterator) -> uint {
+    if it.current >= it.end_bound {
+        return 0;
+    }
+    let remaining: uint = (it.end_bound - it.current) / it.step;
+    it.current = it.end_bound;
+    return remaining;
+}
+
+struct SliceIterator {
+    ptr: *const uint,
+    len: uint,
+    idx: uint,
+}
+
+fn slice_iter_init(it: *mut SliceIterator, base_ptr: *const uint, length: uint) {
+    it.ptr = base_ptr;
+    it.len = length;
+    it.idx = 0;
+}
+
+fn slice_iter_next(it: *mut SliceIterator, out_val: *mut uint) -> bool {
+    if it.idx >= it.len {
+        return false;
+    }
+    out_val[0] = it.ptr[it.idx];
+    it.idx = it.idx + 1;
+    return true;
+}
+
+fn slice_iter_sum(it: *mut SliceIterator) -> uint {
+    var sum: uint = 0;
+    var item: [uint; 1];
+    while slice_iter_next(it, &mut item[0]) {
+        sum = sum + item[0];
+    }
+    return sum;
+}
+
+struct MapIterator {
+    slice_it: SliceIterator,
+    mapper: fn(val: uint) -> uint,
+}
+
+fn map_iter_init(it: *mut MapIterator, base_ptr: *const uint, length: uint, mapper: fn(val: uint) -> uint) {
+    slice_iter_init(&mut it.slice_it, base_ptr, length);
+    it.mapper = mapper;
+}
+
+fn map_iter_next(it: *mut MapIterator, out_val: *mut uint) -> bool {
+    var raw: [uint; 1];
+    if slice_iter_next(&mut it.slice_it, &mut raw[0]) {
+        let f: fn(val: uint) -> uint = it.mapper;
+        out_val[0] = f(raw[0]);
+        return true;
+    }
+    return false;
+}
+
+struct FilterIterator {
+    slice_it: SliceIterator,
+    predicate: fn(val: uint) -> bool,
+}
+
+fn filter_iter_init(it: *mut FilterIterator, base_ptr: *const uint, length: uint, predicate: fn(val: uint) -> bool) {
+    slice_iter_init(&mut it.slice_it, base_ptr, length);
+    it.predicate = predicate;
+}
+
+fn filter_iter_next(it: *mut FilterIterator, out_val: *mut uint) -> bool {
+    var raw: [uint; 1];
+    let pred: fn(val: uint) -> bool = it.predicate;
+    while slice_iter_next(&mut it.slice_it, &mut raw[0]) {
+        if pred(raw[0]) {
+            out_val[0] = raw[0];
+            return true;
+        }
+    }
+    return false;
+}
+
+struct TakeIterator {
+    slice_it: SliceIterator,
+    remaining: uint,
+}
+
+fn take_iter_init(it: *mut TakeIterator, base_ptr: *const uint, length: uint, count: uint) {
+    slice_iter_init(&mut it.slice_it, base_ptr, length);
+    it.remaining = count;
+}
+
+fn take_iter_next(it: *mut TakeIterator, out_val: *mut uint) -> bool {
+    if it.remaining == 0 {
+        return false;
+    }
+    var raw: [uint; 1];
+    if slice_iter_next(&mut it.slice_it, &mut raw[0]) {
+        it.remaining = it.remaining - 1;
+        out_val[0] = raw[0];
+        return true;
+    }
+    return false;
+}
+
+struct EnumeratePair {
+    index: uint,
+    value: uint,
+}
+
+struct EnumerateIterator {
+    slice_it: SliceIterator,
+    current_index: uint,
+}
+
+fn enumerate_iter_init(it: *mut EnumerateIterator, base_ptr: *const uint, length: uint) {
+    slice_iter_init(&mut it.slice_it, base_ptr, length);
+    it.current_index = 0;
+}
+
+fn enumerate_iter_next(it: *mut EnumerateIterator, out_pair: *mut EnumeratePair) -> bool {
+    var raw: [uint; 1];
+    if slice_iter_next(&mut it.slice_it, &mut raw[0]) {
+        out_pair.index = it.current_index;
+        out_pair.value = raw[0];
+        it.current_index = it.current_index + 1;
+        return true;
+    }
+    return false;
+}
+
+struct ZipPair {
+    first: uint,
+    second: uint,
+}
+
+struct ZipIterator {
+    it1: SliceIterator,
+    it2: SliceIterator,
+}
+
+fn zip_iter_init(it: *mut ZipIterator, p1: *const uint, len1: uint, p2: *const uint, len2: uint) {
+    slice_iter_init(&mut it.it1, p1, len1);
+    slice_iter_init(&mut it.it2, p2, len2);
+}
+
+fn zip_iter_next(it: *mut ZipIterator, out_pair: *mut ZipPair) -> bool {
+    var v1: [uint; 1];
+    var v2: [uint; 1];
+    if slice_iter_next(&mut it.it1, &mut v1[0]) && slice_iter_next(&mut it.it2, &mut v2[0]) {
+        out_pair.first = v1[0];
+        out_pair.second = v2[0];
+        return true;
+    }
+    return false;
+}
+
+fn iter_collect_slice(it: *mut SliceIterator, out_buf: *mut uint, max_len: uint) -> uint {
+    var count: uint = 0;
+    var item: [uint; 1];
+    while count < max_len && slice_iter_next(it, &mut item[0]) {
+        out_buf[count] = item[0];
+        count = count + 1;
+    }
+    return count;
+}

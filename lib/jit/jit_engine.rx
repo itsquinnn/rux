@@ -1,0 +1,130 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+include "lib/jit/jit_arm64.rx";
+include "lib/jit/jit_riscv.rx";
+
+const JIT_OP_ADD_IMM: uint = 1;
+const JIT_OP_SUB_IMM: uint = 2;
+const JIT_OP_MUL_IMM: uint = 3;
+const JIT_OP_SHL_IMM: uint = 4;
+const JIT_OP_XOR_IMM: uint = 5;
+
+const JIT_ARCH_X86_64: uint  = 0;
+const JIT_ARCH_ARM64: uint   = 1;
+const JIT_ARCH_RISCV64: uint = 2;
+
+struct JitCodeBuf {
+    code: *mut byte,
+    len: uint,
+    cap: uint,
+    arch: uint,
+}
+
+fn jit_init_arch(jb: *mut JitCodeBuf, arch: uint) -> bool {
+    let page: *mut byte = uses_substrate_alloc(4096);
+    if (page as uint) == 0 {
+        jb.code = 0 as *mut byte;
+        jb.len = 0;
+        jb.cap = 0;
+        jb.arch = arch;
+        return false;
+    }
+    jb.code = page;
+    jb.len = 0;
+    jb.cap = 4096;
+    jb.arch = arch;
+    return true;
+}
+
+fn jit_init(jb: *mut JitCodeBuf) -> bool {
+    return jit_init_arch(jb, JIT_ARCH_X86_64);
+}
+
+fn jit_emit8(jb: *mut JitCodeBuf, b: byte) {
+    if jb.len < jb.cap {
+        jb.code[jb.len] = b;
+        jb.len = jb.len + 1;
+    }
+}
+
+fn jit_emit32(jb: *mut JitCodeBuf, v: uint) {
+    jit_emit8(jb, (v & 255) as byte);
+    jit_emit8(jb, ((v >> 8) & 255) as byte);
+    jit_emit8(jb, ((v >> 16) & 255) as byte);
+    jit_emit8(jb, ((v >> 24) & 255) as byte);
+}
+
+fn jit_emit_prologue_arg0(jb: *mut JitCodeBuf) {
+    if jb.arch == JIT_ARCH_X86_64 {
+        jit_emit8(jb, 72); jit_emit8(jb, 137); jit_emit8(jb, 248);
+    }
+}
+
+fn jit_emit_add_arg1(jb: *mut JitCodeBuf) {
+    if jb.arch == JIT_ARCH_X86_64 {
+        jit_emit8(jb, 72); jit_emit8(jb, 1); jit_emit8(jb, 240);
+    } else if jb.arch == JIT_ARCH_ARM64 {
+        jit_arm64_put32(jb.code, &mut jb.len, jb.cap, 2332164096);
+    } else if jb.arch == JIT_ARCH_RISCV64 {
+        jit_riscv_put32(jb.code, &mut jb.len, jb.cap, 11568435);
+    }
+}
+
+fn jit_emit_op_imm32(jb: *mut JitCodeBuf, op: uint, imm: uint) {
+    if jb.arch == JIT_ARCH_ARM64 {
+        jit_arm64_emit_op_imm(jb.code, &mut jb.len, jb.cap, op, imm);
+        return;
+    }
+    if jb.arch == JIT_ARCH_RISCV64 {
+        jit_riscv_emit_op_imm(jb.code, &mut jb.len, jb.cap, op, imm);
+        return;
+    }
+    if op == JIT_OP_ADD_IMM {
+        jit_emit8(jb, 72); jit_emit8(jb, 5);
+        jit_emit32(jb, imm);
+    } else if op == JIT_OP_SUB_IMM {
+        jit_emit8(jb, 72); jit_emit8(jb, 45);
+        jit_emit32(jb, imm);
+    } else if op == JIT_OP_MUL_IMM {
+        jit_emit8(jb, 72); jit_emit8(jb, 105); jit_emit8(jb, 192);
+        jit_emit32(jb, imm);
+    } else if op == JIT_OP_SHL_IMM {
+        jit_emit8(jb, 72); jit_emit8(jb, 193); jit_emit8(jb, 224);
+        jit_emit8(jb, (imm & 63) as byte);
+    } else if op == JIT_OP_XOR_IMM {
+        jit_emit8(jb, 72); jit_emit8(jb, 53);
+        jit_emit32(jb, imm);
+    }
+}
+
+fn jit_finalize_fn(jb: *mut JitCodeBuf) -> uint {
+    if jb.arch == JIT_ARCH_ARM64 {
+        jit_arm64_emit_ret(jb.code, &mut jb.len, jb.cap);
+    } else if jb.arch == JIT_ARCH_RISCV64 {
+        jit_riscv_emit_ret(jb.code, &mut jb.len, jb.cap);
+    } else {
+        jit_emit8(jb, 195);
+    }
+    return jb.code as uint;
+}
+
+fn jit_execute_1(jb: *mut JitCodeBuf, arg0: int) -> int {
+    let addr: uint = jit_finalize_fn(jb);
+    let f: fn(int) -> int = addr;
+    return f(arg0);
+}
+
+fn jit_execute_2(jb: *mut JitCodeBuf, arg0: int, arg1: int) -> int {
+    let addr: uint = jit_finalize_fn(jb);
+    let f: fn(int, int) -> int = addr;
+    return f(arg0, arg1);
+}
+
+fn jit_free(jb: *mut JitCodeBuf) {
+    if (jb.code as uint) != 0 && jb.cap > 0 {
+        uses_substrate_free(jb.code, jb.cap);
+        jb.code = 0 as *mut byte;
+        jb.len = 0;
+        jb.cap = 0;
+    }
+}

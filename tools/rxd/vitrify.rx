@@ -1,0 +1,16 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "lib/rxd/rxd.rx";
+
+fn rxd_cmd_vitrify(in_path: *const byte, out_path: *const byte) -> int {
+    let res: int = rxd_vitrify_file(in_path, out_path);
+    if res <= 0 {
+        let fail: str = "[FAIL] Vitrification failed";
+        os_println(fail as *const byte);
+        return 1;
+    }
+    let ok: str = "[PASS] Vitrified to 64-byte aligned .rxdb silicon memory plate";
+    os_println(ok as *const byte);
+    return 0;
+}
+

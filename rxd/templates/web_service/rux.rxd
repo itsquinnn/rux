@@ -1,0 +1,13 @@
+package {
+    name: "web_service"
+    version: "0.1.0"
+    author: "Developer <dev@rux.org>"
+    edition: 2026
+}
+
+target "web_service" {
+    kind: "executable"
+    entry: "rsc/main.rx"
+    opt_level: "fast"
+    memory_limit: 64MB
+}

@@ -1,0 +1,14 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+fn test_bitwise_arithmetic() {
+    let mask: uint = 0xFF;
+    let val: uint = 0xABCD;
+    let res: uint = val & mask;
+    assert(res == 0xCD, "Bitwise mask mismatch");
+}
+
+fn main() -> int {
+    test_bitwise_arithmetic();
+    return 0;
+}

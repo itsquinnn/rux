@@ -1,0 +1,7 @@
+include "rux/lib/core/types.rx";
+
+fn main() -> int {
+    let msg: *const byte = "RUX FREESTANDING 174B KERNEL ALIVE\n" as *const byte;
+    @os.write(1, msg, 35);
+    return 0;
+}

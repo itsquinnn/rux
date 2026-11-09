@@ -1,0 +1,88 @@
+include "lib/core/types.rx";
+include "compiler/pipeline/options.rx";
+include "bootstrap/emitter/codegen.rx";
+include "bootstrap/binary/writer.rx";
+
+fn verify_file_magic(path: *const byte, expected_b0: byte, expected_b1: byte) -> bool {
+    let fd: int = uses_substrate_open(path, 0, 0);
+    if fd < 0 { return false; }
+
+    var buf: [u8; 16];
+    let n: int = uses_substrate_read(fd as uint, &mut buf[0], 16);
+    uses_substrate_close(fd as uint);
+
+    if n < 2 { return false; }
+    return buf[0] == expected_b0 && buf[1] == expected_b1;
+}
+
+fn main() -> int {
+    println("=== RUX MULTI-OS AUTO-DETECTION & MULTI-TARGET TEST ===");
+
+    let detected_os: TargetEnv = detect_host_os();
+    if detected_os == TARGET_ENV_LINUX_EIA {
+        println("[PASS] Host OS successfully auto-detected as Linux");
+    } else {
+        println("[FAIL] Unexpected host OS detection");
+        return 1;
+    }
+
+    let env_win: TargetEnv = infer_target_environment("build/game.exe");
+    if env_win == TARGET_ENV_WINDOWS_PE {
+        println("[PASS] Extension .exe correctly inferred as WINDOWS_PE");
+    } else {
+        println("[FAIL] Failed to infer WINDOWS_PE from .exe");
+        return 2;
+    }
+
+    let env_mac: TargetEnv = infer_target_environment("build/app.macho");
+    if env_mac == TARGET_ENV_MACOS_MACHO {
+        println("[PASS] Extension .macho correctly inferred as MACOS_MACHO");
+    } else {
+        println("[FAIL] Failed to infer MACOS_MACHO from .macho");
+        return 3;
+    }
+
+    let env_elf: TargetEnv = infer_target_environment("build/server.elf");
+    if env_elf == TARGET_ENV_LINUX_EIA {
+        println("[PASS] Extension .elf correctly inferred as LINUX_EIA");
+    } else {
+        println("[FAIL] Failed to infer LINUX_EIA from .elf");
+        return 4;
+    }
+
+    var code: [u8; 4];
+    code[0] = 49;
+    code[1] = 192;
+    code[2] = 195;
+    var v: ExecutableVessel;
+    v.code_ptr = (&code[0]) as *const byte;
+    v.code_len = 3;
+    v.entry_offset = 0;
+
+    write_vessel_pe(&v, "/tmp/autodetect_win.exe" as *byte);
+    if verify_file_magic("/tmp/autodetect_win.exe" as *byte, 77 as byte, 90 as byte) {
+        println("[PASS] Windows PE executable emitted with valid 'MZ' DOS signature");
+    } else {
+        println("[FAIL] Windows PE executable header verification failed");
+        return 5;
+    }
+
+    write_vessel_elf(&v, "/tmp/autodetect_linux.elf" as *byte);
+    if verify_file_magic("/tmp/autodetect_linux.elf" as *byte, 127 as byte, 69 as byte) {
+        println("[PASS] Linux ELF executable emitted with valid '\\x7FELF' signature");
+    } else {
+        println("[FAIL] Linux ELF executable header verification failed");
+        return 6;
+    }
+
+    write_vessel_macho(&v, "/tmp/autodetect_mac.macho" as *byte);
+    if verify_file_magic("/tmp/autodetect_mac.macho" as *byte, 207 as byte, 250 as byte) {
+        println("[PASS] macOS Mach-O executable emitted with valid 0xFEEDFACF magic");
+    } else {
+        println("[FAIL] macOS Mach-O executable header verification failed");
+        return 7;
+    }
+
+    println("ALL OS AUTO-DETECTION AND MULTI-TARGET TESTS PASSED (100% OK)");
+    return 0;
+}

@@ -1,0 +1,8 @@
+include "lib/core/types.rx";
+
+const PI: float        = 3.14159265358979323846;
+const TAU: float       = 6.28318530717958647692;
+const E: float         = 2.71828182845904523536;
+const SQRT_2: float    = 1.41421356237309504880;
+const GOLDEN_RATIO: float = 1.61803398874989484820;
+const EPSILON: float   = 0.00000000000000022204;

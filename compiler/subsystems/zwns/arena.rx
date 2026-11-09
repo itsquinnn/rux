@@ -1,0 +1,41 @@
+const RAMC_CAPACITY: uint = 16777216;
+
+struct RamcArena {
+    base: *mut byte,
+    head: uint,
+    capacity: uint,
+    total_allocations: uint,
+    reset_count: uint,
+    warm_watermark: uint,
+}
+
+fn zwns_ramc_init(arena: *mut RamcArena, memory_block: *mut byte, capacity: uint) {
+    arena.base = memory_block;
+    arena.head = 0;
+    arena.capacity = capacity;
+    arena.total_allocations = 0;
+    arena.reset_count = 0;
+    arena.warm_watermark = 0;
+}
+
+fn zwns_ramc_bump(arena: *mut RamcArena, size: uint) -> *mut byte {
+    let aligned_sz: uint = ((size + 7) / 8) * 8;
+    if (arena.head + aligned_sz) > arena.capacity {
+        return 0 as *mut byte;
+    }
+
+    let ptr: *mut byte = (arena.base as uint + arena.head) as *mut byte;
+    arena.head = arena.head + aligned_sz;
+    arena.total_allocations = arena.total_allocations + 1;
+
+    if arena.head > arena.warm_watermark {
+        arena.warm_watermark = arena.head;
+    }
+
+    return ptr;
+}
+
+fn zwns_ramc_reset_watermark(arena: *mut RamcArena) {
+    arena.head = 0;
+    arena.reset_count = arena.reset_count + 1;
+}

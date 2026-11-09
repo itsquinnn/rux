@@ -1,0 +1,89 @@
+fn parse_typeof_intrinsic(p: *mut Parser) -> *mut AstNode {
+    parser_expect(p, 60);
+    let e: *mut AstNode = parse_expr(p);
+    parser_expect(p, 61);
+    var th: u64 = 5563585020063213298;
+    if e != (0 as *mut AstNode) {
+        if e.kind == 118 { th = 9398593617327382768; }
+        else if e.kind == 122 || e.kind == 131 { th = e.hash; }
+        else if e.kind == 117 && p.cg != (0 as *mut u8) {
+            let lv: *mut LocalVar = cg_find_local(p.cg as *mut CodeGen, e.hash);
+            if lv != (0 as *mut LocalVar) && lv.struct_hash != 0 {
+                th = lv.struct_hash;
+            }
+        }
+    }
+    let n: *mut AstNode = alloc_node(p, 116);
+    n.val = th;
+    return n;
+}
+
+fn parse_typeinfo_intrinsic(p: *mut Parser) -> *mut AstNode {
+    parser_expect(p, 60);
+    var is_ptr: u32 = 0;
+    while p.cur_tok.kind == 32 || p.cur_tok.kind == 50 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 {
+        if p.cur_tok.kind == 32 || p.cur_tok.kind == 50 { is_ptr = 1; }
+        lex_next_token(p.lex, &mut p.cur_tok);
+    }
+    let tk: u32 = p.cur_tok.kind as u32;
+    let th: u64 = p.cur_tok.hash;
+    lex_next_token(p.lex, &mut p.cur_tok);
+    parser_expect(p, 61);
+
+    var sz: u64 = 8;
+    var fcnt: u64 = 0;
+    var tag: u64 = 1;
+
+    if is_ptr == 1 || tk == 25 {
+        sz = 8;
+        tag = 4;
+    } else if th == 14785269867199075517 {
+        sz = 1;
+        tag = 3;
+    } else if th == 15957463049929925035 || th == 11532138274943533413 {
+        sz = 8;
+        tag = 2;
+    } else if th == 15952682373371409732 {
+        sz = 4;
+        tag = 2;
+    } else if tk == 1 {
+        let ce: *mut ConstEntry = parser_find_const(p, th);
+        if ce != (0 as *mut ConstEntry) && ce.extra == 777 {
+            sz = 8;
+            tag = 6;
+        } else {
+            let ks: *mut ConstEntry = parser_find_known_struct(p, th);
+            if ks != (0 as *mut ConstEntry) {
+                sz = ks.val;
+                tag = 5;
+                if p.cg != (0 as *mut u8) {
+                    let si: *mut StructInfo = cg_find_struct(p.cg as *mut CodeGen, th);
+                    if si != (0 as *mut StructInfo) { fcnt = si.field_count; }
+                }
+            }
+        }
+    } else {
+        sz = type_prim_size_from_tok(tk, th);
+        tag = 1;
+    }
+
+    let n: *mut AstNode = alloc_node(p, 116);
+    n.val = (sz & 65535) | ((fcnt & 255) << 16) | ((tag & 255) << 24);
+    return n;
+}
+
+fn parse_vtable_intrinsic(p: *mut Parser) -> *mut AstNode {
+    parser_expect(p, 60);
+    let trait_h: u64 = p.cur_tok.hash;
+    parser_expect_ident(p);
+    parser_expect(p, 72);
+    let type_h: u64 = p.cur_tok.hash;
+    parser_expect_ident(p);
+    parser_expect(p, 61);
+
+    let n: *mut AstNode = alloc_node(p, 134);
+    n.hash = trait_h;
+    n.val = type_h;
+    return n;
+}
+

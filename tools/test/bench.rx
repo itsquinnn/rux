@@ -1,0 +1,29 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "lib/time/bench.rx";
+
+fn run_benchmark_suite() -> int {
+    println("=== RUX SOVEREIGN BENCHMARK SUITE ===");
+
+    let t0: uint = bench_start();
+    var i: uint = 0;
+    while i < 1000000 {
+        i = i + 1;
+    }
+    let elapsed: uint = bench_stop(t0);
+    let m1: BenchMeasurement = bench_compute(1000000, elapsed);
+    bench_report("counter_loop_1m" as *const byte, m1);
+
+    let t_sys: uint = bench_start();
+    var k: uint = 0;
+    while k < 10000 {
+        @os.getpid();
+        k = k + 1;
+    }
+    let sys_cycles: uint = bench_stop(t_sys);
+    let m2: BenchMeasurement = bench_compute(10000, sys_cycles);
+    bench_report("direct_sys_getpid" as *const byte, m2);
+
+    println("=== BENCHMARK COMPLETE (0 ALLOCATIONS) ===");
+    return 0;
+}

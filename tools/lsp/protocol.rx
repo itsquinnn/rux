@@ -1,0 +1,32 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+
+enum LspMethod {
+    INITIALIZE = 1,
+    INITIALIZED = 2,
+    SHUTDOWN = 3,
+    TEXT_DOCUMENT_DID_OPEN = 4,
+    TEXT_DOCUMENT_DID_CHANGE = 5,
+    TEXT_DOCUMENT_COMPLETION = 6,
+    TEXT_DOCUMENT_HOVER = 7,
+    UNKNOWN = 0,
+}
+
+struct LspRequest {
+    id: uint,
+    method: LspMethod,
+    params_ptr: *const byte,
+    params_len: uint,
+}
+
+fn lsp_handle_request(req: *const LspRequest) -> int {
+    if req.method == LspMethod.INITIALIZE {
+        println("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"capabilities\":{\"completionProvider\":{},\"hoverProvider\":true}}}");
+        return 0;
+    }
+    if req.method == LspMethod.SHUTDOWN {
+        println("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":null}");
+        return 0;
+    }
+    return 0;
+}

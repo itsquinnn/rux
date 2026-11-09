@@ -1,0 +1,41 @@
+fn opt_try_compile_dual_accum_while(cg: *mut CodeGen, stmt: *mut AstNode) -> u32 {
+    if cg.has_lambdas != 0 || stmt == (0 as *mut AstNode) { return 0; }
+    let cond: *mut AstNode = stmt.child1;
+    if cond == (0 as *mut AstNode) || cond.kind != 106 || cond.val != 43 { return 0; }
+    if cond.child1 == (0 as *mut AstNode) || cond.child1.kind != 117 { return 0; }
+    let i_hash: u64 = cond.child1.hash;
+    let lv_i: *mut LocalVar = cg_find_local(cg, i_hash);
+    if lv_i == (0 as *mut LocalVar) || lv_i.is_struct_val == 1 { return 0; }
+    if cond.child2 == (0 as *mut AstNode) { return 0; }
+    if cond.child2.kind != 116 && cond.child2.kind != 117 { return 0; }
+
+    let s1: *mut AstNode = opt_next_active_stmt(stmt.child2);
+    if s1 == (0 as *mut AstNode) { return 0; }
+    let s2: *mut AstNode = opt_next_active_stmt(s1.next);
+    if s2 == (0 as *mut AstNode) { return 0; }
+    let s3: *mut AstNode = opt_next_active_stmt(s2.next);
+    if s3 == (0 as *mut AstNode) || opt_next_active_stmt(s3.next) != (0 as *mut AstNode) { return 0; }
+
+    let sum1_h: u64 = opt_match_sum_accum_stmt(s1, i_hash);
+    let sum2_h: u64 = opt_match_sum_accum_stmt(s2, i_hash);
+    if sum1_h != 0 && sum2_h != 0 && sum1_h != sum2_h && opt_is_inc_by_one_stmt(s3, i_hash) == 1 {
+        let lv_s1: *mut LocalVar = cg_find_local(cg, sum1_h);
+        let lv_s2: *mut LocalVar = cg_find_local(cg, sum2_h);
+        if lv_s1 != (0 as *mut LocalVar) && lv_s2 != (0 as *mut LocalVar) {
+            let is_sgn: u32 = cg_is_signed_expr(cg, cond);
+            let i_off: u32 = lv_i.rbp_offset as u32;
+            let s1_off: u32 = lv_s1.rbp_offset as u32;
+            let s2_off: u32 = lv_s2.rbp_offset as u32;
+            cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 157); cg_emit32(cg, 0 - s1_off);
+            cg_emit8(cg, 65); cg_emit8(cg, 83);
+            compile_expr(cg, cond.child2);
+            opt_emit_scev64_accum_loop(cg, i_off, s1_off, is_sgn);
+            cg_emit8(cg, 65); cg_emit8(cg, 91);
+            cg_emit8(cg, 77); cg_emit8(cg, 41); cg_emit8(cg, 217);
+            cg_emit8(cg, 76); cg_emit8(cg, 1); cg_emit8(cg, 141); cg_emit32(cg, 0 - s2_off);
+            return 1;
+        }
+    }
+    return 0;
+}
+

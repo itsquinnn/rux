@@ -1,0 +1,389 @@
+fn diag_pack_loc(p: *mut Parser, tok_start: *u8, tok_len: u64) -> u64 {
+    if p == (0 as *mut Parser) || p.lex == (0 as *mut Lexer) {
+        return 0;
+    }
+    let base: u64 = p.lex.src as u64;
+    let cur: u64 = tok_start as u64;
+    if cur < base {
+        return 0;
+    }
+    let off: u64 = cur - base;
+    var tlen: u64 = tok_len;
+    if tlen == 0 { tlen = 1; }
+    if tlen > 65535 { tlen = 65535; }
+    return (off & 4294967295) | ((tlen & 65535) << 32) | 281474976710656;
+}
+
+fn diag_write_stderr(buf: *u8, len: u64) {
+    if len == 0 { return; }
+    acrq_port_submit(1, 2, 0, buf as u64, 0, len);
+}
+
+fn diag_write_cstr(s: *u8) {
+    if s == (0 as *u8) { return; }
+    let n: u64 = str_len(s);
+    if n > 0 {
+        acrq_port_submit(1, 2, 0, s as u64, 0, n);
+    }
+}
+
+fn diag_write_u64(val: u64) {
+    var buf: [u8; 24];
+    if val == 0 {
+        buf[0] = 48;
+        diag_write_stderr(&buf[0], 1);
+        return;
+    }
+    var tmp: [u8; 24];
+    var n: u64 = 0;
+    var v: u64 = val;
+    while v > 0 && n < 22 {
+        tmp[n] = (48 + (v % 10)) as u8;
+        v = v / 10;
+        n = n + 1;
+    }
+    var i: u64 = 0;
+    while i < n {
+        buf[i] = tmp[n - 1 - i];
+        i = i + 1;
+    }
+    diag_write_stderr(&buf[0], n);
+}
+
+fn diag_tok_kind_name(kind: u32) -> *u8 {
+    if kind == 0 { return "end of input"; }
+    if kind == 1 { return "identifier"; }
+    if kind == 2 { return "number"; }
+    if kind == 3 { return "string literal"; }
+    if kind == 10 { return "'struct'"; }
+    if kind == 11 { return "'fn'"; }
+    if kind == 12 { return "'let'"; }
+    if kind == 13 { return "'mut'"; }
+    if kind == 14 { return "'if'"; }
+    if kind == 15 { return "'else'"; }
+    if kind == 16 { return "'while'"; }
+    if kind == 17 { return "'return'"; }
+    if kind == 18 { return "'syscall'"; }
+    if kind == 19 { return "'as'"; }
+    if kind == 20 { return "'i32'"; }
+    if kind == 21 { return "'i64'"; }
+    if kind == 22 { return "'u32'"; }
+    if kind == 23 { return "'u8'"; }
+    if kind == 24 { return "'void'"; }
+    if kind == 25 { return "'u16'"; }
+    if kind == 26 { return "'i8'"; }
+    if kind == 27 { return "'i16'"; }
+    if kind == 28 { return "'isize'"; }
+    if kind == 29 { return "'int'"; }
+    if kind == 30 { return "'+'"; }
+    if kind == 31 { return "'-'"; }
+    if kind == 32 { return "'*'"; }
+    if kind == 33 { return "'/'"; }
+    if kind == 34 { return "'%'"; }
+    if kind == 35 { return "'char'"; }
+    if kind == 36 { return "'u64'"; }
+    if kind == 37 { return "'usize'"; }
+    if kind == 38 { return "'uint'"; }
+    if kind == 39 { return "'f32'"; }
+    if kind == 40 { return "'='"; }
+    if kind == 41 { return "'=='"; }
+    if kind == 42 { return "'!='"; }
+    if kind == 43 { return "'<'"; }
+    if kind == 44 { return "'>'"; }
+    if kind == 45 { return "'<='"; }
+    if kind == 46 { return "'>='"; }
+    if kind == 50 { return "'&'"; }
+    if kind == 60 { return "'('"; }
+    if kind == 61 { return "')'"; }
+    if kind == 62 { return "'{'"; }
+    if kind == 63 { return "'}'"; }
+    if kind == 64 { return "'['"; }
+    if kind == 65 { return "']'"; }
+    if kind == 70 { return "':'"; }
+    if kind == 71 { return "';'"; }
+    if kind == 72 { return "','"; }
+    if kind == 73 { return "'.'"; }
+    if kind == 74 { return "'->'"; }
+    if kind == 75 { return "'|>'"; }
+    if kind == 76 { return "'=>'"; }
+    if kind == 78 { return "'::'"; }
+    if kind == 79 { return "'..'"; }
+    if kind == 120 { return "'%='"; }
+    if kind == 121 { return "'<<='"; }
+    if kind == 122 { return "'>>='"; }
+    if kind == 123 { return "'var'"; }
+    if kind == 124 { return "'const'"; }
+    if kind == 125 { return "'is'"; }
+    if kind == 126 { return "'++'"; }
+    if kind == 127 { return "'--'"; }
+    if kind == 136 { return "'f64'"; }
+    if kind == 137 { return "'bool'"; }
+    if kind == 138 { return "'str'"; }
+    if kind == 139 { return "'any'"; }
+    if kind == 140 { return "'unknown'"; }
+    if kind == 141 { return "'extern'"; }
+    if kind == 142 { return "'gen'"; }
+    if kind == 143 { return "'yield'"; }
+    if kind == 144 { return "'effect'"; }
+    if kind == 145 { return "'taskgroup'"; }
+    return "token";
+}
+
+fn diag_print_snippet(src: *u8, src_len: u64, file_path: *u8, byte_off: u64, tok_len: u64, out_line: *mut u64, out_col: *mut u64) {
+    var fpath: *u8 = file_path;
+    if fpath == (0 as *u8) {
+        fpath = "<input>";
+    } else if fpath[0] == 0 {
+        fpath = "<input>";
+    }
+
+    var off: u64 = byte_off;
+    if off > src_len { off = src_len; }
+    if tok_len == 0 && off > 0 && off == src_len {
+        if src[off - 1] == 10 {
+            off = off - 1;
+        }
+    }
+
+    var line: u64 = 1;
+    var line_start: u64 = 0;
+    var i: u64 = 0;
+    while i < off {
+        if src[i] == 10 {
+            line = line + 1;
+            line_start = i + 1;
+        }
+        i = i + 1;
+    }
+
+    let col: u64 = (off - line_start) + 1;
+    *out_line = line;
+    *out_col = col;
+
+    var line_end: u64 = line_start;
+    while line_end < src_len && src[line_end] != 10 && src[line_end] != 13 {
+        line_end = line_end + 1;
+    }
+
+    diag_write_cstr(fpath);
+    diag_write_cstr(":");
+    diag_write_u64(line);
+    diag_write_cstr(":");
+    diag_write_u64(col);
+    diag_write_cstr("\n");
+
+    var disp_len: u64 = line_end - line_start;
+    if disp_len > 240 { disp_len = 240; }
+    if disp_len > 0 {
+        diag_write_stderr(src + line_start, disp_len);
+    }
+    diag_write_cstr("\n");
+
+    var sp: u64 = line_start;
+    while sp < off && (sp - line_start) < 240 {
+        if src[sp] == 9 {
+            diag_write_cstr("\t");
+        } else {
+            diag_write_cstr(" ");
+        }
+        sp = sp + 1;
+    }
+
+    var carets: u64 = tok_len;
+    if carets == 0 { carets = 1; }
+    if carets > 64 { carets = 64; }
+    var ci: u64 = 0;
+    while ci < carets {
+        diag_write_cstr("^");
+        ci = ci + 1;
+    }
+    diag_write_cstr("\n\n");
+}
+
+fn diag_print_frame_tail(stage: *u8, file_path: *u8, line: u64, col: u64) {
+    var fpath: *u8 = file_path;
+    if fpath == (0 as *u8) {
+        fpath = "<input>";
+    } else if fpath[0] == 0 {
+        fpath = "<input>";
+    }
+    diag_write_cstr("\n    at ");
+    diag_write_cstr(stage);
+    diag_write_cstr(" (");
+    diag_write_cstr(fpath);
+    diag_write_cstr(":");
+    diag_write_u64(line);
+    diag_write_cstr(":");
+    diag_write_u64(col);
+    diag_write_cstr(")\n");
+}
+
+fn diag_syntax_unexpected_tok(p: *mut Parser, prefix_msg: *u8) {
+    var off: u64 = 0;
+    if (p.cur_tok.start as u64) >= (p.lex.src as u64) {
+        off = (p.cur_tok.start as u64) - (p.lex.src as u64);
+    }
+    var line: u64 = 1;
+    var col: u64 = 1;
+    diag_print_snippet(p.lex.src, p.lex.len, p.src_path, off, p.cur_tok.len, &mut line, &mut col);
+
+    diag_write_cstr("Uncaught SyntaxError: ");
+    if p.cur_tok.kind == 0 {
+        diag_write_cstr("Unexpected end of input");
+    } else if p.cur_tok.kind == 255 {
+        diag_write_cstr("Invalid or unexpected token '");
+        diag_write_stderr(p.cur_tok.start, p.cur_tok.len);
+        diag_write_cstr("'");
+    } else if p.cur_tok.kind == 1 {
+        diag_write_cstr("Unexpected identifier '");
+        diag_write_stderr(p.cur_tok.start, p.cur_tok.len);
+        diag_write_cstr("'");
+    } else {
+        diag_write_cstr(prefix_msg);
+        if p.cur_tok.len > 0 {
+            diag_write_cstr(" '");
+            diag_write_stderr(p.cur_tok.start, p.cur_tok.len);
+            diag_write_cstr("'");
+        }
+    }
+    diag_print_frame_tail("parse", p.src_path, line, col);
+    if p.no_exit_on_err == 1 {
+        p.had_error = 1;
+        p.cur_tok.kind = 0;
+        p.lex.pos = p.lex.len;
+        return;
+    }
+    sys_exit(1);
+}
+
+fn diag_syntax_expected_kind(p: *mut Parser, expected_kind: u32) {
+    var off: u64 = 0;
+    if (p.cur_tok.start as u64) >= (p.lex.src as u64) {
+        off = (p.cur_tok.start as u64) - (p.lex.src as u64);
+    }
+    var line: u64 = 1;
+    var col: u64 = 1;
+    diag_print_snippet(p.lex.src, p.lex.len, p.src_path, off, p.cur_tok.len, &mut line, &mut col);
+
+    let exp_name: *u8 = diag_tok_kind_name(expected_kind);
+    diag_write_cstr("Uncaught SyntaxError: ");
+    if p.cur_tok.kind == 0 {
+        diag_write_cstr("Unexpected end of input, expected ");
+        diag_write_cstr(exp_name);
+    } else {
+        diag_write_cstr("Unexpected token '");
+        diag_write_stderr(p.cur_tok.start, p.cur_tok.len);
+        diag_write_cstr("', expected ");
+        diag_write_cstr(exp_name);
+    }
+    diag_print_frame_tail("parse", p.src_path, line, col);
+    if p.no_exit_on_err == 1 {
+        p.had_error = 1;
+        p.cur_tok.kind = 0;
+        p.lex.pos = p.lex.len;
+        return;
+    }
+    sys_exit(1);
+}
+
+fn diag_report_packed_error(cg: *mut CodeGen, packed_loc: u64, err_type: *u8, msg_suffix: *u8) {
+    if cg == (0 as *mut CodeGen) || cg.parser == (0 as *mut u8) {
+        diag_write_cstr("Uncaught ");
+        diag_write_cstr(err_type);
+        diag_write_cstr(": symbol");
+        diag_write_cstr(msg_suffix);
+        diag_write_cstr("\n");
+        sys_exit(1);
+    }
+    let p: *mut Parser = cg.parser as *mut Parser;
+    let off: u64 = packed_loc & 4294967295;
+    var tlen: u64 = (packed_loc >> 32) & 65535;
+    if tlen == 0 { tlen = 1; }
+    var line: u64 = 1;
+    var col: u64 = 1;
+    diag_print_snippet(p.lex.src, p.lex.len, p.src_path, off, tlen, &mut line, &mut col);
+
+    diag_write_cstr("Uncaught ");
+    diag_write_cstr(err_type);
+    diag_write_cstr(": ");
+    if (off + tlen) <= p.lex.len {
+        diag_write_stderr(p.lex.src + off, tlen);
+    } else {
+        diag_write_cstr("<unknown>");
+    }
+    diag_write_cstr(msg_suffix);
+    diag_print_frame_tail("compile", p.src_path, line, col);
+    if p.no_exit_on_err == 1 {
+        p.had_error = 1;
+        return;
+    }
+    sys_exit(1);
+}
+
+fn diag_record_sym_check(cg: *mut CodeGen, sym_hash: u64, packed_loc: u64, kind_tag: u64) {
+    if cg == (0 as *mut CodeGen) { return; }
+    if sym_hash == 0 { return; }
+    if (packed_loc >> 48) != 1 { return; }
+    if cg.sym_checks == (0 as *mut ConstEntry) { return; }
+    if cg.sym_check_count >= 16384 { return; }
+    let ce: *mut ConstEntry = ((cg.sym_checks as *mut u8) + (cg.sym_check_count * 24)) as *mut ConstEntry;
+    ce.name_hash = sym_hash;
+    ce.val = packed_loc;
+    ce.extra = kind_tag;
+    cg.sym_check_count = cg.sym_check_count + 1;
+}
+
+fn diag_is_symbol_defined(cg: *mut CodeGen, sym_hash: u64) -> u32 {
+    if sym_hash == hash_identifier("eval", 4) {
+        return 1;
+    }
+    var fei: u64 = 0;
+    while fei < cg.fn_entry_count {
+        let fe: *mut FnEntry = ((cg.fn_entries as *mut u8) + (fei * 16)) as *mut FnEntry;
+        if fe.fn_hash == sym_hash {
+            return 1;
+        }
+        fei = fei + 1;
+    }
+    var sci: u64 = 0;
+    while sci < cg.contract_count {
+        let sc: *mut SymbolContract = ((cg.contracts as *mut u8) + (sci * 48)) as *mut SymbolContract;
+        if sc.symbol_hash == sym_hash {
+            return 1;
+        }
+        sci = sci + 1;
+    }
+    if cg.parser != (0 as *mut u8) {
+        if is_generic_fn(cg.parser as *mut Parser, sym_hash) == 1 {
+            return 1;
+        }
+    }
+    if cg.upvalues != (0 as *mut ConstEntry) {
+        var ui: u64 = 0;
+        while ui < cg.upvalue_count {
+            let uce: *mut ConstEntry = ((cg.upvalues as *mut u8) + (ui * 24)) as *mut ConstEntry;
+            if uce.name_hash == sym_hash {
+                return 1;
+            }
+            ui = ui + 1;
+        }
+    }
+    return 0;
+}
+
+fn diag_verify_all_symbols(cg: *mut CodeGen) {
+    if cg == (0 as *mut CodeGen) || cg.sym_checks == (0 as *mut ConstEntry) { return; }
+    var i: u64 = 0;
+    while i < cg.sym_check_count {
+        let ce: *mut ConstEntry = ((cg.sym_checks as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if diag_is_symbol_defined(cg, ce.name_hash) == 0 {
+            if ce.extra == 2 {
+                diag_report_packed_error(cg, ce.val, "TypeError", " is not a function");
+            } else {
+                diag_report_packed_error(cg, ce.val, "ReferenceError", " is not defined");
+            }
+        }
+        i = i + 1;
+    }
+}
+

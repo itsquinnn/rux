@@ -1,0 +1,18 @@
+include "lib/core/types.rx";
+
+struct PublicKey {
+    key_bytes: [byte; 32],
+}
+
+struct Signature {
+    sig_bytes: [byte; 64],
+}
+
+fn ed25519_verify(
+    pubkey: *const PublicKey,
+    msg: *const byte,
+    len: uint,
+    sig: *const Signature
+) -> bool {
+    return @crypto.ed25519_verify(&pubkey.key_bytes[0], msg, len, &sig.sig_bytes[0]);
+}

@@ -1,0 +1,83 @@
+include "lib/core/types.rx";
+include "tools/pm/semver.rx";
+
+const DIST_SOURCE_RX: uint   = 1;
+const DIST_BINARY_ELF: uint  = 2;
+const DIST_BINARY_PE: uint   = 3;
+const DIST_BINARY_WASM: uint = 4;
+
+const OS_PKG_DEB: uint    = 1;
+const OS_PKG_RPM: uint    = 2;
+const OS_PKG_PACMAN: uint = 3;
+const OS_PKG_BREW: uint   = 4;
+
+struct RegistryRelease {
+    pkg_name: *const byte,
+    version: SemVer,
+    dist_kind: uint,
+    artifact_hash: uint,
+    yanked: bool,
+}
+
+struct PackageRegistry {
+    endpoint_url: *const byte,
+    releases: [RegistryRelease; 64],
+    release_count: uint,
+}
+
+fn registry_init(reg: *mut PackageRegistry, endpoint: *const byte) {
+    reg.endpoint_url = endpoint;
+    reg.release_count = 0;
+}
+
+fn registry_publish(reg: *mut PackageRegistry, name: *const byte, ver: *const SemVer, dist_kind: uint, hash: uint) -> bool {
+    if reg.release_count >= 64 { return false; }
+    let idx: uint = reg.release_count;
+    reg.releases[idx].pkg_name = name;
+    reg.releases[idx].version.major = ver.major;
+    reg.releases[idx].version.minor = ver.minor;
+    reg.releases[idx].version.patch = ver.patch;
+    reg.releases[idx].dist_kind = dist_kind;
+    reg.releases[idx].artifact_hash = hash;
+    reg.releases[idx].yanked = false;
+    reg.release_count = idx + 1;
+    return true;
+}
+
+fn registry_str_eq(a: *const byte, b: *const byte) -> bool {
+    var i: uint = 0;
+    while true {
+        if a[i] != b[i] { return false; }
+        if a[i] == 0 { return true; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn registry_resolve_compatible(reg: *const PackageRegistry, name: *const byte, min_req: *const SemVer, out_rel: *mut RegistryRelease) -> bool {
+    var found: bool = false;
+    var best_ver: SemVer;
+    semver_set(&mut best_ver, 0, 0, 0);
+    var i: uint = 0;
+    while i < reg.release_count {
+        if !reg.releases[i].yanked && registry_str_eq(reg.releases[i].pkg_name, name) {
+            if semver_satisfies_caret(&reg.releases[i].version, min_req) {
+                if !found || semver_compare(&reg.releases[i].version, &best_ver) > 0 {
+                    best_ver.major = reg.releases[i].version.major;
+                    best_ver.minor = reg.releases[i].version.minor;
+                    best_ver.patch = reg.releases[i].version.patch;
+                    out_rel.pkg_name = reg.releases[i].pkg_name;
+                    out_rel.version.major = reg.releases[i].version.major;
+                    out_rel.version.minor = reg.releases[i].version.minor;
+                    out_rel.version.patch = reg.releases[i].version.patch;
+                    out_rel.dist_kind = reg.releases[i].dist_kind;
+                    out_rel.artifact_hash = reg.releases[i].artifact_hash;
+                    out_rel.yanked = reg.releases[i].yanked;
+                    found = true;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return found;
+}

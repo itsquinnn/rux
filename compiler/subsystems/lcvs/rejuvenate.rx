@@ -1,0 +1,28 @@
+struct RejuvenatingArena {
+    base: *mut byte,
+    capacity: uint,
+    allocated_bytes: uint,
+    fragmentation_permille: uint,
+    rejuvenations_count: uint,
+}
+
+fn lcvs_rejuvenate_init(arena: *mut RejuvenatingArena, base: *mut byte, cap: uint) {
+    arena.base = base;
+    arena.capacity = cap;
+    arena.allocated_bytes = 0;
+    arena.fragmentation_permille = 0;
+    arena.rejuvenations_count = 0;
+}
+
+fn lcvs_check_fragmentation_permille(arena: *mut RejuvenatingArena) -> uint {
+    if arena.capacity == 0 {
+        return 0;
+    }
+    return (arena.fragmentation_permille);
+}
+
+fn lcvs_rejuvenate_heap(arena: *mut RejuvenatingArena) -> uint {
+    arena.fragmentation_permille = 0;
+    arena.rejuvenations_count = arena.rejuvenations_count + 1;
+    return arena.rejuvenations_count;
+}

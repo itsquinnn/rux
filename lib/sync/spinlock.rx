@@ -1,0 +1,18 @@
+include "lib/core/types.rx";
+include "lib/sync/atomic.rx";
+
+struct SpinLock {
+    locked: uint,
+}
+
+fn spinlock_init() -> SpinLock => SpinLock { locked: 0 };
+
+fn spinlock_lock(lock: *mut SpinLock) {
+    while !atomic_cas_u64(&mut lock.locked, 0, 1) {
+        @silicon.pause();
+    }
+}
+
+fn spinlock_unlock(lock: *mut SpinLock) {
+    atomic_store_u64(&mut lock.locked, 0);
+}

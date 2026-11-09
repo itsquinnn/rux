@@ -1,0 +1,68 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+
+struct VaList {
+    args: [int; 8],
+    cursor: uint,
+    count: uint,
+}
+
+fn va_start_4(v: *mut VaList, a0: int, a1: int, a2: int, a3: int) {
+    v.args[0] = a0;
+    v.args[1] = a1;
+    v.args[2] = a2;
+    v.args[3] = a3;
+    v.cursor = 0;
+    v.count = 4;
+}
+
+fn va_arg_int(v: *mut VaList) -> int {
+    if v.cursor < v.count {
+        let res: int = v.args[v.cursor];
+        v.cursor = v.cursor + 1;
+        return res;
+    }
+    return 0;
+}
+
+fn va_end_clean(v: *mut VaList) {
+    v.cursor = 0;
+    v.count = 0;
+}
+
+struct ZigAllocator {
+    alloc_fn: fn(uint) -> *mut byte,
+    free_fn: fn(*mut byte, uint) -> void,
+    total_allocated: uint,
+    total_freed: uint,
+}
+
+fn zig_default_alloc(bytes: uint) -> *mut byte {
+    return uses_substrate_alloc(bytes);
+}
+
+fn zig_default_free(ptr: *mut byte, bytes: uint) -> void {
+    uses_substrate_free(ptr, bytes);
+}
+
+fn zig_page_allocator() -> ZigAllocator {
+    var a: ZigAllocator;
+    a.alloc_fn = zig_default_alloc;
+    a.free_fn = zig_default_free;
+    a.total_allocated = 0;
+    a.total_freed = 0;
+    return a;
+}
+
+fn allocator_alloc(a: *mut ZigAllocator, bytes: uint) -> *mut byte {
+    let f: fn(uint) -> *mut byte = a.alloc_fn;
+    let p: *mut byte = f(bytes);
+    a.total_allocated = a.total_allocated + bytes;
+    return p;
+}
+
+fn allocator_free(a: *mut ZigAllocator, ptr: *mut byte, bytes: uint) {
+    let f: fn(*mut byte, uint) -> void = a.free_fn;
+    f(ptr, bytes);
+    a.total_freed = a.total_freed + bytes;
+}

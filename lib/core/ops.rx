@@ -1,0 +1,33 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+
+struct AddOp;
+struct SubOp;
+struct MulOp;
+struct DivOp;
+struct RemOp;
+struct BitAndOp;
+struct BitOrOp;
+struct BitXorOp;
+
+fn checked_index_u64(len: usize, index: usize) -> Option<usize> {
+    if index < len {
+        return Some<usize>(index);
+    }
+    return None<usize>();
+}
+
+fn normalize_negative_index(index: isize, len: usize) -> Option<usize> {
+    if index >= 0 {
+        if (index as usize) < len {
+            return Some<usize>(index as usize);
+        }
+        return None<usize>();
+    }
+    let resolved: isize = (len as isize) + index;
+    if resolved >= 0 && (resolved as usize) < len {
+        return Some<usize>(resolved as usize);
+    }
+    return None<usize>();
+}
+

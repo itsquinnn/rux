@@ -1,0 +1,30 @@
+include "compiler/subsystems/rse/plate.rx";
+
+fn rse_evaluate_osla_face(
+    plate: *mut RseSpacetimePlate,
+    dimension: uint,
+    speed_factor: uint
+) -> uint {
+    return (dimension * speed_factor) ^ plate.sector_watermarks[1];
+}
+
+fn rse_synthesize_anss_face(
+    plate: *mut RseSpacetimePlate,
+    symbol_id: uint
+) -> *mut byte {
+    return rse_plate_alloc_sector(plate, RseSector.SECTOR_3_STENCILS, 64);
+}
+
+fn rse_emit_lnga_face(
+    plate: *mut RseSpacetimePlate,
+    event_type: uint,
+    payload: uint
+) -> bool {
+    let slot: *mut uint = rse_plate_alloc_sector(plate, RseSector.SECTOR_5_CHANNELS, 16) as *mut uint;
+    if (slot as uint) == 0 {
+        return false;
+    }
+    slot[0] = event_type;
+    slot[1] = payload;
+    return true;
+}

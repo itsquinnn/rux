@@ -1,0 +1,105 @@
+include "lib/core/types.rx";
+
+const ASN1_TAG_INTEGER: u8      = 0x02;
+const ASN1_TAG_OCTET_STRING: u8 = 0x04;
+const ASN1_TAG_OID: u8          = 0x06;
+const ASN1_TAG_UTF8_STRING: u8  = 0x0C;
+const ASN1_TAG_SEQUENCE: u8     = 0x30;
+
+struct Asn1Tlv {
+    tag: u8,
+    value_offset: uint,
+    value_len: uint,
+    total_len: uint,
+}
+
+struct X509CertSummary {
+    subject_hash: uint,
+    issuer_hash: uint,
+    pubkey_hash: uint,
+    not_before_epoch: u64,
+    not_after_epoch: u64,
+    signature_hash: uint,
+    is_ca: bool,
+}
+
+struct CaTrustStore {
+    root_pubkey_hashes: [uint; 32],
+    root_subject_hashes: [uint; 32],
+    count: uint,
+}
+
+fn asn1_read_tlv(buf: *const byte, max_len: uint, out: *mut Asn1Tlv) -> bool {
+    if max_len < 2 { return false; }
+    out.tag = buf[0];
+    let b1: u8 = buf[1];
+    if (b1 & 128) == 0 {
+        let vlen: uint = b1 as uint;
+        if (2 + vlen) > max_len { return false; }
+        out.value_offset = 2;
+        out.value_len = vlen;
+        out.total_len = 2 + vlen;
+        return true;
+    }
+    let num_len_bytes: uint = (b1 & 127) as uint;
+    if num_len_bytes == 0 || num_len_bytes > 4 || (2 + num_len_bytes) > max_len {
+        return false;
+    }
+    var vlen2: uint = 0;
+    var i: uint = 0;
+    while i < num_len_bytes {
+        vlen2 = (vlen2 << 8) | (buf[2 + i] as uint);
+        i = i + 1;
+    }
+    let hdr: uint = 2 + num_len_bytes;
+    if (hdr + vlen2) > max_len { return false; }
+    out.value_offset = hdr;
+    out.value_len = vlen2;
+    out.total_len = hdr + vlen2;
+    return true;
+}
+
+fn ca_store_init(store: *mut CaTrustStore) {
+    store.count = 0;
+}
+
+fn ca_store_add_root(store: *mut CaTrustStore, subject_hash: uint, pubkey_hash: uint) -> bool {
+    if store.count >= 32 { return false; }
+    let idx: uint = store.count;
+    store.root_subject_hashes[idx] = subject_hash;
+    store.root_pubkey_hashes[idx] = pubkey_hash;
+    store.count = idx + 1;
+    return true;
+}
+
+fn x509_compute_cert_sig_token(subject_hash: uint, issuer_hash: uint, pubkey_hash: uint, issuer_pubkey_hash: uint) -> uint {
+    var h: uint = 14695981039346656037;
+    h = (h ^ subject_hash) * 1099511628211;
+    h = (h ^ issuer_hash) * 1099511628211;
+    h = (h ^ pubkey_hash) * 1099511628211;
+    h = (h ^ issuer_pubkey_hash) * 1099511628211;
+    return h;
+}
+
+fn x509_verify_leaf_against_store(store: *const CaTrustStore, leaf: *const X509CertSummary, now_epoch: u64) -> bool {
+    if now_epoch < leaf.not_before_epoch || now_epoch > leaf.not_after_epoch {
+        return false;
+    }
+    var i: uint = 0;
+    while i < store.count {
+        if store.root_subject_hashes[i] == leaf.issuer_hash {
+            let expected: uint = x509_compute_cert_sig_token(
+                leaf.subject_hash,
+                leaf.issuer_hash,
+                leaf.pubkey_hash,
+                store.root_pubkey_hashes[i]
+            );
+            if expected == leaf.signature_hash {
+                return true;
+            }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+

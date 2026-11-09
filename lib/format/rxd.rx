@@ -1,0 +1,51 @@
+include "lib/core/types.rx";
+include "lib/core/slice.rx";
+
+enum RxdTokenType {
+    IDENTIFIER = 1,
+    STRING_LIT = 2,
+    INTEGER_LIT = 3,
+    UNIT_LIT = 4,
+    LBRACE = 5,
+    RBRACE = 6,
+    COLON = 7,
+    EOF = 8,
+}
+
+struct RxdToken {
+    kind: RxdTokenType,
+    lexeme: ByteSlice,
+    line: uint,
+}
+
+struct RxdScanner {
+    src: *const byte,
+    len: uint,
+    cursor: uint,
+    line: uint,
+}
+
+fn rxd_scanner_init(scanner: *mut RxdScanner, src: *const byte, len: uint) {
+    scanner.src = src;
+    scanner.len = len;
+    scanner.cursor = 0;
+    scanner.line = 1;
+}
+
+fn rxd_skip_whitespace(s: *mut RxdScanner) {
+    while s.cursor < s.len {
+        let c: byte = s.src[s.cursor];
+        if c == 32 as byte || c == 9 as byte || c == 13 as byte {
+            s.cursor = s.cursor + 1;
+        } else if c == 10 as byte {
+            s.cursor = s.cursor + 1;
+            s.line = s.line + 1;
+        } else if c == 47 as byte && (s.cursor + 1) < s.len && s.src[s.cursor + 1] == 47 as byte {
+            while s.cursor < s.len && s.src[s.cursor] != 10 as byte {
+                s.cursor = s.cursor + 1;
+            }
+        } else {
+            break;
+        }
+    }
+}

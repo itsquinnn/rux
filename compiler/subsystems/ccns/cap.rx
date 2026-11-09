@@ -1,0 +1,42 @@
+struct AegisCapToken {
+    base_address: uint,
+    length: uint,
+    permissions: uint,
+    capability_tag: uint,
+}
+
+fn ccns_cap_from_slice(
+    token: *mut AegisCapToken,
+    buf: *mut byte,
+    len: uint,
+    perms: uint
+) {
+    token.base_address = buf as uint;
+    token.length = len;
+    token.permissions = perms;
+    token.capability_tag = @crypto.blake3_64(buf as uint, len);
+}
+
+fn ccns_cap_restrict(token: *mut AegisCapToken, allowed_perms: uint) -> bool {
+    token.permissions = token.permissions & allowed_perms;
+    return true;
+}
+
+fn ccns_cap_seal(token: *mut AegisCapToken) {
+    token.permissions = token.permissions | 8;
+}
+
+fn ccns_cap_validate(
+    token: *const AegisCapToken,
+    offset: uint,
+    access_len: uint,
+    required_perm: uint
+) -> bool {
+    if (token.permissions & required_perm) == 0 {
+        return false;
+    }
+    if (offset + access_len) > token.length {
+        return false;
+    }
+    return true;
+}

@@ -1,0 +1,60 @@
+include "lib/core/types.rx";
+include "lib/core/allocator.rx";
+
+struct Closure {
+    trampoline: fn(env: *mut byte, arg: uint) -> uint,
+    env: *mut byte,
+    env_size: uint,
+}
+
+struct UpvalueEnv4 {
+    val0: uint,
+    val1: uint,
+    val2: uint,
+    val3: uint,
+}
+
+fn closure_init(
+    c: *mut Closure,
+    tramp: fn(env: *mut byte, arg: uint) -> uint,
+    env_buf: *mut byte,
+    env_sz: uint
+) {
+    c.trampoline = tramp;
+    c.env = env_buf;
+    c.env_size = env_sz;
+}
+
+fn closure_call(c: *const Closure, arg: uint) -> uint {
+    let f = c.trampoline;
+    return f(c.env, arg);
+}
+
+fn closure_get_upvalue(c: *const Closure, index: uint) -> uint {
+    if (c.env as uint) == 0 || index >= 4 {
+        return 0;
+    }
+    let env: *mut UpvalueEnv4 = c.env as *mut UpvalueEnv4;
+    if index == 0 { return env.val0; }
+    if index == 1 { return env.val1; }
+    if index == 2 { return env.val2; }
+    if index == 3 { return env.val3; }
+    return 0;
+}
+
+fn closure_set_upvalue(c: *mut Closure, index: uint, val: uint) {
+    if (c.env as uint) == 0 || index >= 4 {
+        return;
+    }
+    let env: *mut UpvalueEnv4 = c.env as *mut UpvalueEnv4;
+    if index == 0 { env.val0 = val; }
+    else if index == 1 { env.val1 = val; }
+    else if index == 2 { env.val2 = val; }
+    else if index == 3 { env.val3 = val; }
+}
+
+fn closure_counter_trampoline(env_ptr: *mut byte, step: uint) -> uint {
+    let env: *mut UpvalueEnv4 = env_ptr as *mut UpvalueEnv4;
+    env.val0 = env.val0 + step;
+    return env.val0;
+}

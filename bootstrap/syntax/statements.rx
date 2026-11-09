@@ -1,0 +1,87 @@
+include "bootstrap/syntax/expressions.rx";
+
+fn parse_let_statement(p: *mut ParserState, is_mutable: uint) -> *mut AstNode {
+    scan_next_token(p.reader, &mut p.current_token);
+
+    let decl_node: *mut AstNode = create_node(p, NODE_LET);
+    decl_node.is_mut = is_mutable;
+    decl_node.name_hash = p.current_token.name_hash;
+    expect_token(p, TOKEN_IDENT);
+
+    if p.current_token.kind == TOKEN_COLON {
+        scan_next_token(p.reader, &mut p.current_token);
+        skip_type(p);
+    }
+
+    if p.current_token.kind == TOKEN_EQ {
+        expect_token(p, TOKEN_EQ);
+        decl_node.child1 = parse_expression(p);
+    }
+
+    if p.current_token.kind == TOKEN_SEMICOLON {
+        scan_next_token(p.reader, &mut p.current_token);
+    }
+
+    return decl_node;
+}
+
+fn parse_return_statement(p: *mut ParserState) -> *mut AstNode {
+    scan_next_token(p.reader, &mut p.current_token);
+
+    let ret_node: *mut AstNode = create_node(p, NODE_RETURN);
+    if p.current_token.kind != TOKEN_SEMICOLON && p.current_token.kind != TOKEN_RBRACE {
+        ret_node.child1 = parse_expression(p);
+    }
+
+    if p.current_token.kind == TOKEN_SEMICOLON {
+        scan_next_token(p.reader, &mut p.current_token);
+    }
+
+    return ret_node;
+}
+
+fn parse_println_statement(p: *mut ParserState) -> *mut AstNode {
+    scan_next_token(p.reader, &mut p.current_token);
+
+    let print_node: *mut AstNode = create_node(p, NODE_PRINTLN);
+    expect_token(p, TOKEN_LPAREN);
+    print_node.child1 = parse_expression(p);
+    expect_token(p, TOKEN_RPAREN);
+
+    if p.current_token.kind == TOKEN_SEMICOLON {
+        scan_next_token(p.reader, &mut p.current_token);
+    }
+
+    return print_node;
+}
+
+fn parse_statement(p: *mut ParserState) -> *mut AstNode {
+    if p.current_token.kind == TOKEN_LET {
+        return parse_let_statement(p, 0);
+    }
+    if p.current_token.kind == TOKEN_VAR {
+        return parse_let_statement(p, 1);
+    }
+    if p.current_token.kind == TOKEN_CONST {
+        return parse_let_statement(p, 2);
+    }
+    if p.current_token.kind == TOKEN_MUT {
+        scan_next_token(p.reader, &mut p.current_token);
+        println("[SYNTAX ERROR] bare 'mut' is not supported; use 'var'");
+        return 0 as *mut AstNode;
+    }
+
+    if p.current_token.kind == TOKEN_RETURN {
+        return parse_return_statement(p);
+    }
+
+    if p.current_token.kind == TOKEN_PRINTLN {
+        return parse_println_statement(p);
+    }
+
+    let expr_stmt: *mut AstNode = parse_expression(p);
+    if p.current_token.kind == TOKEN_SEMICOLON {
+        scan_next_token(p.reader, &mut p.current_token);
+    }
+    return expr_stmt;
+}

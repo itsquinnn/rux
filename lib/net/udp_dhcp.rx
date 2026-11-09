@@ -1,0 +1,95 @@
+include "lib/core/types.rx";
+
+const DHCP_STATE_INIT: u8      = 0;
+const DHCP_STATE_SELECTING: u8 = 1;
+const DHCP_STATE_REQUESTING: u8 = 2;
+const DHCP_STATE_BOUND: u8     = 3;
+
+const DHCP_MSG_DISCOVER: u8 = 1;
+const DHCP_MSG_OFFER: u8    = 2;
+const DHCP_MSG_REQUEST: u8  = 3;
+const DHCP_MSG_ACK: u8      = 5;
+
+struct DhcpClient {
+    state: u8,
+    xid: u32,
+    offered_ip_be: u32,
+    leased_ip_be: u32,
+    server_ip_be: u32,
+    subnet_mask_be: u32,
+    lease_seconds: u32,
+}
+
+fn udp_write_header(dst: *mut byte, src_port: u16, dst_port: u16, payload_len: u16) -> uint {
+    let total: u16 = 8 + payload_len;
+    dst[0] = ((src_port >> 8) & 255) as byte;
+    dst[1] = (src_port & 255) as byte;
+    dst[2] = ((dst_port >> 8) & 255) as byte;
+    dst[3] = (dst_port & 255) as byte;
+    dst[4] = ((total >> 8) & 255) as byte;
+    dst[5] = (total & 255) as byte;
+    dst[6] = 0;
+    dst[7] = 0;
+    return 8;
+}
+
+fn dhcp_client_init(c: *mut DhcpClient, xid: u32) {
+    c.state = DHCP_STATE_INIT;
+    c.xid = xid;
+    c.offered_ip_be = 0;
+    c.leased_ip_be = 0;
+    c.server_ip_be = 0;
+    c.subnet_mask_be = 0;
+    c.lease_seconds = 0;
+}
+
+fn dhcp_build_discover(c: *mut DhcpClient, mac: *const u8, pkt: *mut byte) -> uint {
+    var i: uint = 0;
+    while i < 248 {
+        pkt[i] = 0;
+        i = i + 1;
+    }
+    pkt[0] = 1;
+    pkt[1] = 1;
+    pkt[2] = 6;
+    pkt[4] = ((c.xid >> 24) & 255) as byte;
+    pkt[5] = ((c.xid >> 16) & 255) as byte;
+    pkt[6] = ((c.xid >> 8) & 255) as byte;
+    pkt[7] = (c.xid & 255) as byte;
+    pkt[10] = 128;
+    var m: uint = 0;
+    while m < 6 {
+        pkt[28 + m] = mac[m];
+        m = m + 1;
+    }
+    pkt[236] = 99;
+    pkt[237] = 130;
+    pkt[238] = 83;
+    pkt[239] = 99;
+    pkt[240] = 53;
+    pkt[241] = 1;
+    pkt[242] = DHCP_MSG_DISCOVER;
+    pkt[243] = 255;
+    c.state = DHCP_STATE_SELECTING;
+    return 244;
+}
+
+fn dhcp_handle_server_reply(c: *mut DhcpClient, msg_type: u8, yiaddr_be: u32, server_be: u32, mask_be: u32, lease_sec: u32) -> bool {
+    if c.state == DHCP_STATE_SELECTING && msg_type == DHCP_MSG_OFFER {
+        c.offered_ip_be = yiaddr_be;
+        c.server_ip_be = server_be;
+        c.subnet_mask_be = mask_be;
+        c.state = DHCP_STATE_REQUESTING;
+        return true;
+    }
+    if c.state == DHCP_STATE_REQUESTING && msg_type == DHCP_MSG_ACK {
+        c.leased_ip_be = yiaddr_be;
+        c.server_ip_be = server_be;
+        c.subnet_mask_be = mask_be;
+        c.lease_seconds = lease_sec;
+        c.state = DHCP_STATE_BOUND;
+        return true;
+    }
+    return false;
+}
+

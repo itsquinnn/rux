@@ -1,0 +1,17 @@
+fn zwns_emit_cmovnz(dst: *mut byte, reg_dst: u32, reg_src: u32) -> uint {
+    dst[0] = 0x48 as byte;
+    dst[1] = 0x0F as byte;
+    dst[2] = 0x45 as byte;
+    let modrm: byte = (0xC0 | ((reg_dst & 7) << 3) | (reg_src & 7)) as byte;
+    dst[3] = modrm;
+    return 4;
+}
+
+fn zwns_emit_cmovg(dst: *mut byte, reg_dst: u32, reg_src: u32) -> uint {
+    dst[0] = 0x48 as byte;
+    dst[1] = 0x0F as byte;
+    dst[2] = 0x4F as byte;
+    let modrm: byte = (0xC0 | ((reg_dst & 7) << 3) | (reg_src & 7)) as byte;
+    dst[3] = modrm;
+    return 4;
+}

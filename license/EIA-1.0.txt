@@ -1,0 +1,35 @@
+Eternal Interface Architecture (EIA) License - Version 1.0
+============================================================
+
+Copyright (c) 2026 Bishwa Bastola. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software, architecture specifications, compiler, runtime, and associated
+documentation files (the "Software"), to deal in the Software without restriction,
+including without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, subject to the following
+conditions:
+
+1. ATTRIBUTION NOTICE:
+   Any redistribution, public display, or derivative work of the Software in
+   source or specification form must retain the above copyright notice, this list
+   of conditions, and the following disclaimer, prominently attributing Bishwa Bastola
+   as the creator and architect of the Eternal Interface Architecture (EIA).
+
+2. COMPILATION & RUNTIME EXCEPTION:
+   As an explicit exception, if as a result of using the Software, EIA compiler, or
+   runtime tooling to compile your own source code, any portions of this Software
+   (including but not limited to gate stencils, syscall vectors, runtime thunks,
+   and vessel structures) are embedded into an executable, library, or object form
+   of such compiled output, you may freely use, distribute, sublicense, and sell
+   such compiled binaries without complying with the attribution requirements of
+   Section 1 for the embedded portions.
+
+DISCLAIMER:
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

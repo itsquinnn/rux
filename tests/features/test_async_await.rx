@@ -1,0 +1,82 @@
+include "lib/core/types.rx";
+
+async fn compute_async_val(x: u64, y: u64) -> u64 {
+    return x * 10 + y;
+}
+
+struct FutureTask {
+    state: u64,
+    step_count: u64,
+    result: u64,
+}
+
+impl FutureTask {
+    fn new(initial: u64) -> FutureTask {
+        return FutureTask {
+            state: 0,
+            step_count: 0,
+            result: initial,
+        };
+    }
+
+    fn poll(self: *mut FutureTask) -> u64 {
+        if self.state == 0 {
+            self.step_count = self.step_count + 1;
+            if self.step_count >= 2 {
+                self.state = 1;
+                self.result = self.result * 2;
+                return 1;
+            }
+            return 0;
+        }
+        return 1;
+    }
+}
+
+fn test_async_await_syntax() {
+    let val: u64 = compute_async_val(5, 7);
+
+    let res1: u64 = val.await;
+    if res1 != 57 {
+        println("[FAIL] Postfix .await returned wrong value!");
+        sys_exit(1);
+    }
+    println("[PASS] Postfix .await syntax OK (val.await = 57)");
+
+    let res2: u64 = await (compute_async_val(3, 9));
+    if res2 != 39 {
+        println("[FAIL] Prefix await returned wrong value!");
+        sys_exit(1);
+    }
+    println("[PASS] Prefix await syntax OK (await compute_async_val = 39)");
+}
+
+fn test_coroutine_state_machine() {
+    var task: FutureTask = FutureTask::new(25);
+
+    let p1: u64 = task.poll();
+    if p1 != 0 {
+        println("[FAIL] Expected Poll::Pending on step 1!");
+        sys_exit(1);
+    }
+
+    let p2: u64 = task.poll();
+    if p2 != 1 {
+        println("[FAIL] Expected Poll::Ready on step 2!");
+        sys_exit(1);
+    }
+
+    if task.result != 50 {
+        println("[FAIL] Coroutine state machine computed incorrect result!");
+        sys_exit(1);
+    }
+    println("[PASS] Coroutine state machine poll() lifecycle confirmed");
+}
+
+fn main() -> int {
+    println("=== RUNNING ASYNC / AWAIT & COROUTINE SUITE ===");
+    test_async_await_syntax();
+    test_coroutine_state_machine();
+    println("=== ALL ASYNC / AWAIT TESTS PASSED (SILICON CONFIRMED) ===");
+    return 0;
+}

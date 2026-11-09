@@ -1,0 +1,123 @@
+include "lib/core/types.rx";
+
+const PROC_STATE_UNUSED: u8  = 0;
+const PROC_STATE_READY: u8   = 1;
+const PROC_STATE_RUNNING: u8 = 2;
+const PROC_STATE_BLOCKED: u8 = 3;
+const PROC_STATE_ZOMBIE: u8  = 4;
+
+struct ProcessCreds {
+    uid: u32,
+    gid: u32,
+    cap_mask: u64,
+}
+
+struct KernelThread {
+    tid: uint,
+    owner_pid: uint,
+    state: u8,
+    kernel_rsp: u64,
+    user_rip: u64,
+    cpu_affinity: u32,
+}
+
+struct ProcessEntry {
+    pid: uint,
+    parent_pid: uint,
+    state: u8,
+    exit_code: int,
+    page_table_root: u64,
+    creds: ProcessCreds,
+}
+
+struct ProcessManager {
+    procs: [ProcessEntry; 32],
+    threads: [KernelThread; 64],
+    next_pid: uint,
+    next_tid: uint,
+}
+
+fn proc_mgr_init(pm: *mut ProcessManager) {
+    pm.next_pid = 1;
+    pm.next_tid = 1;
+    var i: uint = 0;
+    while i < 32 {
+        pm.procs[i].pid = 0;
+        pm.procs[i].state = PROC_STATE_UNUSED;
+        i = i + 1;
+    }
+    var j: uint = 0;
+    while j < 64 {
+        pm.threads[j].tid = 0;
+        pm.threads[j].state = PROC_STATE_UNUSED;
+        j = j + 1;
+    }
+}
+
+fn proc_spawn(pm: *mut ProcessManager, parent_pid: uint, cr3_phys: u64, uid: u32, gid: u32, caps: u64) -> int {
+    var i: uint = 0;
+    while i < 32 {
+        if pm.procs[i].state == PROC_STATE_UNUSED {
+            let pid: uint = pm.next_pid;
+            pm.next_pid = pm.next_pid + 1;
+            pm.procs[i].pid = pid;
+            pm.procs[i].parent_pid = parent_pid;
+            pm.procs[i].state = PROC_STATE_READY;
+            pm.procs[i].exit_code = 0;
+            pm.procs[i].page_table_root = cr3_phys;
+            pm.procs[i].creds.uid = uid;
+            pm.procs[i].creds.gid = gid;
+            pm.procs[i].creds.cap_mask = caps;
+            return pid as int;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn kthread_create(pm: *mut ProcessManager, owner_pid: uint, kernel_rsp: u64, entry_rip: u64) -> int {
+    var j: uint = 0;
+    while j < 64 {
+        if pm.threads[j].state == PROC_STATE_UNUSED {
+            let tid: uint = pm.next_tid;
+            pm.next_tid = pm.next_tid + 1;
+            pm.threads[j].tid = tid;
+            pm.threads[j].owner_pid = owner_pid;
+            pm.threads[j].state = PROC_STATE_READY;
+            pm.threads[j].kernel_rsp = kernel_rsp;
+            pm.threads[j].user_rip = entry_rip;
+            pm.threads[j].cpu_affinity = 1;
+            return tid as int;
+        }
+        j = j + 1;
+    }
+    return -1;
+}
+
+fn proc_exit(pm: *mut ProcessManager, pid: uint, code: int) -> bool {
+    var i: uint = 0;
+    while i < 32 {
+        if pm.procs[i].state != PROC_STATE_UNUSED && pm.procs[i].pid == pid {
+            pm.procs[i].state = PROC_STATE_ZOMBIE;
+            pm.procs[i].exit_code = code;
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn proc_reap_child(pm: *mut ProcessManager, parent_pid: uint, out_code: *mut int) -> int {
+    var i: uint = 0;
+    while i < 32 {
+        if pm.procs[i].state == PROC_STATE_ZOMBIE && pm.procs[i].parent_pid == parent_pid {
+            let child_pid: int = pm.procs[i].pid as int;
+            out_code[0] = pm.procs[i].exit_code;
+            pm.procs[i].state = PROC_STATE_UNUSED;
+            return child_pid;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+

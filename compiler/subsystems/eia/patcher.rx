@@ -1,0 +1,35 @@
+include "compiler/subsystems/eia/relocations.rx";
+include "compiler/subsystems/eia/type_graph.rx";
+
+fn eia_patch_displacement_holes(
+    write_base: *mut byte,
+    holes: *const EiaRelocHole,
+    hole_count: uint,
+    graph: *const EiaTypeGraphEntry,
+    graph_count: uint
+) -> uint {
+    var patched: uint = 0;
+    var i: uint = 0;
+
+    while i < hole_count {
+        let hole: *const EiaRelocHole = &holes[i];
+        let offset: u32 = eia_resolve_field_displacement(
+            graph,
+            graph_count,
+            hole.type_sig_hash,
+            hole.field_or_sym_hash
+        );
+
+        if offset != 0xFFFFFFFF {
+            let target_ptr: *mut byte = (write_base as uint + hole.insn_offset as uint) as *mut byte;
+            target_ptr[0] = (offset & 0xFF) as byte;
+            target_ptr[1] = ((offset >> 8) & 0xFF) as byte;
+            target_ptr[2] = ((offset >> 16) & 0xFF) as byte;
+            target_ptr[3] = ((offset >> 24) & 0xFF) as byte;
+            patched = patched + 1;
+        }
+        i = i + 1;
+    }
+
+    return patched;
+}

@@ -1,0 +1,44 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/subsystems/zwns/arena.rx";
+include "compiler/subsystems/zwns/freestanding.rx";
+
+fn main() -> int {
+    println("=== RUX COMPILER SUITE: ZWNS (ZERO-WASTE NATIVE SYNTHESIS) ===");
+
+    var storage: [byte; 256];
+    var arena: RamcArena;
+    zwns_ramc_init(&mut arena, &mut storage[0], 256);
+
+    let p1: *mut byte = zwns_ramc_bump(&mut arena, 40);
+    let p2: *mut byte = zwns_ramc_bump(&mut arena, 64);
+
+    if (p1 as uint) == 0 || (p2 as uint) == 0 || arena.head != 104 || arena.total_allocations != 2 {
+        println("[FAIL] ZWNS: 1-cycle monotonic RAMC bump allocation failed");
+        return 1;
+    }
+    println("[PASS] ZWNS: 1-cycle monotonic RAMC bump allocation verified");
+
+    zwns_ramc_reset_watermark(&mut arena);
+    if arena.head != 0 || arena.reset_count != 1 {
+        println("[FAIL] ZWNS: Arena watermark reset failed");
+        return 2;
+    }
+    println("[PASS] ZWNS: Zero-cycle arena watermark reset verified");
+
+    var elf_buf: [byte; 256];
+    let bytes: uint = zwns_emit_freestanding_elf174(&mut elf_buf[0], "TEST", 0);
+    if bytes != 174 {
+        println("[FAIL] ZWNS: Freestanding 174-byte ELF emission failed");
+        return 3;
+    }
+
+    if elf_buf[0] != (0x7F as byte) || elf_buf[1] != (0x45 as byte) || elf_buf[2] != (0x4C as byte) || elf_buf[3] != (0x46 as byte) {
+        println("[FAIL] ZWNS: ELF magic header mismatch");
+        return 4;
+    }
+    println("[PASS] ZWNS: Minimalist 174-byte freestanding ELF synthesizer verified");
+
+    println("ALL ZWNS NATIVE SYNTHESIS TESTS PASSED (100% OK)");
+    return 0;
+}

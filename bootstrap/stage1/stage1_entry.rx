@@ -1,0 +1,28 @@
+include "bootstrap/driver/compiler.rx";
+include "bootstrap/verifier/three_pass.rx";
+
+fn main(argc: int, argv: **byte) -> int {
+    let compiler_source: *byte = "bootstrap/driver/compiler.rx" as *byte;
+    let stage2_bin: *byte = "build_stages/stage2_bin" as *byte;
+    let stage3_bin: *byte = "build_stages/stage3_bin" as *byte;
+
+    let res2: int = compile_source_file(compiler_source, stage2_bin);
+    if res2 != 0 {
+        return 2;
+    }
+
+    let res3: int = compile_source_file(compiler_source, stage3_bin);
+    if res3 != 0 {
+        return 3;
+    }
+
+    var report: VerificationReport;
+    let verify_status: int = verify_ken_thompson_fixpoint(
+        "build_stages/stage1_bin" as *byte,
+        stage2_bin,
+        stage3_bin,
+        &mut report
+    );
+
+    return verify_status;
+}

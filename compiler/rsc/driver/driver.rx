@@ -1,0 +1,791 @@
+fn print_rux_help() {
+    uses_println("Rux Programming Language Compiler & Runtime v1.0.0");
+    uses_println("Usage:");
+    uses_println("  rux <file.rx>               Execute a Rux program directly");
+    uses_println("  rux build <file.rx> -o out  Compile to a standalone native binary");
+    uses_println("  rux interp <file.rx>        Execute with the AST interpreter (supports dynamic eval)");
+    uses_println("  rux vm <file.rx>            Compile and execute on the bytecode virtual machine");
+    uses_println("  rux jit <file.rx>           Compile and execute in-memory with native JIT");
+    uses_println("  rux repl | rux -i           Launch interactive REPL session");
+    uses_println("  rux -e \"<code>\"             Evaluate inline code directly");
+    uses_println("  rux transpile <file.rx>     Transpile Rux source to portable ISO C99 (-o out.c)");
+    uses_println("  rux test                    Run the test suite");
+    uses_println("  rux verify                  Run 5-Gate compiler & hardware verification");
+    uses_println("Options & Targets:");
+    uses_println("  --mode=auto|aot|interp|vm|jit|transpile-c|freestanding   --trace-mode");
+    uses_println("  --target=linux|win64|macos|macos-arm64|arm64|riscv64|uefi|baremetal|opensbi|wasm");
+    uses_println("  --freestanding | --emit-c | --wasm");
+}
+
+fn main(argc: u64, argv: *mut *mut u8) -> i64 {
+    var parse_arena: Arena;
+    arena_init(&mut parse_arena, 67108864);
+
+    var cg_arena: Arena;
+    arena_init(&mut cg_arena, 67108864);
+
+    var in_path: *u8 = "main.rx";
+    var out_path: *u8 = "main";
+    var permute_seed: u64 = 0;
+    var force_bridge: u32 = 0;
+    var is_upbp: u32 = 0;
+    var target_arch: u64 = 0;
+    var format_kind: u32 = 0;
+    var is_run_mode: u32 = 0;
+    var is_freestanding: u64 = 0;
+    var strict_safety: u32 = 0;
+    var shadow_mode: u32 = 0;
+    var has_build_flag: u32 = 0;
+    var in_path_idx: u64 = 0;
+    var req_mode: u32 = 0;
+    var trace_mode: u32 = 0;
+    var has_inline_code: u32 = 0;
+    var inline_code: *u8 = "";
+
+    if argc <= 1 {
+        print_rux_help();
+        return 0;
+    }
+
+    var arg_i: u64 = 1;
+    while arg_i < argc {
+        let arg: *u8 = argv[arg_i];
+        var is_handled: u32 = 0;
+
+        if str_eq(arg, "-h") == 1 || str_eq(arg, "--help") == 1 || str_eq(arg, "help") == 1 {
+            print_rux_help();
+            return 0;
+        }
+        if str_eq(arg, "version") == 1 || str_eq(arg, "--version") == 1 || str_eq(arg, "-v") == 1 || str_eq(arg, "-V") == 1 {
+            uses_println("Rux Compiler v1.0.0 (x86_64-linux) [Self-Hosted Native]");
+            return 0;
+        }
+
+        if str_eq(arg, "test") == 1 {
+            in_path = "tests/integration/test_all_sovereign.rx";
+            out_path = "./.rux_test_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "eia") == 1 || str_eq(arg, "eia-test") == 1 {
+            in_path = "tests/subsystems/test_eia.rx";
+            out_path = "./.rux_eia_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "uses") == 1 || str_eq(arg, "uses-test") == 1 {
+            in_path = "tests/subsystems/test_uses.rx";
+            out_path = "./.rux_uses_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "dcf") == 1 || str_eq(arg, "dcf-test") == 1 {
+            in_path = "tests/subsystems/test_dcf.rx";
+            out_path = "./.rux_dcf_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "rxd-test") == 1 {
+            in_path = "tests/runtime/test_rxd.rx";
+            out_path = "./.rux_rxd_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+
+        if str_eq(arg, "hsns") == 1 || str_eq(arg, "hsns-test") == 1 || str_eq(arg, "hsns.rx") == 1 || str_eq(arg, "compiler/hsns.rx") == 1 {
+            in_path = "tests/subsystems/test_hsns.rx";
+            out_path = "./.rux_hsns_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "tspa") == 1 || str_eq(arg, "tspa-test") == 1 || str_eq(arg, "tspa.rx") == 1 || str_eq(arg, "compiler/tspa.rx") == 1 || str_eq(arg, "chrono") == 1 {
+            in_path = "tests/subsystems/test_tspa.rx";
+            out_path = "./.rux_tspa_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "saes") == 1 || str_eq(arg, "saes-test") == 1 || str_eq(arg, "saes.rx") == 1 || str_eq(arg, "compiler/saes.rx") == 1 {
+            in_path = "tests/subsystems/test_saes.rx";
+            out_path = "./.rux_saes_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "rse") == 1 || str_eq(arg, "rse-test") == 1 || str_eq(arg, "rse.rx") == 1 || str_eq(arg, "compiler/rse.rx") == 1 {
+            in_path = "tests/subsystems/test_rse.rx";
+            out_path = "./.rux_rse_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "osla") == 1 || str_eq(arg, "osla-test") == 1 || str_eq(arg, "osla.rx") == 1 || str_eq(arg, "compiler/osla.rx") == 1 {
+            in_path = "tests/subsystems/test_osla.rx";
+            out_path = "./.rux_osla_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "ccns") == 1 || str_eq(arg, "aegis") == 1 || str_eq(arg, "ccns-test") == 1 || str_eq(arg, "aegis-test") == 1 || str_eq(arg, "ccns.rx") == 1 || str_eq(arg, "compiler/ccns.rx") == 1 || str_eq(arg, "aegis.rx") == 1 || str_eq(arg, "compiler/aegis.rx") == 1 {
+            in_path = "tests/subsystems/test_ccns.rx";
+            out_path = "./.rux_ccns_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "lcvs") == 1 || str_eq(arg, "aeterna") == 1 || str_eq(arg, "lcvs-test") == 1 || str_eq(arg, "aeterna-test") == 1 || str_eq(arg, "lcvs.rx") == 1 || str_eq(arg, "compiler/lcvs.rx") == 1 || str_eq(arg, "aeterna.rx") == 1 || str_eq(arg, "compiler/aeterna.rx") == 1 {
+            in_path = "tests/subsystems/test_lcvs.rx";
+            out_path = "./.rux_lcvs_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "anss") == 1 || str_eq(arg, "autonomic") == 1 || str_eq(arg, "anss-test") == 1 || str_eq(arg, "autonomic-test") == 1 || str_eq(arg, "anss.rx") == 1 || str_eq(arg, "compiler/anss.rx") == 1 || str_eq(arg, "autonomic.rx") == 1 || str_eq(arg, "compiler/autonomic.rx") == 1 {
+            in_path = "tests/subsystems/test_anss.rx";
+            out_path = "./.rux_anss_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "zwns") == 1 || str_eq(arg, "zwns-test") == 1 || str_eq(arg, "zwns.rx") == 1 || str_eq(arg, "compiler/zwns.rx") == 1 {
+            in_path = "tests/subsystems/test_zwns.rx";
+            out_path = "./.rux_zwns_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "lnga") == 1 || str_eq(arg, "lnga-test") == 1 || str_eq(arg, "lnga.rx") == 1 || str_eq(arg, "compiler/lnga.rx") == 1 {
+            in_path = "tests/subsystems/test_lnga.rx";
+            out_path = "./.rux_lnga_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+
+        if str_eq(arg, "verify") == 1 {
+            in_path = "compiler/verify_5gate.rx";
+            out_path = "./.rux_verify_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "gdam-demo") == 1 {
+            in_path = "tests/sample_gdam_app.rx";
+            out_path = "./.rux_gdam_exec";
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+
+        if str_eq(arg, "eia-run") == 1 {
+            if (arg_i + 1) < argc {
+                let bin_target: *u8 = argv[arg_i + 1];
+                uses_print("[runner] Executing binary: ");
+                uses_println(bin_target);
+                let code: i64 = iphee_exec_binary(bin_target, 16777216);
+                return code;
+            }
+            uses_println("Error: eia-run requires a binary path argument");
+            return 1;
+        }
+
+        if str_eq(arg, "run") == 1 {
+            is_run_mode = 1;
+            out_path = "./.rux_exec";
+            is_handled = 1;
+        }
+        if str_eq(arg, "repl") == 1 || str_eq(arg, "-i") == 1 || str_eq(arg, "--repl") == 1 {
+            req_mode = 6;
+            is_handled = 1;
+        }
+        if (str_eq(arg, "-e") == 1 || str_eq(arg, "--eval") == 1 || str_eq(arg, "eval") == 1) && (arg_i + 1) < argc {
+            arg_i = arg_i + 1;
+            inline_code = argv[arg_i];
+            has_inline_code = 1;
+            is_run_mode = 1;
+            in_path_idx = arg_i;
+            is_handled = 1;
+        }
+        if str_eq(arg, "interp") == 1 || str_eq(arg, "--interp") == 1 {
+            req_mode = 4;
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "vm") == 1 || str_eq(arg, "--vm") == 1 {
+            req_mode = 5;
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "jit") == 1 || str_eq(arg, "--jit") == 1 {
+            req_mode = 3;
+            is_run_mode = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "transpile") == 1 || str_eq(arg, "--emit-c") == 1 {
+            req_mode = 7;
+            has_build_flag = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "build") == 1 {
+            has_build_flag = 1;
+            let chk_b: *mut u8 = uses_alloc(64);
+            if acrq_file_read("build.rx", chk_b, 16) > 0 && str_eq(in_path, "main.rx") == 1 {
+                in_path = "build.rx";
+                out_path = "./.rux_build_exec";
+                is_run_mode = 1;
+            }
+            uses_free(chk_b, 64);
+            is_handled = 1;
+        }
+        if str_eq(arg, "-c") == 1 || str_eq(arg, "-shared") == 1 {
+            has_build_flag = 1;
+            is_handled = 1;
+        }
+        if str_eq(arg, "-target") == 1 && (arg_i + 1) < argc {
+            has_build_flag = 1;
+            arg_i = arg_i + 1;
+            let tv: *u8 = argv[arg_i];
+            if str_eq(tv, "linux") == 1 || str_eq(tv, "x86_64") == 1 { target_arch = 0; format_kind = 0; }
+            if str_eq(tv, "arm64") == 1 || str_eq(tv, "linux-arm64") == 1 { target_arch = 1; }
+            if str_eq(tv, "riscv64") == 1 { target_arch = 2; }
+            if str_eq(tv, "uefi") == 1 { target_arch = 4; format_kind = 3; }
+            if str_eq(tv, "win64") == 1 || str_eq(tv, "windows") == 1 { target_arch = 6; format_kind = 1; }
+            if str_eq(tv, "macos") == 1 || str_eq(tv, "darwin") == 1 { target_arch = 7; format_kind = 2; }
+            if str_eq(tv, "macos-arm64") == 1 || str_eq(tv, "ios") == 1 || str_eq(tv, "ios-arm64") == 1 { target_arch = 10; format_kind = 2; }
+            if str_eq(tv, "android") == 1 || str_eq(tv, "android-arm64") == 1 { target_arch = 1; format_kind = 0; }
+            if str_eq(tv, "wasm") == 1 || str_eq(tv, "wasm32") == 1 || str_eq(tv, "wasm64") == 1 { target_arch = 11; format_kind = 4; }
+            is_handled = 1;
+        }
+
+        if arg[0] == 45 && arg[1] == 111 && arg[2] == 0 {
+            has_build_flag = 1;
+            arg_i = arg_i + 1;
+            if arg_i < argc {
+                out_path = argv[arg_i];
+            }
+            is_handled = 1;
+        }
+
+        if arg[0] == 45 && arg[1] == 45 {
+            let seed_prefix: *u8 = "--eia-permute-seed=";
+            var is_seed: u32 = 1;
+            var si: u64 = 0;
+            while si < 19 {
+                if arg[si] != seed_prefix[si] {
+                    is_seed = 0;
+                }
+                si = si + 1;
+            }
+            if is_seed == 1 {
+                has_build_flag = 1;
+                is_handled = 1;
+                let val_ptr: *u8 = arg + 19;
+                var v: u64 = 0;
+                var vi: u64 = 0;
+                if val_ptr[0] == 48 && (val_ptr[1] == 120 || val_ptr[1] == 88) {
+                    vi = 2;
+                }
+                while val_ptr[vi] != 0 {
+                    let c: u8 = val_ptr[vi];
+                    if c >= 48 && c <= 57 { v = (v * 16) + ((c - 48) as u64); }
+                    if c >= 97 && c <= 102 { v = (v * 16) + (((c - 97) + 10) as u64); }
+                    if c >= 65 && c <= 70 { v = (v * 16) + (((c - 65) + 10) as u64); }
+                    vi = vi + 1;
+                }
+                permute_seed = v;
+            }
+
+            if str_eq(arg, "--safe") == 1 || str_eq(arg, "--strict-safety") == 1 { strict_safety = 1; is_handled = 1; }
+            if str_eq(arg, "--arll-force-bridge") == 1 { force_bridge = 1; has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--freestanding") == 1 { is_freestanding = 1; has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--upbp") == 1 { is_upbp = 1; format_kind = 0; has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--elf") == 1 { is_upbp = 0; format_kind = 0; has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--pe") == 1 { format_kind = 1; if target_arch == 0 { target_arch = 6; } has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--macho") == 1 { format_kind = 2; if target_arch == 0 { target_arch = 7; } has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--uefi") == 1 { format_kind = 3; target_arch = 4; has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--wasm") == 1 { format_kind = 4; target_arch = 11; has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--trace-mode") == 1 { trace_mode = 1; is_handled = 1; }
+            if str_starts_with(arg, "--shadow=", 9) == 1 {
+                let sval: *u8 = arg + 9;
+                if str_eq(sval, "warn") == 1 { shadow_mode = 1; }
+                else if str_eq(sval, "deny") == 1 { shadow_mode = 2; }
+                else { shadow_mode = 0; }
+                is_handled = 1;
+            }
+            if str_starts_with(arg, "--mode=", 7) == 1 {
+                is_handled = 1;
+                let mval: *u8 = arg + 7;
+                if str_eq(mval, "auto") == 1 { req_mode = 0; }
+                else if str_eq(mval, "aot") == 1 { req_mode = 1; has_build_flag = 1; is_run_mode = 0; }
+                else if str_eq(mval, "jit") == 1 { req_mode = 3; is_run_mode = 1; }
+                else if str_eq(mval, "interp") == 1 { req_mode = 4; is_run_mode = 1; }
+                else if str_eq(mval, "vm") == 1 { req_mode = 5; is_run_mode = 1; }
+                else if str_eq(mval, "repl") == 1 { req_mode = 6; }
+                else if str_eq(mval, "transpile-c") == 1 || str_eq(mval, "c") == 1 { req_mode = 7; has_build_flag = 1; }
+                else if str_eq(mval, "freestanding") == 1 { req_mode = 8; is_freestanding = 1; has_build_flag = 1; }
+            }
+
+            if str_starts_with(arg, "--format=", 9) == 1 {
+                has_build_flag = 1;
+                is_handled = 1;
+                let fval: *u8 = arg + 9;
+                if str_eq(fval, "pe") == 1 || str_eq(fval, "coff") == 1 { format_kind = 1; if target_arch == 0 { target_arch = 6; } }
+                if str_eq(fval, "macho") == 1 { format_kind = 2; if target_arch == 0 { target_arch = 7; } }
+                if str_eq(fval, "uefi") == 1 { format_kind = 3; target_arch = 4; }
+                if str_eq(fval, "wasm") == 1 { format_kind = 4; target_arch = 11; }
+                if str_eq(fval, "upbp") == 1 { format_kind = 0; is_upbp = 1; }
+                if str_eq(fval, "elf") == 1 { format_kind = 0; is_upbp = 0; }
+            }
+
+            if str_starts_with(arg, "--target=", 9) == 1 {
+                has_build_flag = 1;
+                is_handled = 1;
+                let targ_val: *u8 = arg + 9;
+                if str_eq(targ_val, "linux") == 1 || str_eq(targ_val, "x86_64") == 1 { target_arch = 0; format_kind = 0; }
+                if str_eq(targ_val, "arm64-baremetal") == 1 { target_arch = 8; }
+                if str_eq(targ_val, "arm64") == 1 || str_eq(targ_val, "linux-arm64") == 1 || str_eq(targ_val, "android") == 1 || str_eq(targ_val, "android-arm64") == 1 { target_arch = 1; format_kind = 0; }
+                if str_eq(targ_val, "riscv64") == 1 { target_arch = 2; }
+                if str_eq(targ_val, "uefi") == 1 { target_arch = 4; format_kind = 3; }
+                if str_eq(targ_val, "baremetal") == 1 || str_eq(targ_val, "multiboot") == 1 { target_arch = 3; }
+                if str_eq(targ_val, "opensbi") == 1 { target_arch = 9; }
+                if str_eq(targ_val, "win64") == 1 || str_eq(targ_val, "windows") == 1 { target_arch = 6; format_kind = 1; }
+                if str_eq(targ_val, "macos") == 1 || str_eq(targ_val, "darwin") == 1 || str_eq(targ_val, "macos-x64") == 1 { target_arch = 7; format_kind = 2; }
+                if str_eq(targ_val, "macos-arm64") == 1 || str_eq(targ_val, "darwin-arm64") == 1 || str_eq(targ_val, "apple-silicon") == 1 || str_eq(targ_val, "ios") == 1 || str_eq(targ_val, "ios-arm64") == 1 { target_arch = 10; format_kind = 2; }
+                if str_eq(targ_val, "wasm") == 1 || str_eq(targ_val, "wasm32") == 1 || str_eq(targ_val, "wasm64") == 1 { target_arch = 11; format_kind = 4; }
+            }
+        }
+
+        if is_handled == 0 && in_path_idx == 0 {
+            in_path = arg;
+            in_path_idx = arg_i;
+        }
+        arg_i = arg_i + 1;
+    }
+
+    if req_mode == 6 {
+        return continuum_repl_loop(&mut parse_arena, &mut cg_arena);
+    }
+
+    if is_run_mode == 0 && has_build_flag == 0 && in_path_idx > 0 {
+        is_run_mode = 1;
+        out_path = "./.rux_exec";
+    }
+
+    if has_build_flag == 1 && str_ends_with(out_path, ".c") == 1 {
+        req_mode = 7;
+    }
+
+    if format_kind == 0 && target_arch == 0 {
+        if str_ends_with(out_path, ".exe") == 1 {
+            format_kind = 1;
+            target_arch = 6;
+            uses_println("[rux-substrate] Target inferred from extension: Windows PE32+ (.exe)");
+        } else if str_ends_with(out_path, ".macho") == 1 || str_ends_with(out_path, ".dylib") == 1 {
+            format_kind = 2;
+            target_arch = 7;
+            uses_println("[rux-substrate] Target inferred from extension: macOS Mach-O 64-bit (.macho)");
+        } else if str_ends_with(out_path, ".efi") == 1 {
+            format_kind = 3;
+            target_arch = 4;
+            uses_println("[rux-substrate] Target inferred from extension: UEFI PE32+ (.efi)");
+        } else if str_ends_with(out_path, ".wasm") == 1 {
+            format_kind = 4;
+            target_arch = 11;
+            uses_println("[rux-substrate] Target inferred from extension: WebAssembly (.wasm)");
+        } else if str_ends_with(out_path, ".elf") == 1 {
+            format_kind = 0;
+            target_arch = 0;
+            uses_println("[rux-substrate] Target inferred from extension: Linux ELF64 (.elf)");
+        }
+    }
+
+    if permute_seed != 0 {
+        let dummy_pad: u64 = (permute_seed % 64) * 8;
+        arena_alloc(&mut parse_arena, dummy_pad);
+        arena_alloc(&mut cg_arena, dummy_pad);
+    }
+
+    if force_bridge == 1 {
+        var b: CallingConventionBridge;
+        arll_negotiate_calling_convention(&mut b, 1, 2);
+        arll_negotiate_calling_convention(&mut b, 2, 1);
+    }
+
+    let src_buf: *mut u8 = uses_alloc(4194304);
+    var nread: i64 = 0;
+    if has_inline_code == 1 {
+        let ic_len: u64 = str_len(inline_code);
+        var ici: u64 = 0;
+        while ici < ic_len && ici < 4194290 {
+            src_buf[ici] = inline_code[ici];
+            ici = ici + 1;
+        }
+        src_buf[ici] = 10;
+        src_buf[ici + 1] = 0;
+        nread = (ici + 1) as i64;
+        in_path = "<eval>";
+    } else {
+        nread = acrq_file_read(in_path, src_buf, 4194304);
+    }
+
+    if nread <= 0 {
+        let e1: *u8 = "Uncaught Error: Cannot open source file '";
+        let e2: *u8 = "' (ENOENT: No such file or directory)\n";
+        acrq_port_submit(1, 2, 0, e1 as u64, 0, str_len(e1));
+        acrq_port_submit(1, 2, 0, in_path as u64, 0, str_len(in_path));
+        acrq_port_submit(1, 2, 0, e2 as u64, 0, str_len(e2));
+        return 1;
+    }
+
+    let expanded_buf: *mut u8 = uses_alloc(8388608);
+    let expanded_len: u64 = expand_source_includes(in_path, src_buf, nread as u64, expanded_buf, 8388608);
+
+    var lexer: Lexer;
+    lexer.src = expanded_buf;
+    lexer.len = expanded_len;
+    lexer.pos = 0;
+    lexer.line = 1;
+    lexer.col = 1;
+
+    var parser: Parser;
+    parser.lex = &mut lexer;
+    parser.arena = &mut parse_arena;
+    parser.node_count = 0;
+    parser.struct_count = 0;
+    parser.fn_count = 0;
+    parser.consts = arena_alloc(&mut parse_arena, 98304) as *mut ConstEntry;
+    parser.const_count = 0;
+    parser.aliases = arena_alloc(&mut parse_arena, 49152) as *mut ConstEntry;
+    parser.alias_count = 0;
+    parser.known_structs = arena_alloc(&mut parse_arena, 49152) as *mut ConstEntry;
+    parser.known_struct_count = 0;
+    parser.anon_fns = 0 as *mut AstNode;
+    parser.anon_fn_last = 0 as *mut AstNode;
+    parser.anon_fn_count = 0;
+    parser.generic_structs = arena_alloc(&mut parse_arena, 65536);
+    parser.generic_struct_count = 0;
+    parser.generic_fns = arena_alloc(&mut parse_arena, 65536);
+    parser.generic_fn_count = 0;
+    parser.instantiations = arena_alloc(&mut parse_arena, 65536) as *mut ConstEntry;
+    parser.instantiation_count = 0;
+    parser.traits = arena_alloc(&mut parse_arena, 65536);
+    parser.trait_count = 0;
+    parser.trait_impls = arena_alloc(&mut parse_arena, 65536);
+    parser.trait_impl_count = 0;
+    parser.cg = 0 as *mut u8;
+    parser.fn_asts = arena_alloc(&mut parse_arena, 65536);
+    parser.fn_ast_count = 0;
+    parser.src_path = in_path;
+    parser.no_exit_on_err = 0;
+    parser.had_error = 0;
+
+    traits_init(&mut parser);
+
+    parser_add_const(&mut parser, hash_identifier("true", 4), 1, 1);
+    parser_add_const(&mut parser, hash_identifier("false", 5), 0, 1);
+    parser_add_const(&mut parser, hash_identifier("null", 4), 0, 1);
+    parser_add_const(&mut parser, hash_identifier("nil", 3), 0, 1);
+
+    lex_next_token(parser.lex, &mut parser.cur_tok);
+
+    var cg: CodeGen;
+    cg.text_buf = arena_alloc(&mut cg_arena, 4194304);
+    cg.text_size = 0;
+    cg.rodata_buf = arena_alloc(&mut cg_arena, 2097152);
+    var rz: u64 = 0;
+    while rz < 2048 {
+        cg.rodata_buf[rz] = 0;
+        rz = rz + 1;
+    }
+    cg.ret_stage_off = 0;
+    cg.rodata_size = 2048;
+
+    cg.relocs = arena_alloc(&mut cg_arena, 1572864) as *mut EiaRelocHole;
+    cg.reloc_count = 0;
+    cg.type_graph = arena_alloc(&mut cg_arena, 1048576) as *mut EiaTypeGraphEntry;
+    cg.tg_count = 0;
+    cg.contracts = arena_alloc(&mut cg_arena, 1048576) as *mut SymbolContract;
+    cg.contract_count = 0;
+    cg.call_main_hole = 0;
+    cg.force_bridge = force_bridge as u64;
+    cg.permute_seed = permute_seed;
+    cg.target_arch = target_arch;
+
+    cg.call_fixups = arena_alloc(&mut cg_arena, 1048576) as *mut CallFixup;
+    cg.call_fixup_count = 0;
+    cg.fn_entries = arena_alloc(&mut cg_arena, 524288) as *mut FnEntry;
+    cg.fn_entry_count = 0;
+
+    cg.structs = arena_alloc(&mut cg_arena, 262144) as *mut StructInfo;
+    cg.struct_count = 0;
+    cg.locals = arena_alloc(&mut cg_arena, 524288) as *mut LocalVar;
+    cg.local_count = 0;
+    cg.local_muts = arena_alloc(&mut cg_arena, 65536) as *mut u8;
+    cg.current_stack_offset = 0;
+
+    cg.rodata_fixups = arena_alloc(&mut cg_arena, 1048576) as *mut RodataFixup;
+    cg.rodata_fixup_count = 0;
+    cg.field_metas = arena_alloc(&mut cg_arena, 524288) as *mut FieldMeta;
+    cg.field_meta_count = 0;
+    cg.fn_ret_structs = arena_alloc(&mut cg_arena, 49152) as *mut ConstEntry;
+    cg.fn_ret_struct_count = 0;
+    cg.fn_signed_rets = arena_alloc(&mut cg_arena, 98304) as *mut ConstEntry;
+    cg.fn_signed_ret_count = 0;
+    cg.cur_fn_ret_size = 0;
+    cg.loop_depth = 0;
+    cg.loop_cont_offs = arena_alloc(&mut cg_arena, 1024) as *mut u64;
+    cg.loop_break_holes = arena_alloc(&mut cg_arena, 32768) as *mut u64;
+    cg.loop_break_counts = arena_alloc(&mut cg_arena, 1024) as *mut u64;
+    cg.defer_nodes = arena_alloc(&mut cg_arena, 1024) as *mut u64;
+    cg.defer_count = 0;
+    cg.pe_exit_iat_hole = 0;
+    cg.pe_getstd_iat_hole = 0;
+    cg.pe_writefile_iat_hole = 0;
+    cg.pe_valloc_iat_hole = 0;
+    cg.pe_write_helper_off = 0;
+    cg.pe_valloc_helper_off = 0;
+    cg.is_freestanding = is_freestanding;
+    cg.strict_safety = strict_safety as u64;
+    cg.unsafe_depth = 0;
+    cg.parser = (&mut parser) as *mut u8;
+    cg.upvalues = arena_alloc(&mut cg_arena, 8192) as *mut ConstEntry;
+    cg.upvalue_count = 0;
+    cg.has_lambdas = 0;
+    cg.sym_checks = arena_alloc(&mut cg_arena, 393216) as *mut ConstEntry;
+    cg.sym_check_count = 0;
+    cg.skip_ir_opt = 0;
+    if req_mode == 4 || req_mode == 5 || req_mode == 7 {
+        cg.skip_ir_opt = 1;
+    }
+    parser.cg = (&mut cg) as *mut u8;
+
+    rt_guard_init(&mut cg, &mut cg_arena, in_path);
+    emit_start_stub(&mut cg);
+
+    var pending_cconv: u32 = 0;
+    var pending_derive_copy: u32 = 0;
+    var top_head: *mut AstNode = 0 as *mut AstNode;
+    var top_tail: *mut AstNode = 0 as *mut AstNode;
+    var explicit_main: *mut AstNode = 0 as *mut AstNode;
+    var main_had_lambdas: u32 = 0;
+    while parser.cur_tok.kind != 0 {
+        while parser.cur_tok.kind == 90 || parser.cur_tok.kind == 106 { lex_next_token(parser.lex, &mut parser.cur_tok); }
+        if parser.cur_tok.kind == 124 || parser.cur_tok.kind == 92 || parser.cur_tok.kind == 142 || (parser.cur_tok.kind == 12 && parser.cur_tok.hash == 7334518323283222324) {
+            var lex_peek: Lexer = *parser.lex;
+            var next_preview: Token;
+            lex_next_token(&mut lex_peek, &mut next_preview);
+            if next_preview.kind == 11 || next_preview.kind == 102 || next_preview.kind == 142 || next_preview.kind == 92 {
+                lex_next_token(parser.lex, &mut parser.cur_tok);
+            }
+        }
+        if parser.cur_tok.kind == 56 {
+            lex_next_token(parser.lex, &mut parser.cur_tok);
+            if parser.cur_tok.kind != 0 && parser.cur_tok.kind != 11 { lex_next_token(parser.lex, &mut parser.cur_tok); }
+        }
+
+        if parser.cur_tok.kind == 55 {
+            parser_expect(&mut parser, 55);
+            if parser.cur_tok.kind == 64 {
+                parser_expect(&mut parser, 64);
+                if parser.cur_tok.kind == 1 {
+                    let attr_h: u64 = parser.cur_tok.hash;
+                    if attr_h == 9360181459091625590 { pending_derive_copy = 1; }
+                    lex_next_token(parser.lex, &mut parser.cur_tok);
+                    if parser.cur_tok.kind == 60 {
+                        parser_expect(&mut parser, 60);
+                        if parser.cur_tok.kind == 3 {
+                            let s_ptr: *u8 = parser.cur_tok.start;
+                            let s_len: u32 = parser.cur_tok.len;
+                            var si: u32 = 0;
+                            while (si + 5) <= s_len { if s_ptr[si] == 119 && s_ptr[si+1] == 105 && s_ptr[si+2] == 110 && s_ptr[si+3] == 54 && s_ptr[si+4] == 52 { pending_cconv = 1; } si = si + 1; }
+                            si = 0;
+                            while (si + 4) <= s_len { if s_ptr[si] == 115 && s_ptr[si+1] == 121 && s_ptr[si+2] == 115 && s_ptr[si+3] == 118 { pending_cconv = 0; } si = si + 1; }
+                            si = 0;
+                            while (si + 3) <= s_len { if s_ptr[si] == 101 && s_ptr[si+1] == 105 && s_ptr[si+2] == 97 { pending_cconv = 2; } si = si + 1; }
+                            lex_next_token(parser.lex, &mut parser.cur_tok);
+                        }
+                        if parser.cur_tok.kind == 61 { parser_expect(&mut parser, 61); }
+                    }
+                }
+                while parser.cur_tok.kind != 65 && parser.cur_tok.kind != 0 { lex_next_token(parser.lex, &mut parser.cur_tok); }
+                if parser.cur_tok.kind == 65 { parser_expect(&mut parser, 65); }
+            }
+        } else if parser.cur_tok.kind == 141 {
+            parser_expect(&mut parser, 141);
+            if parser.cur_tok.kind == 3 { lex_next_token(parser.lex, &mut parser.cur_tok); }
+            if parser.cur_tok.kind == 62 {
+                parser_expect(&mut parser, 62);
+                while parser.cur_tok.kind != 63 && parser.cur_tok.kind != 0 {
+                    while parser.cur_tok.kind == 90 || parser.cur_tok.kind == 92 { lex_next_token(parser.lex, &mut parser.cur_tok); }
+                    if parser.cur_tok.kind == 11 {
+                        let efn: *mut AstNode = parse_fn(&mut parser, 0);
+                        if efn != (0 as *mut AstNode) { compile_fn(&mut cg, efn); }
+                    } else { lex_next_token(parser.lex, &mut parser.cur_tok); }
+                }
+                parser_expect(&mut parser, 63);
+            }
+        } else if parser.cur_tok.kind == 80 {
+            parse_type_alias(&mut parser);
+        } else if parser.cur_tok.kind == 100 {
+            parse_trait(&mut parser);
+        } else if parser.cur_tok.kind == 101 {
+            parse_impl(&mut parser, &mut cg);
+        } else if parser.cur_tok.kind == 81 {
+            parse_enum(&mut parser);
+        } else if parser.cur_tok.kind == 144 {
+            parser_expect(&mut parser, 144);
+            let eff_h: u64 = parser.cur_tok.hash;
+            parser_expect_ident(&mut parser);
+            consume_optional_semi(&mut parser);
+            parser_add_const(&mut parser, eff_h, eff_h, 144);
+        } else if parser.cur_tok.kind == 124 || (parser.cur_tok.kind == 12 && parser.cur_tok.hash == 7334518323283222324) {
+            parse_top_const(&mut parser);
+        } else if parser.cur_tok.kind == 10 || parser.cur_tok.kind == 109 || parser.cur_tok.kind == 110 {
+            pending_cconv = 0;
+            let snode: *mut AstNode = parse_struct(&mut parser);
+            if snode != (0 as *mut AstNode) {
+                register_parsed_struct_cg(&mut parser, &mut cg, snode);
+                if pending_derive_copy == 1 {
+                    let ti_c1: *mut TraitImpl = ((parser.trait_impls) + ((parser.trait_impl_count) * 16)) as *mut TraitImpl;
+                    ti_c1.trait_hash = 3929114272712712900; ti_c1.type_hash = snode.hash; parser.trait_impl_count = parser.trait_impl_count + 1;
+                    let ti_c2: *mut TraitImpl = ((parser.trait_impls) + ((parser.trait_impl_count) * 16)) as *mut TraitImpl;
+                    ti_c2.trait_hash = 6784203327934035010; ti_c2.type_hash = snode.hash; parser.trait_impl_count = parser.trait_impl_count + 1;
+                    pending_derive_copy = 0;
+                }
+            }
+        } else if parser.cur_tok.kind == 11 || parser.cur_tok.kind == 102 || parser.cur_tok.kind == 142 || parser.cur_tok.kind == 92 {
+            let fnode: *mut AstNode = parse_fn(&mut parser, pending_cconv);
+            pending_cconv = 0;
+            if fnode != (0 as *mut AstNode) {
+                let v_err: u32 = var_check_verify_fn(&mut parser, fnode, shadow_mode);
+                if v_err > 0 { sys_exit(1); }
+                if cg.strict_safety == 1 {
+                    let s_err: u32 = safety_verify_fn(&mut parser, fnode, 1);
+                    if s_err > 0 {
+                        sys_exit(1);
+                    }
+                }
+                var fn_lambdas: u32 = 0;
+                if parser.anon_fns != (0 as *mut AstNode) {
+                    fn_lambdas = 1;
+                    var p_scan: *mut AstNode = fnode.child2;
+                    while p_scan != (0 as *mut AstNode) {
+                        cg_get_or_add_upvalue(&mut cg, p_scan.hash);
+                        p_scan = p_scan.next;
+                    }
+                }
+                while parser.anon_fns != (0 as *mut AstNode) {
+                    let af: *mut AstNode = parser.anon_fns;
+                    parser.anon_fns = af.next;
+                    if parser.anon_fns == (0 as *mut AstNode) {
+                        parser.anon_fn_last = 0 as *mut AstNode;
+                    }
+                    af.next = 0 as *mut AstNode;
+                    cg.has_lambdas = 1;
+                    compile_fn(&mut cg, af);
+                }
+                if fnode.hash == 2258945139493307336 {
+                    explicit_main = fnode;
+                    if fn_lambdas == 1 { main_had_lambdas = 1; }
+                } else {
+                    cg.has_lambdas = fn_lambdas as u64;
+                    compile_fn(&mut cg, fnode);
+                }
+                cg.has_lambdas = 0;
+            }
+        } else if parser.cur_tok.kind == 25 {
+            let cur_cconv: u32 = pending_cconv;
+            pending_cconv = 0;
+            parser_expect(&mut parser, 25);
+            parser_expect(&mut parser, 11);
+            let ext_name_hash: u64 = parser.cur_tok.hash;
+            parser_expect_ident(&mut parser);
+            parser_expect(&mut parser, 60);
+            var param_types_buf: [u64; 64];
+            var param_ptrs_buf: [u64; 64];
+            let p_types: *mut u64 = &mut param_types_buf[0];
+            let p_ptrs: *mut u64 = &mut param_ptrs_buf[0];
+            var param_cnt: u32 = 0;
+            while parser.cur_tok.kind != 61 && parser.cur_tok.kind != 0 {
+                parser_expect_ident(&mut parser);
+                parser_expect(&mut parser, 70);
+                var is_ptr: u32 = 0;
+                while parser.cur_tok.kind == 50 || parser.cur_tok.kind == 32 || parser.cur_tok.kind == 13 || parser.cur_tok.kind == 12 {
+                    if parser.cur_tok.kind == 50 || parser.cur_tok.kind == 32 { is_ptr = 1; }
+                    lex_next_token(parser.lex, &mut parser.cur_tok);
+                }
+                let p_type_hash: u64 = parser.cur_tok.hash;
+                lex_next_token(parser.lex, &mut parser.cur_tok);
+                if param_cnt < 64 {
+                    p_types[param_cnt as u64] = p_type_hash;
+                    p_ptrs[param_cnt as u64] = is_ptr as u64;
+                }
+                param_cnt = param_cnt + 1;
+                if parser.cur_tok.kind == 72 { parser_expect(&mut parser, 72); }
+            }
+            parser_expect(&mut parser, 61);
+            var ret_type_hash: u64 = 3563412735833858527;
+            if parser.cur_tok.kind == 74 {
+                parser_expect(&mut parser, 74);
+                while parser.cur_tok.kind == 32 || parser.cur_tok.kind == 50 || parser.cur_tok.kind == 13 || parser.cur_tok.kind == 12 {
+                    lex_next_token(parser.lex, &mut parser.cur_tok);
+                }
+                ret_type_hash = parser.cur_tok.hash;
+                lex_next_token(parser.lex, &mut parser.cur_tok);
+            }
+            consume_optional_semi(&mut parser);
+
+            let ext_sig_hash: u64 = compute_canonical_sig_hash(param_cnt, cur_cconv, ret_type_hash, p_types as *u64, p_ptrs as *u64);
+            let sc: *mut SymbolContract = ((cg.contracts as *mut u8) + ((cg.contract_count as u64) * 48)) as *mut SymbolContract;
+            sc.symbol_hash = ext_name_hash;
+            sc.type_sig_hash = ext_sig_hash;
+            sc.vaddr = 0;
+            sc.code_size = 0;
+            sc.flags = 2;
+            sc.param_conv = (param_cnt & 65535) | ((cur_cconv & 65535) << 16);
+            sc.contract_digest = blake3_hash64(sc as *u8, 40);
+            cg.contract_count = cg.contract_count + 1;
+        } else if parser.cur_tok.kind != 0 {
+            if parser.cur_tok.kind == 71 {
+                lex_next_token(parser.lex, &mut parser.cur_tok);
+            } else {
+                let tstmt: *mut AstNode = parse_stmt(&mut parser);
+                if tstmt != (0 as *mut AstNode) && tstmt.kind != 0 {
+                    if top_head == (0 as *mut AstNode) {
+                        top_head = tstmt;
+                        top_tail = stmt_chain_tail(tstmt);
+                    } else {
+                        top_tail.next = tstmt;
+                        top_tail = stmt_chain_tail(tstmt);
+                    }
+                }
+                while parser.anon_fns != (0 as *mut AstNode) {
+                    let taf: *mut AstNode = parser.anon_fns;
+                    parser.anon_fns = taf.next;
+                    if parser.anon_fns == (0 as *mut AstNode) {
+                        parser.anon_fn_last = 0 as *mut AstNode;
+                    }
+                    taf.next = 0 as *mut AstNode;
+                    cg.has_lambdas = 1;
+                    compile_fn(&mut cg, taf);
+                    main_had_lambdas = 1;
+                }
+                cg.has_lambdas = 0;
+            }
+        }
+    }
+
+    if top_head != (0 as *mut AstNode) {
+        let top_err: u32 = var_check_verify_top(&mut parser, top_head, shadow_mode);
+        if top_err > 0 { sys_exit(1); }
+    }
+
+    return continuum_finalize_and_run(
+        &mut parser,
+        &mut cg,
+        top_head,
+        top_tail,
+        explicit_main,
+        main_had_lambdas,
+        req_mode,
+        trace_mode,
+        is_run_mode,
+        has_inline_code,
+        format_kind,
+        is_upbp,
+        in_path,
+        out_path,
+        in_path_idx,
+        argc,
+        argv
+    );
+}

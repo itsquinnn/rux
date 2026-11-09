@@ -1,0 +1,112 @@
+include "lib/core/types.rx";
+
+const ETHERTYPE_IPV4: u16 = 0x0800;
+const ETHERTYPE_ARP: u16  = 0x0806;
+const ETHERTYPE_IPV6: u16 = 0x86DD;
+
+const ARP_OP_REQUEST: u16 = 1;
+const ARP_OP_REPLY: u16   = 2;
+
+struct ArpEntry {
+    ipv4_be: u32,
+    mac: [u8; 6],
+    valid: bool,
+}
+
+struct ArpTable {
+    entries: [ArpEntry; 32],
+}
+
+fn eth_write_header(frame: *mut byte, dst_mac: *const u8, src_mac: *const u8, ethertype: u16) -> uint {
+    var i: uint = 0;
+    while i < 6 {
+        frame[i] = dst_mac[i];
+        frame[6 + i] = src_mac[i];
+        i = i + 1;
+    }
+    frame[12] = ((ethertype >> 8) & 255) as byte;
+    frame[13] = (ethertype & 255) as byte;
+    return 14;
+}
+
+fn eth_read_ethertype(frame: *const byte) -> u16 {
+    return ((frame[12] as u16) << 8) | (frame[13] as u16);
+}
+
+fn arp_table_init(tbl: *mut ArpTable) {
+    var i: uint = 0;
+    while i < 32 {
+        tbl.entries[i].valid = false;
+        i = i + 1;
+    }
+}
+
+fn arp_table_insert(tbl: *mut ArpTable, ipv4_be: u32, mac: *const u8) {
+    var slot: uint = 0;
+    var found: bool = false;
+    var i: uint = 0;
+    while i < 32 {
+        if tbl.entries[i].valid && tbl.entries[i].ipv4_be == ipv4_be {
+            slot = i;
+            found = true;
+        }
+        i = i + 1;
+    }
+    if !found {
+        var j: uint = 0;
+        while j < 32 {
+            if !tbl.entries[j].valid && !found {
+                slot = j;
+                found = true;
+            }
+            j = j + 1;
+        }
+    }
+    tbl.entries[slot].ipv4_be = ipv4_be;
+    var k: uint = 0;
+    while k < 6 {
+        tbl.entries[slot].mac[k] = mac[k];
+        k = k + 1;
+    }
+    tbl.entries[slot].valid = true;
+}
+
+fn arp_table_lookup(tbl: *const ArpTable, ipv4_be: u32, out_mac: *mut u8) -> bool {
+    var i: uint = 0;
+    while i < 32 {
+        if tbl.entries[i].valid && tbl.entries[i].ipv4_be == ipv4_be {
+            var k: uint = 0;
+            while k < 6 {
+                out_mac[k] = tbl.entries[i].mac[k];
+                k = k + 1;
+            }
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+fn arp_encode_ipv4_packet(pkt: *mut byte, opcode: u16, sha: *const u8, spa_be: u32, tha: *const u8, tpa_be: u32) -> uint {
+    pkt[0] = 0; pkt[1] = 1;
+    pkt[2] = 8; pkt[3] = 0;
+    pkt[4] = 6; pkt[5] = 4;
+    pkt[6] = ((opcode >> 8) & 255) as byte;
+    pkt[7] = (opcode & 255) as byte;
+    var i: uint = 0;
+    while i < 6 {
+        pkt[8 + i] = sha[i];
+        pkt[18 + i] = tha[i];
+        i = i + 1;
+    }
+    pkt[14] = ((spa_be >> 24) & 255) as byte;
+    pkt[15] = ((spa_be >> 16) & 255) as byte;
+    pkt[16] = ((spa_be >> 8) & 255) as byte;
+    pkt[17] = (spa_be & 255) as byte;
+    pkt[24] = ((tpa_be >> 24) & 255) as byte;
+    pkt[25] = ((tpa_be >> 16) & 255) as byte;
+    pkt[26] = ((tpa_be >> 8) & 255) as byte;
+    pkt[27] = (tpa_be & 255) as byte;
+    return 28;
+}
+

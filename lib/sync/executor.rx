@@ -1,0 +1,182 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+
+const POLL_PENDING: uint = 0;
+const POLL_READY: uint   = 1;
+
+const PROMISE_PENDING: uint   = 0;
+const PROMISE_FULFILLED: uint = 1;
+const PROMISE_REJECTED: uint  = 2;
+
+struct Promise {
+    state: uint,
+    value: uint,
+    error: int,
+}
+
+fn promise_pending() -> Promise {
+    var p: Promise;
+    p.state = PROMISE_PENDING;
+    p.value = 0;
+    p.error = 0;
+    return p;
+}
+
+fn promise_resolve(val: uint) -> Promise {
+    var p: Promise;
+    p.state = PROMISE_FULFILLED;
+    p.value = val;
+    p.error = 0;
+    return p;
+}
+
+fn promise_reject(err: int) -> Promise {
+    var p: Promise;
+    p.state = PROMISE_REJECTED;
+    p.value = 0;
+    p.error = err;
+    return p;
+}
+
+fn promise_all(promises: *const Promise, count: uint) -> Promise {
+    var total: uint = 0;
+    var i: uint = 0;
+    while i < count {
+        if promises[i].state == PROMISE_REJECTED {
+            return promise_reject(promises[i].error);
+        }
+        if promises[i].state == PROMISE_PENDING {
+            return promise_pending();
+        }
+        total = total + promises[i].value;
+        i = i + 1;
+    }
+    return promise_resolve(total);
+}
+
+fn promise_race(promises: *const Promise, count: uint) -> Promise {
+    var i: uint = 0;
+    while i < count {
+        if promises[i].state != PROMISE_PENDING {
+            return promises[i];
+        }
+        i = i + 1;
+    }
+    return promise_pending();
+}
+
+struct Waker {
+    task_id: uint,
+    woken_count: uint,
+}
+
+struct CoroutineTask {
+    poll_fn: uint,
+    state_step: uint,
+    result_val: uint,
+    is_done: bool,
+}
+
+struct AsyncExecutor {
+    tasks: *mut uint,
+    task_count: uint,
+    microtasks: *mut uint,
+    microtask_count: uint,
+    coroutines: *mut CoroutineTask,
+    coroutine_count: uint,
+    epoll_fd: int,
+    poll_cycles: uint,
+    completed_sum: uint,
+}
+
+fn executor_init(ex: *mut AsyncExecutor) {
+    ex.tasks = uses_substrate_alloc(64 * 8) as *mut uint;
+    ex.task_count = 0;
+    ex.microtasks = uses_substrate_alloc(64 * 8) as *mut uint;
+    ex.microtask_count = 0;
+    ex.coroutines = uses_substrate_alloc(64 * 32) as *mut CoroutineTask;
+    ex.coroutine_count = 0;
+    ex.epoll_fd = uses_substrate_epoll_create(0);
+    ex.poll_cycles = 0;
+    ex.completed_sum = 0;
+}
+
+fn executor_spawn(ex: *mut AsyncExecutor, task_fn: fn() -> uint) {
+    if ex.task_count < 64 {
+        ex.tasks[ex.task_count] = task_fn as uint;
+        ex.task_count = ex.task_count + 1;
+    }
+}
+
+fn executor_queue_microtask(ex: *mut AsyncExecutor, mt_fn: fn() -> uint) {
+    if ex.microtask_count < 64 {
+        ex.microtasks[ex.microtask_count] = mt_fn as uint;
+        ex.microtask_count = ex.microtask_count + 1;
+    }
+}
+
+fn executor_spawn_coroutine(ex: *mut AsyncExecutor, poll_fn: fn(*mut uint, *mut uint) -> uint) {
+    if ex.coroutine_count < 64 {
+        let idx: uint = ex.coroutine_count;
+        ex.coroutines[idx].poll_fn = poll_fn as uint;
+        ex.coroutines[idx].state_step = 0;
+        ex.coroutines[idx].result_val = 0;
+        ex.coroutines[idx].is_done = false;
+        ex.coroutine_count = idx + 1;
+    }
+}
+
+fn executor_run_until_complete(ex: *mut AsyncExecutor) -> uint {
+    var mi: uint = 0;
+    while mi < ex.microtask_count {
+        let mf: fn() -> uint = ex.microtasks[mi];
+        let mres: uint = mf();
+        ex.completed_sum = ex.completed_sum + mres;
+        mi = mi + 1;
+    }
+    ex.microtask_count = 0;
+
+    var remaining: uint = ex.coroutine_count;
+    var safety_guard: uint = 0;
+    while remaining > 0 && safety_guard < 256 {
+        remaining = 0;
+        var ci: uint = 0;
+        while ci < ex.coroutine_count {
+            if !ex.coroutines[ci].is_done {
+                let pf: fn(*mut uint, *mut uint) -> uint = ex.coroutines[ci].poll_fn;
+                var step: uint = ex.coroutines[ci].state_step;
+                var rval: uint = ex.coroutines[ci].result_val;
+                let status: uint = pf(&mut step, &mut rval);
+                ex.coroutines[ci].state_step = step;
+                ex.coroutines[ci].result_val = rval;
+                ex.poll_cycles = ex.poll_cycles + 1;
+                if status == POLL_READY {
+                    ex.coroutines[ci].is_done = true;
+                    ex.completed_sum = ex.completed_sum + rval;
+                } else {
+                    remaining = remaining + 1;
+                }
+            }
+            ci = ci + 1;
+        }
+        safety_guard = safety_guard + 1;
+    }
+    ex.coroutine_count = 0;
+
+    var ti: uint = 0;
+    while ti < ex.task_count {
+        let tf: fn() -> uint = ex.tasks[ti];
+        let tres: uint = tf();
+        ex.completed_sum = ex.completed_sum + tres;
+        ti = ti + 1;
+    }
+    ex.task_count = 0;
+    return ex.completed_sum;
+}
+
+fn executor_shutdown(ex: *mut AsyncExecutor) {
+    if ex.epoll_fd >= 0 {
+        uses_substrate_close(ex.epoll_fd as uint);
+        ex.epoll_fd = -1;
+    }
+}

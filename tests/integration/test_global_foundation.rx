@@ -1,0 +1,565 @@
+include "lib/core/types.rx";
+
+include "lib/arch/mmio.rx";
+include "lib/arch/x86_64.rx";
+include "lib/arch/paging.rx";
+include "lib/arch/allocator_phys.rx";
+include "lib/arch/arm64_riscv.rx";
+
+include "lib/boot/multiboot.rx";
+include "lib/boot/uefi.rx";
+include "lib/boot/acpi_smbios.rx";
+include "lib/boot/opensbi.rx";
+
+include "lib/hw/pci.rx";
+include "lib/hw/uart.rx";
+include "lib/hw/console_fb.rx";
+include "lib/hw/hid.rx";
+include "lib/hw/timer_rtc.rx";
+include "lib/hw/nvme.rx";
+include "lib/hw/ahci.rx";
+include "lib/hw/nic_ring.rx";
+include "lib/hw/usb_xhci.rx";
+include "lib/hw/bluetooth_hci.rx";
+include "lib/hw/audio_pcm.rx";
+include "lib/hw/power_mgmt.rx";
+
+include "lib/sys/syscall.rx";
+include "lib/sys/process.rx";
+include "lib/sys/vfs.rx";
+include "lib/sys/block_cache.rx";
+include "lib/sys/fs_ext4_fat.rx";
+include "lib/sys/init_service.rx";
+include "lib/sys/shell_coreutils.rx";
+
+include "lib/net/ethernet_arp.rx";
+include "lib/net/ipv4_icmp.rx";
+include "lib/net/udp_dhcp.rx";
+include "lib/net/dns.rx";
+include "lib/net/socket_poll.rx";
+
+include "lib/gfx/framebuffer.rx";
+include "lib/gfx/compositor.rx";
+include "lib/gfx/gpu_cmd.rx";
+include "lib/gfx/ui_toolkit.rx";
+
+include "lib/mobile/android_ios_abi.rx";
+include "lib/mobile/packaging.rx";
+include "lib/mobile/sensors_radio.rx";
+
+include "lib/crypto/x509.rx";
+include "lib/crypto/codesign_tpm.rx";
+
+include "lib/debug/dwarf_gdb.rx";
+include "lib/debug/sanitizer.rx";
+include "lib/debug/profiler_fuzz.rx";
+
+include "lib/container/oci_runtime.rx";
+include "lib/container/vmm_kvm.rx";
+include "lib/container/k8s_cloud.rx";
+
+include "lib/i18n/unicode_bidi.rx";
+include "lib/i18n/locale_tz_ime.rx";
+
+include "lib/jit/jit_engine.rx";
+include "lib/build/build_system.rx";
+include "lib/web/dom_bom.rx";
+include "lib/sync/priority_sched.rx";
+include "tools/pm/lockfile.rx";
+include "tools/pm/registry.rx";
+
+fn sample_sys_add(a0: int, a1: int, a2: int) -> int {
+    return a0 + a1 + a2;
+}
+
+fn test_arch_and_boot() -> int {
+    var mmio_word: u32 = 0;
+    mmio_write32((&mut mmio_word) as uint, 0x10203040);
+    mmio_set_bits32((&mut mmio_word) as uint, 0x0000000F);
+    if mmio_read32((&mmio_word) as uint) != 0x1020304F { return 10; }
+
+    var gdt: GdtState64;
+    x86_gdt_init(&mut gdt, 0xFFFF800000100000, 0xFFFF800000200000);
+    if gdt.gdtr.limit != 55 || gdt.tss.rsp0 != 0xFFFF800000100000 { return 11; }
+
+    var idt: IdtState64;
+    x86_idt_init(&mut idt, 0xFFFFFFFF80001000);
+    x86_idt_set_gate(&mut idt, 128, 0xFFFFFFFF80002000, 0, IDT_ATTR_SYSCALL_RING3);
+    if idt.gates[128].type_attr != IDT_ATTR_SYSCALL_RING3 { return 12; }
+
+    var vm: VirtualMemorySpace;
+    vmm_space_init(&mut vm);
+    if !vmm_map_4k(&mut vm, 0x400000, 0x200000, PTE_WRITABLE | PTE_USER) { return 13; }
+    var paddr: u64 = 0;
+    if !vmm_translate(&vm, 0x400ABC, &mut paddr) || paddr != 0x200ABC { return 14; }
+    if !vmm_unmap_4k(&mut vm, 0x400000) || vm.tlb_flushes != 1 { return 15; }
+
+    var buddy: BuddyFrameAllocator;
+    buddy_init(&mut buddy, 0x1000000);
+    let p0: u64 = buddy_alloc_pages(&mut buddy, 0);
+    let p1: u64 = buddy_alloc_pages(&mut buddy, 2);
+    if p0 == 0 || p1 == 0 || buddy.free_pages != 507 { return 16; }
+    buddy_free_pages(&mut buddy, p0, 0);
+    buddy_free_pages(&mut buddy, p1, 2);
+    if buddy.free_pages != 512 { return 17; }
+
+    var slab: SlabCache;
+    slab_init(&mut slab, 64);
+    let obj: *mut u8 = slab_alloc(&mut slab);
+    if (obj as uint) == 0 || slab.used_count != 1 { return 18; }
+    if !slab_free(&mut slab, obj) || slab.used_count != 0 { return 19; }
+
+    var arm_mmu: Arm64MmuConfig;
+    arm64_mmu_default_4k(&mut arm_mmu, 0x1000, 0x2000, 0x80800);
+    let satp: u64 = riscv_encode_satp_sv39(0x80200000, 7);
+    if arm_mmu.ttbr1_el1 != 0x2000 || (satp >> 60) != 8 { return 20; }
+
+    let mb1: Multiboot1Header = multiboot1_build_header(3);
+    if !multiboot1_verify_header(&mb1) { return 21; }
+    var root_val: [byte; 32];
+    if !boot_cmdline_find_value("console=ttyS0 root=/dev/nvme0n1 quiet", "root", &mut root_val[0], 32) {
+        return 22;
+    }
+    if root_val[0] != 47 || root_val[5] != 110 { return 23; }
+
+    var efi: EfiEnvironment;
+    uefi_env_init(&mut efi, 0xE0000000, 1920, 1080);
+    uefi_add_memory_region(&mut efi, EFI_CONVENTIONAL_MEMORY, 0x100000, 1024);
+    if uefi_usable_ram_bytes(&efi) != 4194304 { return 24; }
+    if uefi_exit_boot_services(&mut efi) != EFI_SUCCESS || efi.boot_services_active { return 25; }
+
+    if !acpi_verify_rsdp_sig("RSD PTR " as *const u8) || !smbios_verify_anchor3("_SM3_" as *const u8) {
+        return 26;
+    }
+    let sbi_req: SbiCallRequest = opensbi_prepare_timer(99999);
+    if opensbi_simulate_dispatch(&sbi_req).error != SBI_SUCCESS { return 27; }
+    return 0;
+}
+
+fn test_hw_drivers() -> int {
+    let cfg_addr: u32 = pci_legacy_cfg_addr(0, 4, 0, 16);
+    let ecam: u64 = pcie_ecam_addr(0xB0000000, 1, 2, 0, 0x10);
+    let bar: PciBarRegion = pci_decode_bar(0xFE000004, 0x00000001, 0xFFFFC004);
+    let msi: PciMsiConfig = pci_build_msi_x86(2, 48);
+    if (cfg_addr >> 31) != 1 || ecam != 0xB0110010 || !bar.is_64bit || bar.size_bytes != 16384 || msi.vector != 48 {
+        return 30;
+    }
+
+    var uart: UartPort;
+    uart_init_16550(&mut uart, UART_COM1_PORT, 115200);
+    if uart.divisor != 1 { return 31; }
+    uart_tx_write_str(&mut uart, "OK\n");
+    var ch: byte = 0;
+    if !uart_tx_dequeue(&mut uart, &mut ch) || ch != 79 { return 32; }
+
+    var vga: VgaTextConsole;
+    vga_console_init(&mut vga, VGA_COLOR_WHITE, VGA_COLOR_BLACK);
+    vga_console_write(&mut vga, "RUX\n");
+    if (vga.cells[0] & 255) != 82 || vga.cursor_y != 1 { return 33; }
+
+    var kbd: Ps2KeyboardState;
+    ps2_kbd_init(&mut kbd);
+    var kev: HidKeyEvent;
+    ps2_decode_scancode(&mut kbd, 0x2A, &mut kev);
+    ps2_decode_scancode(&mut kbd, 0x1E, &mut kev);
+    if kev.ascii != 65 || !kev.pressed { return 34; }
+
+    var mpkt: [byte; 4];
+    mpkt[0] = 1; mpkt[1] = 10; mpkt[2] = 250; mpkt[3] = 1;
+    var mev: HidMouseEvent;
+    if !usb_hid_decode_mouse_boot(&mpkt[0], 4, &mut mev) || mev.dx != 10 || mev.dy != -6 { return 35; }
+
+    var dt: RtcDateTime;
+    dt.year = 1970; dt.month = 1; dt.day = 2; dt.hour = 0; dt.minute = 0; dt.second = 0;
+    if rtc_to_unix_epoch(&dt) != 86400 || rtc_bcd_to_bin(0x59) != 59 { return 36; }
+
+    var nvme: NvmeQueuePair;
+    nvme_qp_init(&mut nvme, 1, 16, 0);
+    var sqe: NvmeSqe;
+    let cid: u16 = nvme_build_rw_sqe(&mut nvme, NVME_IO_READ, 1, 2048, 8, &mut sqe);
+    nvme_sqe_set_prp(&mut sqe, 0x400000, 0);
+    var cqe: NvmeCqe;
+    cqe.cid = cid; cqe.status = 1;
+    if cid != 1 || sqe.cdw12 != 7 || sqe.prp1 != 0x400000 || !nvme_cqe_ready_ok(&mut nvme, &cqe) { return 37; }
+
+    var fis: AhciFisRegH2D;
+    ahci_build_h2d_lba48(&mut fis, true, 0x123456, 4);
+    if fis.fis_type != 0x27 || fis.command != ATA_CMD_WRITE_DMA_EXT { return 38; }
+
+    var nic_mac: [u8; 6];
+    nic_mac[0] = 0x52; nic_mac[1] = 0x54; nic_mac[2] = 0x00;
+    nic_mac[3] = 0x12; nic_mac[4] = 0x34; nic_mac[5] = 0x56;
+    var nic: NicRingQueue;
+    nic_ring_init(&mut nic, &nic_mac[0]);
+    nic_submit_tx_desc(&mut nic, 0x800000, 64);
+    if nic.tx_packets != 1 || !nic_accepts_dst_mac(&nic, &nic.mac_addr[0]) { return 39; }
+
+    var xhci: XhciRing;
+    xhci_ring_init(&mut xhci);
+    xhci_enqueue_get_descriptor(&mut xhci, 1, 0, 18);
+    if xhci.enqueue_idx != 1 { return 40; }
+
+    var bt_buf: [byte; 16];
+    if bt_hci_encode_reset(&mut bt_buf[0]) != 4 || bt_buf[0] != BT_HCI_PKT_COMMAND { return 41; }
+
+    var pcm: AudioPcmBuffer;
+    audio_pcm_init(&mut pcm, 48000, 2);
+    audio_pcm_push_stereo(&mut pcm, 12000, -12000);
+    var sl: int = 0;
+    var sr: int = 0;
+    if !audio_pcm_pop_stereo(&mut pcm, &mut sl, &mut sr) || sl != 12000 || sr != -12000 { return 42; }
+
+    var pwr: PowerController;
+    power_ctrl_init(&mut pwr, 0x604, 5, 7, 800, 4200);
+    if power_governor_select_mhz(&mut pwr, 90) != 4200 || (power_encode_pm1a_sleep(&mut pwr, POWER_STATE_S5_SOFT_OFF) & ACPI_SLP_EN_BIT) == 0 {
+        return 43;
+    }
+    return 0;
+}
+
+fn test_sys_and_net() -> int {
+    var stbl: SyscallTable;
+    syscall_table_init(&mut stbl);
+    syscall_register(&mut stbl, 10, sample_sys_add, 4);
+    if syscall_dispatch(&mut stbl, 10, 0, 1, 2, 3) != SYSCALL_ERR_EPERM { return 50; }
+    if syscall_dispatch(&mut stbl, 10, 7, 10, 20, 70) != 100 { return 51; }
+
+    var pm: ProcessManager;
+    proc_mgr_init(&mut pm);
+    let pid1: int = proc_spawn(&mut pm, 0, 0x1000, 0, 0, 0xFFFF);
+    let pid2: int = proc_spawn(&mut pm, pid1 as uint, 0x2000, 1000, 1000, 1);
+    let tid1: int = kthread_create(&mut pm, pid2 as uint, 0x9000, 0x400000);
+    proc_exit(&mut pm, pid2 as uint, 42);
+    var ec: int = 0;
+    if tid1 < 1 || proc_reap_child(&mut pm, pid1 as uint, &mut ec) != pid2 || ec != 42 { return 52; }
+
+    var vfs: VfsTable;
+    vfs_init(&mut vfs);
+    vfs_mount(&mut vfs, "/", 1, 1);
+    vfs_register_devnode(&mut vfs, "/dev/null", false, 1, 3);
+    let fd: int = vfs_open(&mut vfs, "/dev/null", 2);
+    if fd < 3 { return 53; }
+
+    var bc: BlockCache;
+    block_cache_init(&mut bc);
+    var sec: [byte; 512];
+    var si: uint = 0;
+    while si < 512 { sec[si] = 0; si = si + 1; }
+    sec[56] = 0x53; sec[57] = 0xEF;
+    sec[24] = 2;
+    block_cache_write_sector(&mut bc, 1, 0, &sec[0]);
+    if block_cache_find(&mut bc, 1, 0) < 0 || bc.hits != 1 { return 54; }
+
+    var ext4: Ext4SuperInfo;
+    if !ext4_parse_superblock(&sec[0], &mut ext4) || ext4.block_size_bytes != 4096 { return 55; }
+
+    sec[11] = 0x00; sec[12] = 0x02; sec[13] = 8; sec[14] = 32; sec[15] = 0;
+    sec[16] = 2; sec[36] = 100; sec[44] = 2; sec[510] = 0x55; sec[511] = 0xAA;
+    var fat: Fat32BpbInfo;
+    if !fat32_parse_bpb(&sec[0], &mut fat) || fat32_cluster_to_lba(&fat, 3) != 240 { return 56; }
+
+    var sup: InitSupervisor;
+    init_supervisor_new(&mut sup);
+    let u0: int = init_register_unit(&mut sup, 101, -1, true);
+    let _u1: int = init_register_unit(&mut sup, 102, u0, true);
+    if init_boot_step(&mut sup, 100) != 2 || !init_handle_crash(&mut sup, 0, 200) { return 57; }
+
+    var sh: ShellPipelineCmd;
+    shell_parse_line("cat /var/log/syslog | grep ERR > out.txt &", &mut sh);
+    if sh.pipe_stages != 2 || !sh.has_redirect_out || !sh.background { return 58; }
+    if !coreutil_grep_contains("kernel: nvme0 ready", "nvme0") { return 59; }
+
+    var arp: ArpTable;
+    arp_table_init(&mut arp);
+    var mac_a: [u8; 6];
+    mac_a[0] = 0xAA; mac_a[1] = 0xBB; mac_a[2] = 0xCC; mac_a[3] = 1; mac_a[4] = 2; mac_a[5] = 3;
+    let gw_ip: u32 = net_pack_ipv4_be(192, 168, 1, 1);
+    arp_table_insert(&mut arp, gw_ip, &mac_a[0]);
+    var mac_out: [u8; 6];
+    if !arp_table_lookup(&arp, gw_ip, &mut mac_out[0]) || mac_out[0] != 0xAA { return 60; }
+
+    var ip_hdr: [byte; 20];
+    ipv4_build_header(&mut ip_hdr[0], 32, IP_PROTO_ICMP, 64, net_pack_ipv4_be(192, 168, 1, 10), gw_ip);
+    if ipv4_checksum_rfc1071(&ip_hdr[0], 20) != 0 { return 61; }
+
+    var rt: Ipv4RouteTable;
+    ipv4_route_init(&mut rt);
+    ipv4_route_add(&mut rt, 0, 0, gw_ip, 1);
+    ipv4_route_add(&mut rt, net_pack_ipv4_be(10, 0, 0, 0), 8, net_pack_ipv4_be(10, 0, 0, 1), 2);
+    var nh: u32 = 0;
+    var ifc: u8 = 0;
+    if !ipv4_route_lookup(&rt, net_pack_ipv4_be(10, 5, 6, 7), &mut nh, &mut ifc) || ifc != 2 { return 62; }
+
+    var dhcp: DhcpClient;
+    dhcp_client_init(&mut dhcp, 0xCAFE1234);
+    var dpkt: [byte; 256];
+    dhcp_build_discover(&mut dhcp, &mac_a[0], &mut dpkt[0]);
+    dhcp_handle_server_reply(&mut dhcp, DHCP_MSG_OFFER, net_pack_ipv4_be(192, 168, 1, 50), gw_ip, 0xFFFFFF00, 3600);
+    dhcp_handle_server_reply(&mut dhcp, DHCP_MSG_ACK, net_pack_ipv4_be(192, 168, 1, 50), gw_ip, 0xFFFFFF00, 3600);
+    if dhcp.state != DHCP_STATE_BOUND { return 63; }
+
+    var dns_pkt: [byte; 64];
+    let qlen: uint = dns_build_query(&mut dns_pkt[0], 0x1122, "rux.dev", DNS_TYPE_A);
+    if qlen != 25 || dns_pkt[12] != 3 { return 64; }
+
+    var kst: KernelSocketTable;
+    ksock_table_init(&mut kst);
+    let srv_sd: int = ksock_open(&mut kst, IP_PROTO_TCP);
+    let cli_sd: int = ksock_open(&mut kst, IP_PROTO_TCP);
+    ksock_bind_listen(&mut kst, srv_sd as uint, 8080);
+    let acc_sd: int = ksock_connect_loopback(&mut kst, cli_sd as uint, 8080);
+    ksock_epoll_ctl_add(&mut kst, acc_sd as uint, EPOLL_IN);
+    ksock_send(&mut kst, cli_sd as uint, "PING", 4);
+    var rbuf: [byte; 8];
+    if ksock_epoll_wait_ready(&kst) != 1 || ksock_recv(&mut kst, acc_sd as uint, &mut rbuf[0], 8) != 4 || rbuf[0] != 80 {
+        return 65;
+    }
+    bpf_add_filter_rule(&mut kst, IP_PROTO_TCP, 23, BPF_ACT_DROP);
+    if bpf_eval_packet(&kst, IP_PROTO_TCP, 23) != BPF_ACT_DROP { return 66; }
+    return 0;
+}
+
+fn test_gfx_mobile_crypto_debug() -> int {
+    var pix: [u32; 256];
+    var pi: uint = 0;
+    while pi < 256 { pix[pi] = 0xFF000000; pi = pi + 1; }
+    var surf: GfxSurface;
+    surf.pixels = &mut pix[0];
+    surf.width = 16; surf.height = 16; surf.pitch_pixels = 16;
+    gfx_fill_rect(&mut surf, 2, 2, 4, 4, gfx_pack_argb(255, 255, 0, 0));
+    gfx_draw_line(&mut surf, 0, 0, 15, 15, gfx_pack_argb(128, 0, 255, 0));
+    if pix[2 * 16 + 3] != 0xFFFF0000 { return 70; }
+
+    var comp: DisplayCompositor;
+    comp_init(&mut comp);
+    let w1: int = comp_create_window(&mut comp, 0, 0, 100, 100, 0xFF111111);
+    let w2: int = comp_create_window(&mut comp, 20, 20, 100, 100, 0xFF222222);
+    if comp_hit_test(&comp, 50, 50) != w2 { return 71; }
+    comp_raise_window(&mut comp, w1 as uint);
+    if comp_hit_test(&comp, 50, 50) != w1 { return 72; }
+
+    var gcb: GpuCommandBuffer;
+    gpu_cmd_init(&mut gcb);
+    gpu_cmd_begin(&mut gcb);
+    gpu_cmd_begin_render_pass(&mut gcb, 1, 0xFF000000);
+    gpu_cmd_draw(&mut gcb, 36, 1, 0);
+    if gpu_cmd_end_and_submit(&mut gcb) != 3 { return 73; }
+
+    var uit: UiTree;
+    ui_tree_init(&mut uit);
+    let root_w: int = ui_add_widget(&mut uit, -1, UI_WIDGET_CONTAINER, 400, 300, UI_FLEX_ROW);
+    ui_widget_set_gap(&mut uit, root_w as uint, 10);
+    let btn1: int = ui_add_widget(&mut uit, root_w, UI_WIDGET_BUTTON, 80, 32, UI_FLEX_ROW);
+    let btn2: int = ui_add_widget(&mut uit, root_w, UI_WIDGET_BUTTON, 80, 32, UI_FLEX_ROW);
+    ui_compute_layout(&mut uit, 400, 300);
+    if ui_dispatch_pointer_click(&mut uit, 105, 16) != btn2 || btn1 < 0 { return 74; }
+    if ui_recognize_touch_gesture(10, 50, 180, 55) != GESTURE_SWIPE_RIGHT { return 75; }
+
+    var parcel: BinderParcel;
+    binder_parcel_init(&mut parcel, 0xABC);
+    binder_parcel_write_u32(&mut parcel, 0xDEADBEEF);
+    var rval: u32 = 0;
+    if !binder_parcel_read_u32(&mut parcel, &mut rval) || rval != 0xDEADBEEF { return 76; }
+
+    var apk_buf: [byte; 128];
+    let apk_len: uint = apk_write_zip_entry(&mut apk_buf[0], "classes.dex", 11, "DEX", 3);
+    var ipa_cs: [byte; 64];
+    let cs_len: uint = ipa_write_codesign_superblob(&mut ipa_cs[0], 0x1122334455667788);
+    if apk_len != 44 || apk_buf[0] != 0x50 || cs_len != 44 || ipa_cs[0] != 0xFA { return 77; }
+
+    var sb: AppSandboxPolicy;
+    sandbox_init(&mut sb, 99, PERM_CAMERA | PERM_BLUETOOTH_LE);
+    if !sandbox_check_permission(&mut sb, PERM_CAMERA) || sandbox_check_permission(&mut sb, PERM_LOCATION_GPS) || sb.denied_attempts != 1 {
+        return 78;
+    }
+
+    var der: [byte; 8];
+    der[0] = ASN1_TAG_SEQUENCE; der[1] = 4; der[2] = 1; der[3] = 2; der[4] = 3; der[5] = 4;
+    var tlv: Asn1Tlv;
+    if !asn1_read_tlv(&der[0], 8, &mut tlv) || tlv.value_len != 4 { return 79; }
+
+    var cas: CaTrustStore;
+    ca_store_init(&mut cas);
+    ca_store_add_root(&mut cas, 500, 9001);
+    var leaf: X509CertSummary;
+    leaf.subject_hash = 777;
+    leaf.issuer_hash = 500;
+    leaf.pubkey_hash = 1234;
+    leaf.not_before_epoch = 1000;
+    leaf.not_after_epoch = 5000;
+    leaf.signature_hash = x509_compute_cert_sig_token(777, 500, 1234, 9001);
+    if !x509_verify_leaf_against_store(&cas, &leaf, 2500) { return 80; }
+
+    var tpm: TpmState;
+    tpm_init(&mut tpm, true, 0xABCD9999);
+    var env: SignedBinaryEnvelope;
+    codesign_sign_digest(0x77889900, 0xABCD9999, 3, &mut env);
+    if !secboot_verify_and_measure(&mut tpm, &env, 2) || tpm.pcrs[7] == 0 { return 81; }
+    let root_cap: CheriCap = cheri_cap_mint(0x1000, 256, CHERI_PERM_LOAD | CHERI_PERM_STORE);
+    let sub_cap: CheriCap = cheri_cap_narrow(&root_cap, 64, 32, CHERI_PERM_LOAD);
+    if !cheri_cap_check_access(&sub_cap, 16, CHERI_PERM_LOAD) || cheri_cap_check_access(&sub_cap, 16, CHERI_PERM_STORE) {
+        return 82;
+    }
+
+    var dlt: DwarfLineTable;
+    dwarf_line_init(&mut dlt);
+    dwarf_line_append(&mut dlt, 0x401000, 1, 42, 1);
+    dwarf_line_append(&mut dlt, 0x401020, 1, 55, 1);
+    var fid: u32 = 0;
+    var lno: u32 = 0;
+    if !dwarf_lookup_pc(&dlt, 0x401014, &mut fid, &mut lno) || lno != 42 { return 83; }
+
+    var gpkt: [byte; 32];
+    let glen: uint = gdb_rsp_encode_packet("OK", 2, &mut gpkt[0]);
+    if !gdb_rsp_verify_packet(&gpkt[0], glen) { return 84; }
+
+    var asan: AsanShadowState;
+    asan_init(&mut asan, 0x10000);
+    asan_poison_region(&mut asan, 0x10080, 16, ASAN_SHADOW_REDZONE);
+    if !asan_check_access(&mut asan, 0x10000, 16) || asan_check_access(&mut asan, 0x10084, 4) { return 85; }
+
+    var tsan: TsanLockGraph;
+    tsan_init(&mut tsan);
+    if !tsan_record_lock_order(&mut tsan, 1, 2) || tsan_record_lock_order(&mut tsan, 2, 1) { return 86; }
+
+    var fz: FuzzEngine;
+    fuzz_init(&mut fz, 12345);
+    var fbuf: [byte; 8];
+    fbuf[0] = 1; fbuf[1] = 2; fbuf[2] = 3; fbuf[3] = 4;
+    fuzz_mutate_buffer(&mut fz, &mut fbuf[0], 4);
+    fuzz_record_edge(&mut fz, 10, 20);
+    if fz.unique_edges != 1 || fz.exec_count != 1 { return 87; }
+    return 0;
+}
+
+fn test_container_i18n_and_toolchain() -> int {
+    var oci: OciContainer;
+    oci_container_create(&mut oci, 555, 67108864, 50000, 4);
+    if !oci_container_start(&mut oci, 4021) || !cgroup_check_mem_charge(&oci, 1048576, 2097152) { return 90; }
+
+    var vmm: VmmHypervisor;
+    vmm_init(&mut vmm, 0xFFF0, 0x7C00);
+    vmm_map_guest_slot(&mut vmm, 0x0, 0x100000, 0x70000000, false);
+    vmm_handle_exit(&mut vmm, VM_EXIT_PIO_OUT, 0x03F8, 65);
+    vmm_handle_exit(&mut vmm, VM_EXIT_HLT, 0, 0);
+    if vmm_translate_gpa(&vmm, 0x2000) != 0x70002000 || vmm.last_pio_byte != 65 || !vmm.halted { return 91; }
+
+    var kdep: K8sDeploymentSpec;
+    kdep.desired_replicas = 5; kdep.ready_replicas = 2;
+    if k8s_reconcile_delta(&kdep) != 3 { return 92; }
+
+    var utf_comb: [byte; 3];
+    utf_comb[0] = 101; utf_comb[1] = 0xCC; utf_comb[2] = 0x81;
+    if uni_grapheme_count(&utf_comb[0], 3) != 1 { return 93; }
+    if uni_collate_utf8("Alpha", 5, "alpha", 5) != 0 { return 94; }
+
+    var rtl_in: [uint; 3];
+    rtl_in[0] = 0x0627; rtl_in[1] = 0x0628; rtl_in[2] = 0x062A;
+    var rtl_out: [uint; 3];
+    if uni_bidi_visual_reorder_run(&rtl_in[0], 3, BIDI_DIR_LTR, &mut rtl_out[0]) != BIDI_DIR_RTL || rtl_out[0] != 0x062A {
+        return 95;
+    }
+
+    var loc: LocaleTag;
+    locale_parse_bcp47("ar-SA", &mut loc);
+    if !loc.is_rtl || locale_plural_category(&loc, 2) != PLURAL_TWO { return 96; }
+
+    let npt: TimezoneOffset = tz_make_offset(1, 5, 45, 0);
+    if tz_utc_to_local_epoch(0, &npt, false) != 20700 { return 97; }
+
+    var ime: ImeSession;
+    ime_init(&mut ime);
+    ime_feed_key(&mut ime, 107);
+    ime_feed_key(&mut ime, 97);
+    if ime_commit_candidate(&mut ime, "ka", 2) != 2 || ime.composing { return 98; }
+
+    var jb_x64: JitCodeBuf;
+    jit_init_arch(&mut jb_x64, JIT_ARCH_X86_64);
+    jit_emit_prologue_arg0(&mut jb_x64);
+    jit_emit_add_arg1(&mut jb_x64);
+    jit_emit_op_imm32(&mut jb_x64, JIT_OP_MUL_IMM, 2);
+    let jres: int = jit_execute_2(&mut jb_x64, 15, 25);
+    jit_free(&mut jb_x64);
+
+    var jb_a64: JitCodeBuf;
+    jit_init_arch(&mut jb_a64, JIT_ARCH_ARM64);
+    jit_emit_op_imm32(&mut jb_a64, JIT_OP_ADD_IMM, 8);
+    jit_finalize_fn(&mut jb_a64);
+    let a64_len: uint = jb_a64.len;
+    jit_free(&mut jb_a64);
+
+    var jb_rv: JitCodeBuf;
+    jit_init_arch(&mut jb_rv, JIT_ARCH_RISCV64);
+    jit_emit_op_imm32(&mut jb_rv, JIT_OP_ADD_IMM, 8);
+    jit_finalize_fn(&mut jb_rv);
+    let rv_len: uint = jb_rv.len;
+    jit_free(&mut jb_rv);
+    if jres != 80 || a64_len != 12 || rv_len != 12 { return 99; }
+
+    var bg: BuildGraph;
+    build_init(&mut bg, TARGET_BAREMETAL, OPT_RELEASE_FAST);
+    let s_core: uint = build_add_static_library(&mut bg, "core", "lib/core/types.rx", TARGET_BAREMETAL);
+    let s_kern: uint = build_add_executable(&mut bg, "kern", "compiler/rux.rx", TARGET_BAREMETAL);
+    build_add_dependency(&mut bg, s_kern, s_core);
+    let first_built: uint = build_execute_all(&mut bg);
+    let second_built: uint = build_execute_all(&mut bg);
+    var lspec: LinkerLayout;
+    linker_layout_init_kernel(&mut lspec, 0xFFFFFFFF80000000, 0x100000);
+    if first_built != 2 || second_built != 0 || lspec.section_count != 4 { return 100; }
+
+    var ps: PriorityScheduler;
+    prio_sched_init(&mut ps);
+    prio_sched_spawn(&mut ps, SCHED_PRIO_NORMAL, 1000);
+    prio_sched_spawn(&mut ps, SCHED_PRIO_REALTIME, 1000);
+    let picked: int = prio_sched_pick_next(&mut ps);
+    prio_sched_timer_interrupt(&mut ps, 1000);
+    if picked != 1 || ps.total_preemptions != 1 { return 101; }
+
+    var reg: PackageRegistry;
+    registry_init(&mut reg, "https://pkg.rux.dev");
+    var v100: SemVer;
+    var v142: SemVer;
+    var v200: SemVer;
+    semver_parse_into("1.0.0", &mut v100);
+    semver_parse_into("1.4.2", &mut v142);
+    semver_parse_into("2.0.0", &mut v200);
+    registry_publish(&mut reg, "rux-net", &v100, DIST_SOURCE_RX, 0x111);
+    registry_publish(&mut reg, "rux-net", &v142, DIST_SOURCE_RX, 0x222);
+    registry_publish(&mut reg, "rux-net", &v200, DIST_SOURCE_RX, 0x333);
+    var resolved: RegistryRelease;
+    if !registry_resolve_compatible(&reg, "rux-net", &v100, &mut resolved) || resolved.version.minor != 4 {
+        return 102;
+    }
+    var lf: Lockfile;
+    lockfile_init(&mut lf);
+    lockfile_record(&mut lf, "rux-net", &resolved.version, resolved.artifact_hash);
+    if !lockfile_verify_integrity(&lf, "rux-net", 0x222) { return 103; }
+    return 0;
+}
+
+fn main() -> int {
+    println("=== RUX GLOBAL SYSTEMS & ECOSYSTEM FOUNDATION SUITE ===");
+
+    let r1: int = test_arch_and_boot();
+    if r1 != 0 { return r1; }
+    println("[PASS] 1. Arch (x86_64 GDT/IDT/PML4/Buddy/Slab, ARM64/RISC-V MMU) & Boot (Multiboot/UEFI/ACPI/OpenSBI)");
+
+    let r2: int = test_hw_drivers();
+    if r2 != 0 { return r2; }
+    println("[PASS] 2. Hardware Drivers (PCIe/MSI, UART, VGA, HID, RTC, NVMe, AHCI, NIC, xHCI, BT, Audio, Power)");
+
+    let r3: int = test_sys_and_net();
+    if r3 != 0 { return r3; }
+    println("[PASS] 3. OS Core (Syscall, Proc/Threads, VFS, Cache, ext4/FAT32, Init, Shell) & L2-L7 Net Stack");
+
+    let r4: int = test_gfx_mobile_crypto_debug();
+    if r4 != 0 { return r4; }
+    println("[PASS] 4. Graphics/Compositor/GPU/UI, Android/iOS Mobile, X.509/TPM/CHERI, DWARF/GDB/ASan/TSan/Fuzz");
+
+    let r5: int = test_container_i18n_and_toolchain();
+    if r5 != 0 { return r5; }
+    println("[PASS] 5. OCI/KVM/K8s/Cloud, Unicode/BiDi/Locale/TZ/IME, Multi-Arch JIT, Incremental DAG & PM SemVer");
+
+    println("=== ALL GLOBAL FOUNDATION GATES PASSED (EXIT 0) ===");
+    return 0;
+}

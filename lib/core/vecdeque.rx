@@ -1,0 +1,103 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/os/uses_substrate.rx";
+
+struct VecDeque {
+    buf: *mut uint,
+    cap: uint,
+    head: uint,
+    len: uint,
+}
+
+fn vecdeque_init(q: *mut VecDeque, initial_cap: uint) {
+    var cap: uint = 16;
+    while cap < initial_cap {
+        cap = cap * 2;
+    }
+    q.buf = uses_substrate_alloc(cap * 8) as *mut uint;
+    q.cap = cap;
+    q.head = 0;
+    q.len = 0;
+}
+
+fn vecdeque_grow(q: *mut VecDeque) {
+    let old_cap: uint = q.cap;
+    let old_buf: *mut uint = q.buf;
+    let new_cap: uint = old_cap * 2;
+    let new_buf: *mut uint = uses_substrate_alloc(new_cap * 8) as *mut uint;
+    let mask: uint = old_cap - 1;
+    var i: uint = 0;
+    while i < q.len {
+        let idx: uint = (q.head + i) & mask;
+        new_buf[i] = old_buf[idx];
+        i = i + 1;
+    }
+    uses_substrate_free(old_buf as *mut byte, old_cap * 8);
+    q.buf = new_buf;
+    q.cap = new_cap;
+    q.head = 0;
+}
+
+fn vecdeque_push_back(q: *mut VecDeque, item: uint) {
+    if q.len >= q.cap {
+        vecdeque_grow(q);
+    }
+    let mask: uint = q.cap - 1;
+    let tail: uint = (q.head + q.len) & mask;
+    q.buf[tail] = item;
+    q.len = q.len + 1;
+}
+
+fn vecdeque_push_front(q: *mut VecDeque, item: uint) {
+    if q.len >= q.cap {
+        vecdeque_grow(q);
+    }
+    let mask: uint = q.cap - 1;
+    q.head = (q.head + q.cap - 1) & mask;
+    q.buf[q.head] = item;
+    q.len = q.len + 1;
+}
+
+fn vecdeque_pop_front(q: *mut VecDeque) -> Option {
+    if q.len == 0 {
+        return option_none();
+    }
+    let val: uint = q.buf[q.head];
+    let mask: uint = q.cap - 1;
+    q.head = (q.head + 1) & mask;
+    q.len = q.len - 1;
+    return option_some(val);
+}
+
+fn vecdeque_pop_back(q: *mut VecDeque) -> Option {
+    if q.len == 0 {
+        return option_none();
+    }
+    q.len = q.len - 1;
+    let mask: uint = q.cap - 1;
+    let tail: uint = (q.head + q.len) & mask;
+    return option_some(q.buf[tail]);
+}
+
+fn vecdeque_get(q: *const VecDeque, idx: uint) -> Option {
+    if idx >= q.len {
+        return option_none();
+    }
+    let mask: uint = q.cap - 1;
+    let pos: uint = (q.head + idx) & mask;
+    return option_some(q.buf[pos]);
+}
+
+fn vecdeque_len(q: *const VecDeque) -> uint {
+    return q.len;
+}
+
+fn vecdeque_free(q: *mut VecDeque) {
+    if (q.buf as uint) != 0 && q.cap > 0 {
+        uses_substrate_free(q.buf as *mut byte, q.cap * 8);
+        q.buf = 0 as *mut uint;
+        q.cap = 0;
+        q.head = 0;
+        q.len = 0;
+    }
+}

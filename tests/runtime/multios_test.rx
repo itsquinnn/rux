@@ -1,0 +1,55 @@
+include "../../lib/core/types.rx";
+include "../../lib/os/os.rx";
+include "bootstrap/binary/elf.rx";
+include "bootstrap/binary/pe.rx";
+include "bootstrap/binary/macho.rx";
+include "bootstrap/emitter/codegen.rx";
+include "bootstrap/binary/writer.rx";
+
+fn main() -> int {
+    let msg: str = "=== RUX MULTI-OS EIA RUNTIME TEST ===";
+    os_println(msg);
+
+    var code: [u8; 8];
+    code[0] = 184 as u8;
+    code[1] = 42 as u8;
+    code[2] = 0 as u8;
+    code[3] = 0 as u8;
+    code[4] = 0 as u8;
+    code[5] = 195 as u8;
+    var v: ExecutableVessel;
+    v.code_ptr = (&code[0]) as *const byte;
+    v.code_len = 6;
+    v.entry_offset = 0;
+
+    let elf_res: int = write_vessel_elf(&v, "/tmp/rux_test_linux.elf" as *byte);
+    if elf_res <= 0 {
+        let err1: str = "[FAIL] Linux ELF64 emission failed";
+        os_println(err1);
+        return 1;
+    }
+    let ok1: str = "[PASS] Linux ELF64 executable emitted successfully";
+    os_println(ok1);
+
+    let pe_res: int = write_vessel_pe(&v, "/tmp/rux_test_windows.exe" as *byte);
+    if pe_res <= 0 {
+        let err2: str = "[FAIL] Windows PE32+ emission failed";
+        os_println(err2);
+        return 2;
+    }
+    let ok2: str = "[PASS] Windows PE32+ (.exe) emitted successfully";
+    os_println(ok2);
+
+    let mac_res: int = write_vessel_macho(&v, "/tmp/rux_test_macos.macho" as *byte);
+    if mac_res <= 0 {
+        let err3: str = "[FAIL] macOS Mach-O emission failed";
+        os_println(err3);
+        return 3;
+    }
+    let ok3: str = "[PASS] macOS Mach-O 64-bit executable emitted successfully";
+    os_println(ok3);
+
+    let done: str = "[PASS] All 3 Multi-OS targets verified!";
+    os_println(done);
+    return 0;
+}

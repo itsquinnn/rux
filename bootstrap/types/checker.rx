@@ -1,0 +1,14 @@
+include "bootstrap/types/primitives.rx";
+
+fn is_type_compatible(target_type_hash: uint, source_type_hash: uint) -> int {
+    if target_type_hash == source_type_hash {
+        return 1;
+    }
+    if target_type_hash == TYPE_HASH_UINT && source_type_hash == TYPE_HASH_BYTE {
+        return 1;
+    }
+    if target_type_hash == TYPE_HASH_INT && source_type_hash == TYPE_HASH_BYTE {
+        return 1;
+    }
+    return 0;
+}

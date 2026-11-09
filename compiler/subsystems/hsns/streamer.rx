@@ -1,0 +1,31 @@
+struct SimdTokenStream {
+    buffer: *const byte,
+    length: uint,
+    cursor: uint,
+    vector_width: uint,
+    delimiters_found: uint,
+}
+
+fn hsns_simd_stream_init(
+    stream: *mut SimdTokenStream,
+    buf: *const byte,
+    len: uint
+) {
+    stream.buffer = buf;
+    stream.length = len;
+    stream.cursor = 0;
+    stream.vector_width = 64;
+    stream.delimiters_found = 0;
+}
+
+fn hsns_simd_scan_delimiters_64(stream: *mut SimdTokenStream) -> uint {
+    if (stream.cursor + 64) > stream.length {
+        return 0;
+    }
+
+    let ptr: *const byte = (stream.buffer as uint + stream.cursor) as *const byte;
+    let mask: uint = @silicon.simd_cmp_delims_64(ptr);
+    stream.cursor = stream.cursor + 64;
+    stream.delimiters_found = stream.delimiters_found + @silicon.popcnt(mask);
+    return mask;
+}

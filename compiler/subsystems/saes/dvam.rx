@@ -1,0 +1,78 @@
+struct DvamMemoryArena {
+    memfd_fd: int,
+    mode: uint,
+    physical_size: uint,
+    v_write_base: *mut byte,
+    v_exec_base: *mut byte,
+    watermark: uint,
+    total_allocations: uint,
+}
+
+fn dvam_create(arena: *mut DvamMemoryArena, size_bytes: uint) -> int {
+    let aligned_size: uint = ((size_bytes + 4095) / 4096) * 4096;
+    arena.physical_size = aligned_size;
+    arena.watermark = 0;
+    arena.total_allocations = 0;
+    arena.mode = 1;
+
+    let fd: int = @os.memfd_create("rux_dvam", 0);
+    if fd < 0 {
+        return -1;
+    }
+
+    if @os.ftruncate(fd, aligned_size) != 0 {
+        @os.close(fd);
+        return -2;
+    }
+
+    let v_write: *mut byte = @os.mmap(0 as *mut byte, aligned_size, 3, 1, fd, 0);
+    let v_exec: *mut byte = @os.mmap(0 as *mut byte, aligned_size, 5, 1, fd, 0);
+
+    if (v_write as int) <= 0 || (v_exec as int) <= 0 {
+        if (v_write as int) > 0 { @os.munmap(v_write, aligned_size); }
+        if (v_exec as int) > 0 { @os.munmap(v_exec, aligned_size); }
+        @os.close(fd);
+        return -3;
+    }
+
+    arena.memfd_fd = fd;
+    arena.v_write_base = v_write;
+    arena.v_exec_base = v_exec;
+    return 0;
+}
+
+fn dvam_allocate_slot(
+    arena: *mut DvamMemoryArena,
+    length: uint,
+    out_write: *mut *mut byte,
+    out_exec: *mut *mut byte
+) -> bool {
+    let aligned_len: uint = ((length + 63) / 64) * 64;
+    if (arena.watermark + aligned_len) > arena.physical_size {
+        return false;
+    }
+
+    let offset: uint = arena.watermark;
+    arena.watermark = arena.watermark + aligned_len;
+    arena.total_allocations = arena.total_allocations + 1;
+
+    *out_write = (arena.v_write_base as uint + offset) as *mut byte;
+    *out_exec = (arena.v_exec_base as uint + offset) as *mut byte;
+    return true;
+}
+
+fn dvam_destroy(arena: *mut DvamMemoryArena) {
+    if arena.mode == 1 {
+        if (arena.v_write_base as int) > 0 {
+            @os.munmap(arena.v_write_base, arena.physical_size);
+        }
+        if (arena.v_exec_base as int) > 0 {
+            @os.munmap(arena.v_exec_base, arena.physical_size);
+        }
+        if arena.memfd_fd >= 0 {
+            @os.close(arena.memfd_fd);
+        }
+    }
+    arena.v_write_base = 0 as *mut byte;
+    arena.v_exec_base = 0 as *mut byte;
+}

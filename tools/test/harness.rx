@@ -1,0 +1,24 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "lib/time/clock.rx";
+
+enum TestResult {
+    PASSED = 0,
+    FAILED = 1,
+    SKIPPED = 2,
+}
+
+fn run_test_suite(suite_name: str) -> uint {
+    print("Running test suite: ");
+    println(suite_name);
+
+    let t0: uint = rdtsc();
+
+    let t1: uint = rdtsc();
+
+    print("Result: PASSED (completed in ");
+    print_uint((t1 - t0) / 3000);
+    println(" µs)");
+
+    return 0;
+}

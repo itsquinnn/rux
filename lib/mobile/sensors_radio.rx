@@ -1,0 +1,121 @@
+include "lib/core/types.rx";
+
+const PERM_CAMERA: u32       = 1;
+const PERM_MICROPHONE: u32   = 2;
+const PERM_LOCATION_GPS: u32 = 4;
+const PERM_BLUETOOTH_LE: u32 = 8;
+const PERM_TELEPHONY_SMS: u32 = 16;
+const PERM_NOTIFICATIONS: u32 = 32;
+
+struct TouchPoint {
+    pointer_id: u8,
+    x: int,
+    y: int,
+    pressure: u16,
+    active: bool,
+}
+
+struct ImuSample9Axis {
+    accel_mg_x: int,
+    accel_mg_y: int,
+    accel_mg_z: int,
+    gyro_mdps_x: int,
+    gyro_mdps_y: int,
+    gyro_mdps_z: int,
+    mag_ut_x: int,
+    mag_ut_y: int,
+    mag_ut_z: int,
+}
+
+struct GpsFix {
+    lat_microdeg: int,
+    lon_microdeg: int,
+    altitude_cm: int,
+    satellites: u8,
+    valid: bool,
+}
+
+struct CameraFrameDesc {
+    width: u32,
+    height: u32,
+    pixel_format_fourcc: u32,
+    timestamp_ns: u64,
+    buffer_addr: u64,
+}
+
+struct AppSandboxPolicy {
+    app_id_hash: uint,
+    granted_perms: u32,
+    denied_attempts: u32,
+}
+
+fn sandbox_init(pol: *mut AppSandboxPolicy, app_hash: uint, initial_perms: u32) {
+    pol.app_id_hash = app_hash;
+    pol.granted_perms = initial_perms;
+    pol.denied_attempts = 0;
+}
+
+fn sandbox_check_permission(pol: *mut AppSandboxPolicy, req_perm: u32) -> bool {
+    if (pol.granted_perms & req_perm) == req_perm {
+        return true;
+    }
+    pol.denied_attempts = pol.denied_attempts + 1;
+    return false;
+}
+
+fn ble_encode_adv_name(dst: *mut byte, flags: u8, local_name: *const byte, name_len: u8) -> uint {
+    dst[0] = 2;
+    dst[1] = 0x01;
+    dst[2] = flags;
+    dst[3] = (name_len + 1) as byte;
+    dst[4] = 0x09;
+    var i: uint = 0;
+    let n: uint = name_len as uint;
+    while i < n {
+        dst[5 + i] = local_name[i];
+        i = i + 1;
+    }
+    return 5 + n;
+}
+
+fn sms_encode_pdu_submit(dst: *mut byte, dest_digits: *const byte, digit_count: u8, text_ascii: *const byte, text_len: u8) -> uint {
+    dst[0] = 0x00;
+    dst[1] = 0x11;
+    dst[2] = 0x00;
+    dst[3] = digit_count;
+    dst[4] = 0x91;
+    var pos: uint = 5;
+    var i: uint = 0;
+    let dc: uint = digit_count as uint;
+    while i < dc {
+        let low: u8 = (dest_digits[i] - 48) & 15;
+        var high: u8 = 15;
+        if (i + 1) < dc {
+            high = (dest_digits[i + 1] - 48) & 15;
+        }
+        dst[pos] = low | (high << 4);
+        pos = pos + 1;
+        i = i + 2;
+    }
+    dst[pos] = 0x00;
+    dst[pos + 1] = 0x04;
+    dst[pos + 2] = 0xAA;
+    dst[pos + 3] = text_len;
+    pos = pos + 4;
+    var j: uint = 0;
+    let tl: uint = text_len as uint;
+    while j < tl {
+        dst[pos + j] = text_ascii[j];
+        j = j + 1;
+    }
+    return pos + tl;
+}
+
+fn gps_approx_manhattan_meters(a: *const GpsFix, b: *const GpsFix) -> int {
+    var dlat: int = a.lat_microdeg - b.lat_microdeg;
+    if dlat < 0 { dlat = 0 - dlat; }
+    var dlon: int = a.lon_microdeg - b.lon_microdeg;
+    if dlon < 0 { dlon = 0 - dlon; }
+    return ((dlat + dlon) * 111) / 1000;
+}
+

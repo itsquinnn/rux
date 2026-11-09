@@ -1,0 +1,11 @@
+include "lib/core/types.rx";
+include "lib/time/duration.rx";
+
+fn rdtsc() -> uint => @silicon.rdtsc();
+
+fn monotonic_now() -> Duration {
+    var ts: [uint; 2];
+    @os.clock_gettime(1, &ts[0]);
+    let total_ns: uint = (ts[0] * 1000000000) + ts[1];
+    return from_nanos(total_ns);
+}

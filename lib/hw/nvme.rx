@@ -1,0 +1,107 @@
+include "lib/core/types.rx";
+
+const NVME_ADMIN_CREATE_IO_SQ: u8 = 0x01;
+const NVME_ADMIN_CREATE_IO_CQ: u8 = 0x05;
+const NVME_ADMIN_IDENTIFY: u8     = 0x06;
+
+const NVME_IO_FLUSH: u8 = 0x00;
+const NVME_IO_WRITE: u8 = 0x01;
+const NVME_IO_READ: u8  = 0x02;
+
+struct NvmeSqe {
+    cdw0: u32,
+    nsid: u32,
+    rsvd2: u64,
+    mptr: u64,
+    prp1: u64,
+    prp2: u64,
+    cdw10: u32,
+    cdw11: u32,
+    cdw12: u32,
+    cdw13: u32,
+    cdw14: u32,
+    cdw15: u32,
+}
+
+struct NvmeCqe {
+    result: u32,
+    rsvd: u32,
+    sq_head: u16,
+    sq_id: u16,
+    cid: u16,
+    status: u16,
+}
+
+struct NvmeQueuePair {
+    qid: u16,
+    depth: u16,
+    sq_tail: u16,
+    cq_head: u16,
+    cq_phase: u16,
+    next_cid: u16,
+    doorbell_stride: u32,
+}
+
+fn nvme_qp_init(qp: *mut NvmeQueuePair, qid: u16, depth: u16, dstrd: u32) {
+    qp.qid = qid;
+    qp.depth = depth;
+    qp.sq_tail = 0;
+    qp.cq_head = 0;
+    qp.cq_phase = 1;
+    qp.next_cid = 1;
+    qp.doorbell_stride = dstrd;
+}
+
+fn nvme_sq_doorbell_offset(qp: *const NvmeQueuePair) -> u64 {
+    let idx: u64 = (qp.qid as u64) * 2;
+    return 0x1000 + (idx << (2 + qp.doorbell_stride));
+}
+
+fn nvme_cq_doorbell_offset(qp: *const NvmeQueuePair) -> u64 {
+    let idx: u64 = (qp.qid as u64) * 2 + 1;
+    return 0x1000 + (idx << (2 + qp.doorbell_stride));
+}
+
+fn nvme_sqe_set_prp(sqe: *mut NvmeSqe, prp1: u64, prp2: u64) {
+    sqe.prp1 = prp1;
+    sqe.prp2 = prp2;
+}
+
+fn nvme_build_rw_sqe(qp: *mut NvmeQueuePair, opcode: u8, nsid: u32, lba: u64, block_count: u16, sqe: *mut NvmeSqe) -> u16 {
+    let cid: u16 = qp.next_cid;
+    qp.next_cid = qp.next_cid + 1;
+
+    sqe.cdw0 = (opcode as u32) | ((cid as u32) << 16);
+    sqe.nsid = nsid;
+    sqe.rsvd2 = 0;
+    sqe.mptr = 0;
+    sqe.prp1 = 0;
+    sqe.prp2 = 0;
+    sqe.cdw10 = (lba & 4294967295) as u32;
+    sqe.cdw11 = ((lba >> 32) & 4294967295) as u32;
+    if block_count > 0 {
+        sqe.cdw12 = (block_count - 1) as u32;
+    } else {
+        sqe.cdw12 = 0;
+    }
+    sqe.cdw13 = 0;
+    sqe.cdw14 = 0;
+    sqe.cdw15 = 0;
+
+    qp.sq_tail = (qp.sq_tail + 1) % qp.depth;
+    return cid;
+}
+
+fn nvme_cqe_ready_ok(qp: *mut NvmeQueuePair, cqe: *const NvmeCqe) -> bool {
+    let phase: u16 = cqe.status & 1;
+    if phase != qp.cq_phase {
+        return false;
+    }
+    let sc: u16 = (cqe.status >> 1) & 32767;
+    qp.cq_head = qp.cq_head + 1;
+    if qp.cq_head >= qp.depth {
+        qp.cq_head = 0;
+        qp.cq_phase = qp.cq_phase ^ 1;
+    }
+    return sc == 0;
+}

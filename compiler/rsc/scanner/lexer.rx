@@ -1,0 +1,576 @@
+struct Token {
+    kind: u64,
+    start: *u8,
+    len: u64,
+    int_val: u64,
+    hash: u64,
+    float_bits: u64,
+    is_float: u32,
+    num_suffix: u32,
+    had_overflow: u32,
+    line: u32,
+    col: u32,
+    newline_before: u32,
+}
+
+struct Lexer {
+    src: *u8,
+    len: u64,
+    pos: u64,
+    line: u64,
+    col: u64,
+}
+
+fn skip_whitespace(lex: *mut Lexer, out_had_newline: *mut u32) {
+    var loop_flag: u32 = 1;
+    while loop_flag == 1 {
+        if lex.pos >= lex.len {
+            loop_flag = 0;
+        } else {
+            let c: u8 = lex.src[lex.pos];
+            if c == 32 || c == 9 || c == 10 || c == 13 {
+                if c == 10 {
+                    lex.line = lex.line + 1;
+                    lex.col = 1;
+                    out_had_newline[0] = 1;
+                } else {
+                    lex.col = lex.col + 1;
+                }
+                lex.pos = lex.pos + 1;
+            } else if c == 47 {
+                let next_pos: u64 = lex.pos + 1;
+                if next_pos < lex.len && lex.src[next_pos] == 47 {
+                    lex.pos = lex.pos + 2;
+                    while lex.pos < lex.len && lex.src[lex.pos] != 10 {
+                        lex.pos = lex.pos + 1;
+                    }
+                } else if next_pos < lex.len && lex.src[next_pos] == 42 {
+                    lex.pos = lex.pos + 2;
+                    lex.col = lex.col + 2;
+                    var in_blk: u32 = 1;
+                    while in_blk == 1 && lex.pos < lex.len {
+                        if lex.src[lex.pos] == 10 {
+                            lex.line = lex.line + 1;
+                            lex.col = 1;
+                            out_had_newline[0] = 1;
+                        } else {
+                            lex.col = lex.col + 1;
+                        }
+                        if (lex.pos + 1) < lex.len && lex.src[lex.pos] == 42 && lex.src[lex.pos + 1] == 47 {
+                            lex.pos = lex.pos + 2;
+                            lex.col = lex.col + 1;
+                            in_blk = 0;
+                        } else {
+                            lex.pos = lex.pos + 1;
+                        }
+                    }
+                } else {
+                    loop_flag = 0;
+                }
+            } else {
+                loop_flag = 0;
+            }
+        }
+    }
+}
+
+fn encode_f64_bits(int_part: u64, frac_num: u64, frac_div: u64) -> u64 {
+    if int_part == 0 && frac_num == 0 { return 0; }
+    var num: u64 = int_part;
+    var f_n: u64 = frac_num;
+    var f_d: u64 = frac_div;
+    if f_d == 0 { f_d = 1; }
+
+    var shift: i64 = 0;
+    var val: u64 = num;
+    if val > 0 {
+        while val >= 2 {
+            val = val >> 1;
+            shift = shift + 1;
+        }
+    } else {
+        while f_n > 0 && (f_n * 2) < f_d && shift > -1020 {
+            f_n = f_n * 2;
+            shift = shift - 1;
+        }
+        f_n = f_n * 2;
+        shift = shift - 1;
+        num = f_n / f_d;
+        f_n = f_n % f_d;
+    }
+
+    let exp: u64 = (1023 + shift) as u64;
+    var mantissa: u64 = 0;
+    var bit: u64 = 0;
+    var rem_int: u64 = int_part - (num << (shift as u64));
+    while bit < 52 {
+        mantissa = mantissa << 1;
+        if shift > 0 {
+            shift = shift - 1;
+            let cur_bit: u64 = (rem_int >> (shift as u64)) & 1;
+            mantissa = mantissa | cur_bit;
+        } else {
+            f_n = f_n * 2;
+            if f_n >= f_d {
+                mantissa = mantissa | 1;
+                f_n = f_n - f_d;
+            }
+        }
+        bit = bit + 1;
+    }
+    return (exp << 52) | (mantissa & 4503599627370495);
+}
+
+fn eval_lex_unit_suffix(val: u64, s_ptr: *u8, s_len: u64) -> u64 {
+    if s_len == 1 {
+        let c0: u8 = s_ptr[0];
+        if c0 == 66 || c0 == 98 { return val; }
+        if c0 == 115 || c0 == 83 { return val * 1000000000; }
+        if c0 == 109 { return val * 60000000000; }
+        if c0 == 104 { return val * 3600000000000; }
+    }
+    if s_len == 2 {
+        let c0: u8 = s_ptr[0];
+        let c1: u8 = s_ptr[1];
+        if (c0 == 75 || c0 == 107) && (c1 == 66 || c1 == 98) { return val * 1024; }
+        if (c0 == 77 || c0 == 109) && (c1 == 66 || c1 == 98) { return val * 1048576; }
+        if (c0 == 71 || c0 == 103) && (c1 == 66 || c1 == 98) { return val * 1073741824; }
+        if (c0 == 84 || c0 == 116) && (c1 == 66 || c1 == 98) { return val * 1099511627776; }
+        if c0 == 110 && c1 == 115 { return val; }
+        if c0 == 117 && c1 == 115 { return val * 1000; }
+        if c0 == 109 && c1 == 115 { return val * 1000000; }
+    }
+    return val;
+}
+
+fn lex_next_token(lex: *mut Lexer, tok: *mut Token) {
+    var had_newline: u32 = 0;
+    skip_whitespace(lex, &mut had_newline);
+
+    tok.newline_before = had_newline;
+    tok.line = lex.line as u32;
+    tok.col = lex.col as u32;
+    tok.float_bits = 0;
+    tok.is_float = 0;
+    tok.num_suffix = 0;
+    tok.had_overflow = 0;
+
+    if lex.pos >= lex.len {
+        tok.kind = 0;
+        tok.start = lex.src + lex.pos;
+        tok.len = 0;
+        tok.int_val = 0;
+        tok.hash = 0;
+        return;
+    }
+
+    let start_pos: u64 = lex.pos;
+    let start_ptr: *u8 = lex.src + start_pos;
+    let c: u8 = lex.src[start_pos];
+    lex.pos = lex.pos + 1;
+    lex.col = lex.col + 1;
+
+    if is_alpha(c) == 1 {
+        while lex.pos < lex.len && is_alnum(lex.src[lex.pos]) == 1 {
+            lex.pos = lex.pos + 1;
+            lex.col = lex.col + 1;
+        }
+        let tok_len: u32 = (lex.pos - start_pos) as u32;
+        let h: u64 = hash_identifier(start_ptr, tok_len);
+        var k: u32 = classify_keyword(h);
+        if k == 148 || k == 149 || k == 150 {
+            var pk_pos: u64 = lex.pos;
+            while pk_pos < lex.len && (lex.src[pk_pos] == 32 || lex.src[pk_pos] == 9 || lex.src[pk_pos] == 10 || lex.src[pk_pos] == 13) {
+                pk_pos = pk_pos + 1;
+            }
+            var is_lit: u32 = 0;
+            if pk_pos < lex.len {
+                let nc: u8 = lex.src[pk_pos];
+                if k == 148 && nc == 91 { is_lit = 1; }
+                if (k == 149 || k == 150) && nc == 123 { is_lit = 1; }
+            }
+            if is_lit == 0 {
+                k = 1;
+            }
+        }
+
+        tok.kind = k as u64;
+        tok.start = start_ptr;
+        tok.len = tok_len as u64;
+        tok.int_val = 0;
+        tok.hash = h;
+        return;
+    }
+
+    if is_digit(c) == 1 {
+        var val: u64 = 0;
+        var num_overflow: u32 = 0;
+
+        if c == 48 && lex.pos < lex.len && (lex.src[lex.pos] == 120 || lex.src[lex.pos] == 88) {
+            lex.pos = lex.pos + 1;
+            lex.col = lex.col + 1;
+            var hloop: u32 = 1;
+            while hloop == 1 && lex.pos < lex.len {
+                let hc: u8 = lex.src[lex.pos];
+                if hc >= 48 && hc <= 57 {
+                    val = (val << 4) + ((hc - 48) as u64);
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else if hc >= 97 && hc <= 102 {
+                    val = (val << 4) + ((hc - 87) as u64);
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else if hc >= 65 && hc <= 70 {
+                    val = (val << 4) + ((hc - 55) as u64);
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else if hc == 95 {
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else {
+                    hloop = 0;
+                }
+            }
+            if val > 2147483647 { num_overflow = 1; }
+        } else if c == 48 && lex.pos < lex.len && (lex.src[lex.pos] == 98 || lex.src[lex.pos] == 66) && (lex.pos + 1) < lex.len && (lex.src[lex.pos + 1] == 48 || lex.src[lex.pos + 1] == 49) {
+            lex.pos = lex.pos + 1;
+            lex.col = lex.col + 1;
+            var bloop: u32 = 1;
+            while bloop == 1 && lex.pos < lex.len {
+                let bc: u8 = lex.src[lex.pos];
+                if bc == 48 || bc == 49 {
+                    val = (val << 1) + ((bc - 48) as u64);
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else if bc == 95 {
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else {
+                    bloop = 0;
+                }
+            }
+            if val > 2147483647 { num_overflow = 1; }
+        } else if c == 48 && lex.pos < lex.len && (lex.src[lex.pos] == 111 || lex.src[lex.pos] == 79) {
+            lex.pos = lex.pos + 1;
+            lex.col = lex.col + 1;
+            var oloop: u32 = 1;
+            while oloop == 1 && lex.pos < lex.len {
+                let oc: u8 = lex.src[lex.pos];
+                if oc >= 48 && oc <= 55 {
+                    val = (val << 3) + ((oc - 48) as u64);
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else if oc == 95 {
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else {
+                    oloop = 0;
+                }
+            }
+            if val > 2147483647 { num_overflow = 1; }
+        } else {
+            val = (c - 48) as u64;
+            var dloop: u32 = 1;
+            while dloop == 1 && lex.pos < lex.len {
+                let d: u8 = lex.src[lex.pos];
+                if is_digit(d) == 1 {
+                    val = val * 10 + ((d - 48) as u64);
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else if d == 95 {
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                } else {
+                    dloop = 0;
+                }
+            }
+            if val > 2147483647 { num_overflow = 1; }
+
+            if lex.pos < lex.len && lex.src[lex.pos] == 46 {
+                var is_range: u32 = 0;
+                if (lex.pos + 1) < lex.len && lex.src[lex.pos + 1] == 46 {
+                    is_range = 1;
+                }
+                var has_digit_after: u32 = 0;
+                if (lex.pos + 1) < lex.len && is_digit(lex.src[lex.pos + 1]) == 1 {
+                    has_digit_after = 1;
+                }
+                if is_range == 0 && has_digit_after == 1 {
+                    lex.pos = lex.pos + 1;
+                    lex.col = lex.col + 1;
+                    tok.is_float = 1;
+                    var frac_div: u64 = 1;
+                    var frac_num: u64 = 0;
+                    while lex.pos < lex.len && is_digit(lex.src[lex.pos]) == 1 {
+                        frac_num = (frac_num * 10) + ((lex.src[lex.pos] - 48) as u64);
+                        frac_div = frac_div * 10;
+                        lex.pos = lex.pos + 1;
+                        lex.col = lex.col + 1;
+                    }
+                    tok.float_bits = encode_f64_bits(val, frac_num, frac_div);
+                    num_overflow = 0;
+                }
+            }
+        }
+
+        if lex.pos < lex.len && is_alpha(lex.src[lex.pos]) == 1 {
+            let suff_start: u64 = lex.pos;
+            while lex.pos < lex.len && is_alnum(lex.src[lex.pos]) == 1 {
+                lex.pos = lex.pos + 1;
+                lex.col = lex.col + 1;
+            }
+            let suff_len: u32 = (lex.pos - suff_start) as u32;
+            let suff_hash: u64 = hash_identifier(lex.src + suff_start, suff_len);
+            let s_kind: u32 = classify_num_suffix(suff_hash);
+            if s_kind > 0 {
+                tok.num_suffix = s_kind;
+                num_overflow = 0;
+                if s_kind == 11 || s_kind == 12 {
+                    tok.is_float = 1;
+                    if tok.float_bits == 0 {
+                        tok.float_bits = encode_f64_bits(val, 0, 1);
+                    }
+                }
+            } else {
+                val = eval_lex_unit_suffix(val, lex.src + suff_start, suff_len as u64);
+            }
+        }
+
+        tok.had_overflow = num_overflow;
+        tok.kind = 2;
+        tok.start = start_ptr;
+        tok.len = lex.pos - start_pos;
+        tok.int_val = val;
+        tok.hash = 0;
+        return;
+    }
+
+    if c == 34 {
+        while lex.pos < lex.len && lex.src[lex.pos] != 34 {
+            if lex.src[lex.pos] == 92 && (lex.pos + 1) < lex.len {
+                lex.pos = lex.pos + 1;
+                lex.col = lex.col + 1;
+            }
+            lex.pos = lex.pos + 1;
+            lex.col = lex.col + 1;
+        }
+        if lex.pos < lex.len {
+            lex.pos = lex.pos + 1;
+            lex.col = lex.col + 1;
+        }
+        tok.kind = 3;
+        tok.start = start_ptr;
+        tok.len = lex.pos - start_pos;
+        tok.int_val = 0;
+        tok.hash = 0;
+        return;
+    }
+
+    if c == 39 {
+        var ch_val: u64 = 0;
+        if lex.pos < lex.len && lex.src[lex.pos] != 39 {
+            let fc: u8 = lex.src[lex.pos];
+            if fc == 92 && (lex.pos + 1) < lex.len {
+                lex.pos = lex.pos + 1;
+                let ec: u8 = lex.src[lex.pos];
+                ch_val = ec as u64;
+                if ec == 110 { ch_val = 10; }
+                if ec == 116 { ch_val = 9; }
+                if ec == 114 { ch_val = 13; }
+                if ec == 48  { ch_val = 0; }
+                lex.pos = lex.pos + 1;
+            } else {
+                ch_val = fc as u64;
+                lex.pos = lex.pos + 1;
+            }
+        }
+        while lex.pos < lex.len && lex.src[lex.pos] != 39 {
+            lex.pos = lex.pos + 1;
+            lex.col = lex.col + 1;
+        }
+        if lex.pos < lex.len {
+            lex.pos = lex.pos + 1;
+            lex.col = lex.col + 1;
+        }
+        tok.kind = 2;
+        tok.start = start_ptr;
+        tok.len = lex.pos - start_pos;
+        tok.int_val = ch_val;
+        tok.hash = 0;
+        return;
+    }
+
+    if c == 45 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 45 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 127;
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 62 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 74;
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 93;
+        } else {
+            tok.kind = 31;
+        }
+    } else if c == 61 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 41;
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 62 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 76;
+        } else {
+            tok.kind = 40;
+        }
+    } else if c == 33 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 42;
+        } else {
+            tok.kind = 53;
+        }
+    } else if c == 60 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 60 {
+            lex.pos = lex.pos + 1;
+            if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+                lex.pos = lex.pos + 1;
+                tok.kind = 121;
+            } else {
+                tok.kind = 47;
+            }
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 45;
+        } else {
+            tok.kind = 43;
+        }
+    } else if c == 62 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 62 {
+            lex.pos = lex.pos + 1;
+            if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+                lex.pos = lex.pos + 1;
+                tok.kind = 122;
+            } else {
+                tok.kind = 48;
+            }
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 46;
+        } else {
+            tok.kind = 44;
+        }
+    } else if c == 43 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 43 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 126;
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 92;
+        } else {
+            tok.kind = 30;
+        }
+    } else if c == 42 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 94;
+        } else {
+            tok.kind = 32;
+        }
+    } else if c == 47 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 95;
+        } else {
+            tok.kind = 33;
+        }
+    } else if c == 37 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 120;
+        } else {
+            tok.kind = 34;
+        }
+    } else if c == 38 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 38 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 49;
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 97;
+        } else {
+            tok.kind = 50;
+        }
+    } else if c == 124 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 124 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 57;
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 62 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 75;
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 96;
+        } else {
+            tok.kind = 51;
+        }
+    } else if c == 64 { tok.kind = 56; }
+    else if c == 94 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 98;
+        } else {
+            tok.kind = 52;
+        }
+    } else if c == 126 { tok.kind = 54; }
+    else if c == 40 { tok.kind = 60; }
+    else if c == 41 { tok.kind = 61; }
+    else if c == 123 { tok.kind = 62; }
+    else if c == 125 { tok.kind = 63; }
+    else if c == 91 { tok.kind = 64; }
+    else if c == 93 { tok.kind = 65; }
+    else if c == 58 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 58 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 78;
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 61 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 77;
+        } else {
+            tok.kind = 70;
+        }
+    } else if c == 59 { tok.kind = 71; }
+    else if c == 44 { tok.kind = 72; }
+    else if c == 46 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 46 {
+            if (lex.pos + 1) < lex.len && lex.src[lex.pos + 1] == 46 {
+                lex.pos = lex.pos + 2;
+                tok.kind = 113;
+            } else if (lex.pos + 1) < lex.len && lex.src[lex.pos + 1] == 61 {
+                lex.pos = lex.pos + 2;
+                tok.kind = 146;
+            } else {
+                lex.pos = lex.pos + 1;
+                tok.kind = 79;
+            }
+        } else {
+            tok.kind = 73;
+        }
+    } else if c == 35 { tok.kind = 55; }
+    else if c == 63 {
+        if lex.pos < lex.len && lex.src[lex.pos] == 63 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 111;
+        } else if lex.pos < lex.len && lex.src[lex.pos] == 46 {
+            lex.pos = lex.pos + 1;
+            tok.kind = 112;
+        } else {
+            tok.kind = 99;
+        }
+    } else {
+        tok.kind = 255;
+    }
+
+    tok.start = start_ptr;
+    tok.len = lex.pos - start_pos;
+}

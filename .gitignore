@@ -1,0 +1,23 @@
+# Rux Build and Intermediate Artifacts
+build_stages/*
+!build_stages/.gitkeep
+dist/
+release/
+*.tmp
+*.o
+*.out
+*.log
+
+# Editor and OS Artifacts
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Local installation and test binaries
+/tmp/
+hello
+hello_c

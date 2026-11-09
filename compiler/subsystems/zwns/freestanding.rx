@@ -1,0 +1,60 @@
+fn zwns_emit_freestanding_elf174(
+    dst: *mut byte,
+    payload_msg: str,
+    exit_code: int
+) -> uint {
+    dst[0] = 0x7F as byte; dst[1] = 0x45 as byte; dst[2] = 0x4C as byte; dst[3] = 0x46 as byte;
+    dst[4] = 2 as byte;
+    dst[5] = 1 as byte;
+    dst[6] = 1 as byte;
+    dst[7] = 0 as byte;
+    var i: uint = 8;
+    while i < 16 { dst[i] = 0 as byte; i = i + 1; }
+
+    dst[16] = 2 as byte;   dst[17] = 0 as byte;
+    dst[18] = 0x3E as byte; dst[19] = 0 as byte;
+    dst[20] = 1 as byte;   dst[21] = 0 as byte; dst[22] = 0 as byte; dst[23] = 0 as byte;
+
+    let entry: uint = 0x400078;
+    dst[24] = (entry & 0xFF) as byte;
+    dst[25] = ((entry >> 8) & 0xFF) as byte;
+    dst[26] = ((entry >> 16) & 0xFF) as byte;
+    dst[27] = ((entry >> 24) & 0xFF) as byte;
+    dst[28] = 0 as byte; dst[29] = 0 as byte; dst[30] = 0 as byte; dst[31] = 0 as byte;
+
+    dst[32] = 64 as byte;
+    i = 33; while i < 40 { dst[i] = 0 as byte; i = i + 1; }
+
+    i = 40; while i < 48 { dst[i] = 0 as byte; i = i + 1; }
+
+    dst[48] = 0 as byte; dst[49] = 0 as byte; dst[50] = 0 as byte; dst[51] = 0 as byte;
+    dst[52] = 64 as byte; dst[53] = 0 as byte;
+    dst[54] = 56 as byte; dst[55] = 0 as byte;
+    dst[56] = 1 as byte;  dst[57] = 0 as byte;
+    dst[58] = 0 as byte; dst[59] = 0 as byte;
+    dst[60] = 0 as byte; dst[61] = 0 as byte;
+    dst[62] = 0 as byte; dst[63] = 0 as byte;
+
+    dst[64] = 1 as byte; i = 65; while i < 68 { dst[i] = 0 as byte; i = i + 1; }
+    dst[68] = 7 as byte; i = 69; while i < 72 { dst[i] = 0 as byte; i = i + 1; }
+    i = 72; while i < 80 { dst[i] = 0 as byte; i = i + 1; }
+
+    let vaddr: uint = 0x400000;
+    dst[80] = (vaddr & 0xFF) as byte;
+    dst[81] = ((vaddr >> 8) & 0xFF) as byte;
+    dst[82] = ((vaddr >> 16) & 0xFF) as byte;
+    dst[83] = ((vaddr >> 24) & 0xFF) as byte;
+    i = 84; while i < 96 { dst[i] = dst[i - 8]; i = i + 1; }
+
+    let total_sz: uint = 174;
+    dst[96] = (total_sz & 0xFF) as byte;
+    dst[97] = 0 as byte; i = 98; while i < 112 { dst[i] = 0 as byte; i = i + 1; }
+
+    dst[112] = 0 as byte; dst[113] = 0x10 as byte;
+    i = 114; while i < 120 { dst[i] = 0 as byte; i = i + 1; }
+
+    dst[120] = 0xB8 as byte; dst[121] = 1 as byte; dst[122] = 0 as byte; dst[123] = 0 as byte; dst[124] = 0 as byte;
+    dst[125] = 0xBF as byte; dst[126] = 1 as byte; dst[127] = 0 as byte; dst[128] = 0 as byte; dst[129] = 0 as byte;
+
+    return 174;
+}

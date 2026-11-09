@@ -1,0 +1,41 @@
+include "lib/core/types.rx";
+include "lib/core/slice.rx";
+
+fn path_has_extension(path: str, ext: str) -> bool {
+    let p_len: uint = @str.len(path);
+    let e_len: uint = @str.len(ext);
+    if p_len < e_len {
+        return false;
+    }
+
+    let p_bytes: *const byte = path as *const byte;
+    let e_bytes: *const byte = ext as *const byte;
+    let offset: uint = p_len - e_len;
+
+    var i: uint = 0;
+    while i < e_len {
+        if p_bytes[offset + i] != e_bytes[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn path_extension(path: str) -> str {
+    let p_len: uint = @str.len(path);
+    let p_bytes: *const byte = path as *const byte;
+
+    var i: uint = p_len;
+    while i > 0 {
+        i = i - 1;
+        if p_bytes[i] == 46 as byte {
+            let ext_ptr: *const byte = (&p_bytes[i]) as *const byte;
+            return ext_ptr as str;
+        }
+        if p_bytes[i] == 47 as byte {
+            break;
+        }
+    }
+    return "";
+}

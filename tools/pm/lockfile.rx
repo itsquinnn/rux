@@ -1,0 +1,65 @@
+include "lib/core/types.rx";
+include "tools/pm/semver.rx";
+
+struct LockedPackage {
+    name_hash: uint,
+    version: SemVer,
+    blake3_digest: uint,
+}
+
+struct Lockfile {
+    format_version: uint,
+    packages: [LockedPackage; 64],
+    count: uint,
+}
+
+fn lockfile_hash_name(name: *const byte) -> uint {
+    var h: uint = 14695981039346656037;
+    var i: uint = 0;
+    while name[i] != 0 {
+        h = (h ^ (name[i] as uint)) * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn lockfile_init(lf: *mut Lockfile) {
+    lf.format_version = 1;
+    lf.count = 0;
+}
+
+fn lockfile_record(lf: *mut Lockfile, name: *const byte, ver: *const SemVer, digest: uint) -> bool {
+    if lf.count >= 64 { return false; }
+    let nh: uint = lockfile_hash_name(name);
+    var i: uint = 0;
+    while i < lf.count {
+        if lf.packages[i].name_hash == nh {
+            lf.packages[i].version.major = ver.major;
+            lf.packages[i].version.minor = ver.minor;
+            lf.packages[i].version.patch = ver.patch;
+            lf.packages[i].blake3_digest = digest;
+            return true;
+        }
+        i = i + 1;
+    }
+    let idx: uint = lf.count;
+    lf.packages[idx].name_hash = nh;
+    lf.packages[idx].version.major = ver.major;
+    lf.packages[idx].version.minor = ver.minor;
+    lf.packages[idx].version.patch = ver.patch;
+    lf.packages[idx].blake3_digest = digest;
+    lf.count = idx + 1;
+    return true;
+}
+
+fn lockfile_verify_integrity(lf: *const Lockfile, name: *const byte, actual_digest: uint) -> bool {
+    let nh: uint = lockfile_hash_name(name);
+    var i: uint = 0;
+    while i < lf.count {
+        if lf.packages[i].name_hash == nh {
+            return lf.packages[i].blake3_digest == actual_digest;
+        }
+        i = i + 1;
+    }
+    return false;
+}

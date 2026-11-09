@@ -1,0 +1,25 @@
+struct ZcHpvrPatcher {
+    active_code_ptr: *mut byte,
+    pending_code_ptr: *mut byte,
+    generation: uint,
+    swizzle_count: uint,
+}
+
+fn hsns_zc_hpvr_init(patcher: *mut ZcHpvrPatcher, initial_code: *mut byte) {
+    patcher.active_code_ptr = initial_code;
+    patcher.pending_code_ptr = 0 as *mut byte;
+    patcher.generation = 1;
+    patcher.swizzle_count = 0;
+}
+
+fn hsns_zc_hpvr_atomic_swizzle(
+    patcher: *mut ZcHpvrPatcher,
+    new_version: *mut byte
+) -> uint {
+    patcher.pending_code_ptr = new_version;
+    let old: *mut byte = @atomic.swap_ptr(&mut patcher.active_code_ptr, new_version);
+    patcher.generation = patcher.generation + 1;
+    patcher.swizzle_count = patcher.swizzle_count + 1;
+    @silicon.mfence();
+    return patcher.generation;
+}

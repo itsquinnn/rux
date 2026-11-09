@@ -1,0 +1,56 @@
+include "lib/core/future.rx";
+
+struct TaskHandle {
+    task_id: u64,
+    future: FutureTask,
+    is_joined: u32,
+    result: i64,
+}
+
+struct TaskGroup {
+    handles: [TaskHandle; 16],
+    task_count: u32,
+    completed_count: u32,
+}
+
+fn taskgroup_init(tg: *mut TaskGroup) {
+    tg.task_count = 0;
+    tg.completed_count = 0;
+}
+
+fn taskgroup_spawn(tg: *mut TaskGroup, poll_fn: *mut u8, state_data: *mut u8) -> *mut TaskHandle {
+    if tg.task_count >= 16 {
+        println("[PANIC: TASKGROUP] TaskGroup capacity exceeded!");
+        sys_exit(1);
+    }
+    let h: *mut TaskHandle = (&mut tg.handles[tg.task_count as u64]) as *mut TaskHandle;
+    h.task_id = (tg.task_count as u64) + 1;
+    future_init(&mut h.future, poll_fn, state_data);
+    h.is_joined = 0;
+    h.result = 0;
+    tg.task_count = tg.task_count + 1;
+    return h;
+}
+
+fn task_handle_join(h: *mut TaskHandle) -> i64 {
+    if h.is_joined == 1 {
+        return h.result;
+    }
+    let res: i64 = future_block_on(&mut h.future);
+    h.result = res;
+    h.is_joined = 1;
+    return res;
+}
+
+fn taskgroup_join_all(tg: *mut TaskGroup) -> i64 {
+    var sum: i64 = 0;
+    var i: u32 = 0;
+    while i < tg.task_count {
+        let h: *mut TaskHandle = (&mut tg.handles[i as u64]) as *mut TaskHandle;
+        sum = sum + task_handle_join(h);
+        i = i + 1;
+    }
+    tg.completed_count = tg.task_count;
+    return sum;
+}
+

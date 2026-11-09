@@ -1,0 +1,30 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/subsystems/rse/plate.rx";
+include "compiler/subsystems/rse/envelope.rx";
+
+fn main() -> int {
+    println("=== RUX COMPILER SUITE: RSE (SPACETIME ENVELOPE & MATRIX) ===");
+
+    var raw_buf: [byte; 1024];
+    var plate: RseSpacetimePlate;
+    rse_plate_init(&mut plate, &mut raw_buf[0]);
+
+    if plate.sector_capacities[0] != 1048576 || plate.sector_capacities[1] != 4194304 {
+        println("[FAIL] RSE: Sector capacity initialization failed");
+        return 1;
+    }
+    println("[PASS] RSE: 6-sector spacetime plate matrix partitioning verified");
+
+    var env: UpbpEnvelopeHeader;
+    rse_upbp_envelope_init(&mut env, 65536, 120);
+
+    if !rse_upbp_envelope_verify(&env) || env.magic != UPBP_MAGIC {
+        println("[FAIL] RSE: UPBP envelope magic verification failed");
+        return 2;
+    }
+    println("[PASS] RSE: Universal UPBP binary container envelope verified");
+
+    println("ALL RSE SPACETIME MATRIX TESTS PASSED (100% OK)");
+    return 0;
+}

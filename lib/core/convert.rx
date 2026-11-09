@@ -1,0 +1,38 @@
+include "lib/core/types.rx";
+include "lib/core/result.rx";
+
+struct FromConversion;
+struct IntoConversion;
+struct TryFromConversion;
+struct TryIntoConversion;
+struct AsRefView;
+struct BorrowView;
+
+struct DerefBox<T> {
+    inner: *mut T,
+}
+
+fn deref_box_new<T>(val_ptr: *mut T) -> DerefBox<T> {
+    return DerefBox<T> { inner: val_ptr };
+}
+
+fn deref_box_get<T>(b: *const DerefBox<T>) -> *const T {
+    return b.inner as *const T;
+}
+
+fn deref_box_get_mut<T>(b: *mut DerefBox<T>) -> *mut T {
+    return b.inner;
+}
+
+struct SealedMarker {
+    token: u64,
+}
+
+fn sealed_marker_new() -> SealedMarker {
+    return SealedMarker { token: 1234567890123456789 };
+}
+
+fn sealed_verify(marker: *const SealedMarker) -> bool {
+    return marker.token == 1234567890123456789;
+}
+

@@ -1,0 +1,36 @@
+include "lib/core/types.rx";
+
+const ARM64_SCTLR_MMU_ENABLE: u64 = 1;
+const ARM64_SCTLR_DCACHE: u64     = 4;
+const ARM64_SCTLR_ICACHE: u64     = 4096;
+
+const RISCV_SATP_MODE_SV39: u64 = 0x8000000000000000;
+const RISCV_SATP_MODE_SV48: u64 = 0x9000000000000000;
+
+struct Arm64MmuConfig {
+    ttbr0_el1: u64,
+    ttbr1_el1: u64,
+    mair_el1: u64,
+    tcr_el1: u64,
+    sctlr_el1: u64,
+    vbar_el1: u64,
+}
+
+fn arm64_mmu_default_4k(cfg: *mut Arm64MmuConfig, user_root: u64, kernel_root: u64, vector_base: u64) {
+    cfg.ttbr0_el1 = user_root;
+    cfg.ttbr1_el1 = kernel_root;
+    cfg.mair_el1 = 255;
+    cfg.tcr_el1 = 16 | (16 << 16);
+    cfg.sctlr_el1 = ARM64_SCTLR_MMU_ENABLE | ARM64_SCTLR_DCACHE | ARM64_SCTLR_ICACHE;
+    cfg.vbar_el1 = vector_base & (0 - 2048);
+}
+
+fn riscv_encode_satp_sv39(root_pt_paddr: u64, asid: u16) -> u64 {
+    let ppn: u64 = (root_pt_paddr >> 12) & 17592186044415;
+    return RISCV_SATP_MODE_SV39 | ((asid as u64) << 44) | ppn;
+}
+
+fn riscv_encode_satp_sv48(root_pt_paddr: u64, asid: u16) -> u64 {
+    let ppn: u64 = (root_pt_paddr >> 12) & 17592186044415;
+    return RISCV_SATP_MODE_SV48 | ((asid as u64) << 44) | ppn;
+}

@@ -1,0 +1,52 @@
+const MACHO_MAGIC_64: uint            = 0xFEEDFACF;
+const MACHO_CIGAM_64: uint            = 0xCFFAEDFE;
+
+const MACHO_CPU_TYPE_X86_64: uint     = 0x01000007;
+const MACHO_CPU_TYPE_ARM64: uint      = 0x0100000C;
+const MACHO_CPU_SUBTYPE_X86_64: uint  = 0x00000003;
+const MACHO_CPU_SUBTYPE_ARM64: uint   = 0x00000000;
+
+const MACHO_FILETYPE_EXECUTE: uint    = 2;
+
+const LC_SEGMENT_64: uint             = 0x00000019;
+const LC_MAIN: uint                   = 0x80000028;
+const LC_LOAD_DYLINKER: uint          = 0x0000000E;
+
+const VM_PROT_NONE: uint              = 0x0;
+const VM_PROT_READ: uint              = 0x1;
+const VM_PROT_WRITE: uint             = 0x2;
+const VM_PROT_EXECUTE: uint           = 0x4;
+const VM_PROT_RX: uint                = 0x5;
+const VM_PROT_RWX: uint               = 0x7;
+
+struct MachHeader64 {
+    magic: uint,
+    cputype: uint,
+    cpusubtype: uint,
+    filetype: uint,
+    ncmds: uint,
+    sizeofcmds: uint,
+    flags: uint,
+    reserved: uint,
+}
+
+struct MachSegmentCommand64 {
+    cmd: uint,
+    cmdsize: uint,
+    segname: [byte; 16],
+    vmaddr: uint,
+    vmsize: uint,
+    fileoff: uint,
+    filesize: uint,
+    maxprot: uint,
+    initprot: uint,
+    nsects: uint,
+    flags: uint,
+}
+
+struct MachEntryPointCommand {
+    cmd: uint,
+    cmdsize: uint,
+    entryoff: uint,
+    stacksize: uint,
+}

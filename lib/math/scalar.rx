@@ -1,0 +1,111 @@
+include "lib/core/types.rx";
+
+fn abs_int(x: int) -> int {
+    if x < 0 { return -x; }
+    return x;
+}
+
+fn min_int(a: int, b: int) -> int {
+    if a < b { return a; }
+    return b;
+}
+
+fn max_int(a: int, b: int) -> int {
+    if a > b { return a; }
+    return b;
+}
+
+fn clamp_int(val: int, low: int, high: int) -> int {
+    if val < low { return low; }
+    if val > high { return high; }
+    return val;
+}
+
+fn pow_int(base: int, exp: uint) -> int {
+    var res: int = 1;
+    var b: int = base;
+    var e: uint = exp;
+    while e > 0 {
+        if (e & 1) == 1 {
+            res = res * b;
+        }
+        b = b * b;
+        e = e >> 1;
+    }
+    return res;
+}
+
+fn div_euclid_i64(a: int, b: int) -> int {
+    let q: int = a / b;
+    let r: int = a % b;
+    if r < 0 {
+        if b > 0 {
+            return q - 1;
+        } else {
+            return q + 1;
+        }
+    }
+    return q;
+}
+
+fn rem_euclid_i64(a: int, b: int) -> int {
+    let r: int = a % b;
+    if r < 0 {
+        if b < 0 {
+            return r - b;
+        } else {
+            return r + b;
+        }
+    }
+    return r;
+}
+
+fn checked_shl_i64(val: int, count: uint, out: *mut int) -> bool {
+    if count >= 64 {
+        out[0] = 0;
+        return false;
+    }
+    out[0] = val << (count as int);
+    return true;
+}
+
+fn checked_shr_i64(val: int, count: uint, out: *mut int) -> bool {
+    if count >= 64 {
+        if val < 0 {
+            out[0] = -1;
+        } else {
+            out[0] = 0;
+        }
+        return false;
+    }
+    out[0] = val >> (count as int);
+    return true;
+}
+
+fn checked_shl_u64(val: uint, count: uint, out: *mut uint) -> bool {
+    if count >= 64 {
+        out[0] = 0;
+        return false;
+    }
+    out[0] = val << (count as int);
+    return true;
+}
+
+fn checked_shr_u64(val: uint, count: uint, out: *mut uint) -> bool {
+    if count >= 64 {
+        out[0] = 0;
+        return false;
+    }
+    out[0] = val >> (count as int);
+    return true;
+}
+
+fn wrapping_shl_u64(val: uint, count: uint) -> uint {
+    let masked_count: uint = count & 63;
+    return val << (masked_count as int);
+}
+
+fn wrapping_shr_u64(val: uint, count: uint) -> uint {
+    let masked_count: uint = count & 63;
+    return val >> (masked_count as int);
+}

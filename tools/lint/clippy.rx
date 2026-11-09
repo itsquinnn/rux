@@ -1,0 +1,52 @@
+include "lib/core/types.rx";
+
+struct ClippyReport {
+    unsafe_blocks: uint,
+    raw_ptr_casts: uint,
+    infinite_loops: uint,
+    div_by_zero: uint,
+    empty_blocks: uint,
+    todo_markers: uint,
+    total_warnings: uint,
+}
+
+fn clippy_analyze_source(src: *const byte, len: uint) -> ClippyReport {
+    var rep: ClippyReport;
+    rep.unsafe_blocks = 0;
+    rep.raw_ptr_casts = 0;
+    rep.infinite_loops = 0;
+    rep.div_by_zero = 0;
+    rep.empty_blocks = 0;
+    rep.todo_markers = 0;
+    rep.total_warnings = 0;
+
+    var i: uint = 0;
+    while i < len {
+        if (i + 6) <= len && src[i] == 117 && src[i+1] == 110 && src[i+2] == 115 && src[i+3] == 97 && src[i+4] == 102 && src[i+5] == 101 {
+            rep.unsafe_blocks = rep.unsafe_blocks + 1;
+        }
+        if (i + 7) <= len && src[i] == 97 && src[i+1] == 115 && src[i+2] == 32 && src[i+3] == 42 && src[i+4] == 109 && src[i+5] == 117 && src[i+6] == 116 {
+            rep.raw_ptr_casts = rep.raw_ptr_casts + 1;
+        }
+        if (i + 10) <= len && src[i] == 119 && src[i+1] == 104 && src[i+2] == 105 && src[i+3] == 108 && src[i+4] == 101 && src[i+5] == 32 &&
+           src[i+6] == 116 && src[i+7] == 114 && src[i+8] == 117 && src[i+9] == 101 {
+            rep.infinite_loops = rep.infinite_loops + 1;
+        }
+        if (i + 3) <= len && (src[i] == 47 || src[i] == 37) && src[i+1] == 32 && src[i+2] == 48 {
+            var next_is_digit: bool = false;
+            if (i + 3) < len && src[i+3] >= 48 && src[i+3] <= 57 { next_is_digit = true; }
+            if !next_is_digit {
+                rep.div_by_zero = rep.div_by_zero + 1;
+            }
+        }
+        if (i + 2) <= len && src[i] == 123 && src[i+1] == 125 {
+            rep.empty_blocks = rep.empty_blocks + 1;
+        }
+        if (i + 4) <= len && src[i] == 84 && src[i+1] == 79 && src[i+2] == 68 && src[i+3] == 79 {
+            rep.todo_markers = rep.todo_markers + 1;
+        }
+        i = i + 1;
+    }
+    rep.total_warnings = rep.unsafe_blocks + rep.raw_ptr_casts + rep.infinite_loops + rep.div_by_zero + rep.empty_blocks + rep.todo_markers;
+    return rep;
+}

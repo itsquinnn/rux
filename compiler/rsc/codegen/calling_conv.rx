@@ -1,0 +1,91 @@
+struct CallingConventionBridge {
+    from_conv: u32,
+    to_conv: u32,
+    thunk_size: u32,
+    thunk_bytes: [u8; 64],
+}
+
+fn arll_negotiate_calling_convention(bridge: *mut CallingConventionBridge, from_conv: u32, to_conv: u32) -> u32 {
+    bridge.from_conv = from_conv;
+    bridge.to_conv = to_conv;
+
+    if from_conv == 1 && to_conv == 2 {
+        let b: *mut u8 = &mut bridge.thunk_bytes[0];
+        b[0] = 73;  b[1] = 137; b[2] = 201;
+        b[3] = 73;  b[4] = 137; b[5] = 208;
+        b[6] = 72;  b[7] = 137; b[8] = 242;
+        b[9] = 72;  b[10] = 137; b[11] = 249;
+        b[12] = 72; b[13] = 131; b[14] = 236; b[15] = 40;
+        b[16] = 255; b[17] = 208;
+        b[18] = 72; b[19] = 131; b[20] = 196; b[21] = 40;
+        b[22] = 195;
+        bridge.thunk_size = 23;
+        return 23;
+    }
+
+    if from_conv == 2 && to_conv == 1 {
+        let b: *mut u8 = &mut bridge.thunk_bytes[0];
+        b[0] = 72; b[1] = 137; b[2] = 207;
+        b[3] = 72; b[4] = 137; b[5] = 214;
+        b[6] = 76; b[7] = 137; b[8] = 194;
+        b[9] = 76; b[10] = 137; b[11] = 201;
+        b[12] = 255; b[13] = 208;
+        b[14] = 195;
+        bridge.thunk_size = 15;
+        return 15;
+    }
+
+    bridge.thunk_size = 0;
+    return 0;
+}
+
+struct SchemaEvolutionStencil {
+    old_size: u32,
+    new_size: u32,
+    is_signed: u32,
+    stencil_size: u32,
+    stencil_bytes: [u8; 32],
+}
+
+fn arll_emit_widening_stencil(stencil: *mut SchemaEvolutionStencil, old_size: u32, new_size: u32, is_signed: u32) -> u32 {
+    stencil.old_size = old_size;
+    stencil.new_size = new_size;
+    stencil.is_signed = is_signed;
+
+    let b: *mut u8 = &mut stencil.stencil_bytes[0];
+    if old_size == 4 && new_size == 8 {
+        if is_signed == 0 {
+            b[0] = 139; b[1] = 7;
+            b[2] = 195;
+            stencil.stencil_size = 3;
+            return 3;
+        }
+        if is_signed != 0 {
+            b[0] = 72; b[1] = 99; b[2] = 7;
+            b[3] = 195;
+            stencil.stencil_size = 4;
+            return 4;
+        }
+    }
+
+    if old_size == 1 && new_size == 8 {
+        if is_signed == 0 {
+            b[0] = 72; b[1] = 15; b[2] = 182; b[3] = 7;
+            b[4] = 195;
+            stencil.stencil_size = 5;
+            return 5;
+        }
+        if is_signed != 0 {
+            b[0] = 72; b[1] = 15; b[2] = 190; b[3] = 7;
+            b[4] = 195;
+            stencil.stencil_size = 5;
+            return 5;
+        }
+    }
+
+    b[0] = 72; b[1] = 139; b[2] = 7;
+    b[3] = 195;
+    stencil.stencil_size = 4;
+    return 4;
+}
+

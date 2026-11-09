@@ -1,0 +1,363 @@
+struct VarSymbol {
+    name_hash: u64,
+    decl_kind: u32,
+    init_state: u32,
+    scope_depth: u32,
+    is_ptr: u32,
+    line: u32,
+}
+
+struct VarCheckContext {
+    vars: [VarSymbol; 256],
+    var_count: u32,
+    scope_depth: u32,
+    shadow_mode: u32,
+    error_count: u32,
+    warn_count: u32,
+    parser: *mut Parser,
+}
+
+fn var_check_init(ctx: *mut VarCheckContext, p: *mut Parser, shadow_mode: u32) {
+    ctx.var_count = 0;
+    ctx.scope_depth = 0;
+    ctx.shadow_mode = shadow_mode;
+    ctx.error_count = 0;
+    ctx.warn_count = 0;
+    ctx.parser = p;
+}
+
+fn var_check_enter_scope(ctx: *mut VarCheckContext) {
+    ctx.scope_depth = ctx.scope_depth + 1;
+}
+
+fn var_check_exit_scope(ctx: *mut VarCheckContext) {
+    var i: u32 = ctx.var_count;
+    while i > 0 {
+        i = i - 1;
+        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        if v.scope_depth == ctx.scope_depth {
+            v.name_hash = 0;
+        }
+    }
+    if ctx.scope_depth > 0 {
+        ctx.scope_depth = ctx.scope_depth - 1;
+    }
+}
+
+fn var_check_find_symbol(ctx: *mut VarCheckContext, name_hash: u64) -> *mut VarSymbol {
+    var i: u32 = ctx.var_count;
+    while i > 0 {
+        i = i - 1;
+        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        if v.name_hash == name_hash {
+            return v;
+        }
+    }
+    return 0 as *mut VarSymbol;
+}
+
+fn var_check_find_in_current_scope(ctx: *mut VarCheckContext, name_hash: u64) -> *mut VarSymbol {
+    var i: u32 = ctx.var_count;
+    while i > 0 {
+        i = i - 1;
+        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        if v.name_hash == name_hash && v.scope_depth == ctx.scope_depth {
+            return v;
+        }
+    }
+    return 0 as *mut VarSymbol;
+}
+
+fn var_check_register(ctx: *mut VarCheckContext, name_hash: u64, decl_kind: u32, init_state: u32, is_ptr: u32, line: u32) {
+    if name_hash == 0 { return; }
+    let existing_same_scope: *mut VarSymbol = var_check_find_in_current_scope(ctx, name_hash);
+    if existing_same_scope != (0 as *mut VarSymbol) {
+        println("[COMPILE ERROR] Duplicate variable declaration in the same scope");
+        ctx.error_count = ctx.error_count + 1;
+        return;
+    }
+    let outer_sym: *mut VarSymbol = var_check_find_symbol(ctx, name_hash);
+    if outer_sym != (0 as *mut VarSymbol) {
+        if ctx.shadow_mode == 2 {
+            println("[COMPILE ERROR] Variable shadows outer variable in enclosing scope");
+            ctx.error_count = ctx.error_count + 1;
+            return;
+        } else if ctx.shadow_mode == 1 {
+            println("[COMPILE WARNING] Variable shadows outer variable in enclosing scope");
+            ctx.warn_count = ctx.warn_count + 1;
+        }
+    }
+    if ctx.var_count >= 256 { return; }
+    let v: *mut VarSymbol = (&mut ctx.vars[ctx.var_count as u64]) as *mut VarSymbol;
+    v.name_hash = name_hash;
+    v.decl_kind = decl_kind;
+    v.init_state = init_state;
+    v.scope_depth = ctx.scope_depth;
+    v.is_ptr = is_ptr;
+    v.line = line;
+    ctx.var_count = ctx.var_count + 1;
+}
+
+fn var_check_walk_expr(ctx: *mut VarCheckContext, expr: *mut AstNode) {
+    if expr == (0 as *mut AstNode) { return; }
+    if expr.kind == 117 {
+        let sym: *mut VarSymbol = var_check_find_symbol(ctx, expr.hash);
+        if sym != (0 as *mut VarSymbol) {
+            if sym.init_state == 0 {
+                println("[COMPILE ERROR] Use of uninitialized variable");
+                ctx.error_count = ctx.error_count + 1;
+            } else if sym.init_state == 2 {
+                println("[COMPILE ERROR] Variable may be uninitialized at this point");
+                ctx.error_count = ctx.error_count + 1;
+            }
+        }
+    }
+    var_check_walk_expr(ctx, expr.child1);
+    var_check_walk_expr(ctx, expr.child2);
+    var_check_walk_expr(ctx, expr.child3);
+    var_check_walk_expr(ctx, expr.next);
+}
+
+fn var_check_get_root_var(node: *mut AstNode, out_deref: *mut u32) -> *mut AstNode {
+    var cur: *mut AstNode = node;
+    while cur != (0 as *mut AstNode) {
+        if cur.kind == 117 {
+            return cur;
+        }
+        if cur.kind == 112 && cur.val == 50 {
+            *out_deref = 1;
+            cur = cur.child1;
+        } else if cur.kind == 114 || cur.kind == 108 {
+            cur = cur.child1;
+        } else {
+            return 0 as *mut AstNode;
+        }
+    }
+    return 0 as *mut AstNode;
+}
+
+fn var_check_handle_assignment(ctx: *mut VarCheckContext, stmt: *mut AstNode) {
+    let lhs: *mut AstNode = stmt.child1;
+    let rhs: *mut AstNode = stmt.child2;
+    var_check_walk_expr(ctx, rhs);
+    if lhs == (0 as *mut AstNode) { return; }
+    if lhs.kind == 117 {
+        let sym: *mut VarSymbol = var_check_find_symbol(ctx, lhs.hash);
+        if sym != (0 as *mut VarSymbol) {
+            if sym.decl_kind == 0 {
+                if sym.init_state == 1 {
+                    println("[COMPILE ERROR] Cannot reassign immutable variable declared with 'let'");
+                    ctx.error_count = ctx.error_count + 1;
+                } else {
+                    sym.init_state = 1;
+                }
+            } else if sym.decl_kind == 2 {
+                println("[COMPILE ERROR] Cannot assign to compile-time constant declared with 'const'");
+                ctx.error_count = ctx.error_count + 1;
+            } else {
+                sym.init_state = 1;
+            }
+        }
+    } else {
+        var had_deref: u32 = 0;
+        let root_var: *mut AstNode = var_check_get_root_var(lhs, &mut had_deref);
+        if root_var != (0 as *mut AstNode) {
+            let sym: *mut VarSymbol = var_check_find_symbol(ctx, root_var.hash);
+            if sym != (0 as *mut VarSymbol) {
+                if sym.decl_kind == 0 && had_deref == 0 && sym.is_ptr == 0 {
+                    println("[COMPILE ERROR] Cannot mutate field or element of immutable variable declared with 'let'");
+                    ctx.error_count = ctx.error_count + 1;
+                } else if sym.decl_kind == 2 {
+                    println("[COMPILE ERROR] Cannot mutate compile-time constant");
+                    ctx.error_count = ctx.error_count + 1;
+                }
+            }
+        }
+        var_check_walk_expr(ctx, lhs);
+    }
+}
+
+fn var_check_snapshot_states(ctx: *mut VarCheckContext, out_states: *mut u32, max_count: u32) {
+    var i: u32 = 0;
+    while i < ctx.var_count && i < max_count {
+        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        let p_state: *mut u32 = (out_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
+        *p_state = v.init_state;
+        i = i + 1;
+    }
+}
+
+fn var_check_restore_states(ctx: *mut VarCheckContext, in_states: *mut u32, max_count: u32) {
+    var i: u32 = 0;
+    while i < ctx.var_count && i < max_count {
+        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        let p_state: *mut u32 = (in_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
+        v.init_state = *p_state;
+        i = i + 1;
+    }
+}
+
+fn var_check_join_states(ctx: *mut VarCheckContext, orig_states: *mut u32, then_states: *mut u32, else_states: *mut u32, has_else: u32, max_count: u32) {
+    var i: u32 = 0;
+    while i < ctx.var_count && i < max_count {
+        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        let p_orig: *mut u32 = (orig_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
+        let p_then: *mut u32 = (then_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
+        let p_else: *mut u32 = (else_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
+        let o_st: u32 = *p_orig;
+        let t_st: u32 = *p_then;
+        let e_st: u32 = *p_else;
+        if o_st == 1 {
+            v.init_state = 1;
+        } else if has_else == 1 {
+            if t_st == 1 && e_st == 1 {
+                v.init_state = 1;
+            } else if t_st == 1 || e_st == 1 || t_st == 2 || e_st == 2 {
+                v.init_state = 2;
+            } else {
+                v.init_state = 0;
+            }
+        } else {
+            if t_st == 1 || t_st == 2 {
+                v.init_state = 2;
+            } else {
+                v.init_state = o_st;
+            }
+        }
+        i = i + 1;
+    }
+}
+
+fn var_check_walk_stmt(ctx: *mut VarCheckContext, stmt: *mut AstNode) {
+    if stmt == (0 as *mut AstNode) { return; }
+    if stmt.kind == 105 {
+        let decl_kind: u32 = (stmt.child2 as u64) as u32;
+        var init_state: u32 = 0;
+        let is_ptr: u32 = (stmt.id != 0) as u32;
+        if stmt.child1 != (0 as *mut AstNode) {
+            var_check_walk_expr(ctx, stmt.child1);
+            init_state = 1;
+        } else if stmt.id == 10 || stmt.id == 11 || stmt.id == 12 {
+            init_state = 1;
+        }
+        var_check_register(ctx, stmt.hash, decl_kind, init_state, is_ptr, 0);
+    } else if stmt.kind == 106 {
+        var_check_handle_assignment(ctx, stmt);
+    } else if stmt.kind == 107 {
+        var_check_walk_expr(ctx, stmt.child1);
+        var orig_states: [u32; 256];
+        var then_states: [u32; 256];
+        var else_states: [u32; 256];
+        var_check_snapshot_states(ctx, &mut orig_states[0], 256);
+        var_check_enter_scope(ctx);
+        var bs: *mut AstNode = stmt.child2;
+        while bs != (0 as *mut AstNode) {
+            var_check_walk_stmt(ctx, bs);
+            bs = bs.next;
+        }
+        var_check_snapshot_states(ctx, &mut then_states[0], 256);
+        var_check_exit_scope(ctx);
+        var has_else: u32 = 0;
+        if stmt.child3 != (0 as *mut AstNode) {
+            has_else = 1;
+            var_check_restore_states(ctx, &mut orig_states[0], 256);
+            var_check_enter_scope(ctx);
+            var ebs: *mut AstNode = stmt.child3;
+            while ebs != (0 as *mut AstNode) {
+                var_check_walk_stmt(ctx, ebs);
+                ebs = ebs.next;
+            }
+            var_check_snapshot_states(ctx, &mut else_states[0], 256);
+            var_check_exit_scope(ctx);
+        }
+        var_check_join_states(ctx, &mut orig_states[0], &mut then_states[0], &mut else_states[0], has_else, 256);
+    } else if stmt.kind == 108 {
+        var_check_walk_expr(ctx, stmt.child1);
+        var loop_orig: [u32; 256];
+        var_check_snapshot_states(ctx, &mut loop_orig[0], 256);
+        var_check_enter_scope(ctx);
+        var wbs: *mut AstNode = stmt.child2;
+        while wbs != (0 as *mut AstNode) {
+            var_check_walk_stmt(ctx, wbs);
+            wbs = wbs.next;
+        }
+        var_check_exit_scope(ctx);
+        var k: u32 = 0;
+        while k < ctx.var_count && k < 256 {
+            let vk: *mut VarSymbol = (&mut ctx.vars[k as u64]) as *mut VarSymbol;
+            let o_st: u32 = loop_orig[k as u64];
+            if o_st == 0 && vk.init_state == 1 {
+                vk.init_state = 2;
+            } else if o_st == 1 {
+                vk.init_state = 1;
+            }
+            k = k + 1;
+        }
+    } else if stmt.kind == 129 {
+        var_check_walk_expr(ctx, stmt.child1);
+        var marm: *mut AstNode = stmt.child2;
+        while marm != (0 as *mut AstNode) {
+            var_check_enter_scope(ctx);
+            var_check_walk_expr(ctx, marm.child1);
+            var mbs: *mut AstNode = marm.child2;
+            while mbs != (0 as *mut AstNode) {
+                var_check_walk_stmt(ctx, mbs);
+                mbs = mbs.next;
+            }
+            var_check_exit_scope(ctx);
+            marm = marm.next;
+        }
+    } else if stmt.kind == 109 {
+        var_check_walk_expr(ctx, stmt.child1);
+    } else if stmt.kind == 110 {
+        var_check_walk_expr(ctx, stmt.child1);
+    } else if stmt.kind == 128 {
+        var_check_enter_scope(ctx);
+        var us: *mut AstNode = stmt.child1;
+        while us != (0 as *mut AstNode) {
+            var_check_walk_stmt(ctx, us);
+            us = us.next;
+        }
+        var_check_exit_scope(ctx);
+    } else if stmt.kind == 132 {
+        var_check_enter_scope(ctx);
+        var ds: *mut AstNode = stmt.child1;
+        while ds != (0 as *mut AstNode) {
+            var_check_walk_stmt(ctx, ds);
+            ds = ds.next;
+        }
+        var_check_exit_scope(ctx);
+    }
+}
+
+fn var_check_verify_fn(p: *mut Parser, fnode: *mut AstNode, shadow_mode: u32) -> u32 {
+    var ctx: VarCheckContext;
+    var_check_init(&mut ctx, p, shadow_mode);
+    var p_cur: *mut AstNode = fnode.child2;
+    while p_cur != (0 as *mut AstNode) {
+        let is_ptr: u32 = (p_cur.id != 0) as u32;
+        var_check_register(&mut ctx, p_cur.hash, 0, 1, is_ptr, 0);
+        p_cur = p_cur.next;
+    }
+    var_check_enter_scope(&mut ctx);
+    var st: *mut AstNode = fnode.child3;
+    while st != (0 as *mut AstNode) {
+        var_check_walk_stmt(&mut ctx, st);
+        st = st.next;
+    }
+    var_check_exit_scope(&mut ctx);
+    return ctx.error_count;
+}
+
+fn var_check_verify_top(p: *mut Parser, head: *mut AstNode, shadow_mode: u32) -> u32 {
+    var ctx: VarCheckContext;
+    var_check_init(&mut ctx, p, shadow_mode);
+    var_check_enter_scope(&mut ctx);
+    var cur: *mut AstNode = head;
+    while cur != (0 as *mut AstNode) {
+        var_check_walk_stmt(&mut ctx, cur);
+        cur = cur.next;
+    }
+    var_check_exit_scope(&mut ctx);
+    return ctx.error_count;
+}

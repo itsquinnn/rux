@@ -1,0 +1,110 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/os/uses_substrate.rx";
+
+struct LinkedListNode {
+    val: uint,
+    prev: *mut LinkedListNode,
+    next: *mut LinkedListNode,
+}
+
+struct LinkedList {
+    head: *mut LinkedListNode,
+    tail: *mut LinkedListNode,
+    len: uint,
+}
+
+fn linked_list_new() -> LinkedList {
+    var list: LinkedList;
+    list.head = 0 as *mut LinkedListNode;
+    list.tail = 0 as *mut LinkedListNode;
+    list.len = 0;
+    return list;
+}
+
+fn linked_list_push_back(list: *mut LinkedList, val: uint) {
+    let node: *mut LinkedListNode = uses_substrate_alloc(24) as *mut LinkedListNode;
+    node.val = val;
+    node.prev = list.tail;
+    node.next = 0 as *mut LinkedListNode;
+    if (list.tail as uint) != 0 {
+        list.tail.next = node;
+    } else {
+        list.head = node;
+    }
+    list.tail = node;
+    list.len = list.len + 1;
+}
+
+fn linked_list_push_front(list: *mut LinkedList, val: uint) {
+    let node: *mut LinkedListNode = uses_substrate_alloc(24) as *mut LinkedListNode;
+    node.val = val;
+    node.prev = 0 as *mut LinkedListNode;
+    node.next = list.head;
+    if (list.head as uint) != 0 {
+        list.head.prev = node;
+    } else {
+        list.tail = node;
+    }
+    list.head = node;
+    list.len = list.len + 1;
+}
+
+fn linked_list_pop_back(list: *mut LinkedList) -> Option {
+    if list.len == 0 || (list.tail as uint) == 0 {
+        return option_none();
+    }
+    let node: *mut LinkedListNode = list.tail;
+    let val: uint = node.val;
+    list.tail = node.prev;
+    if (list.tail as uint) != 0 {
+        list.tail.next = 0 as *mut LinkedListNode;
+    } else {
+        list.head = 0 as *mut LinkedListNode;
+    }
+    list.len = list.len - 1;
+    uses_substrate_free(node as *mut byte, 24);
+    return option_some(val);
+}
+
+fn linked_list_pop_front(list: *mut LinkedList) -> Option {
+    if list.len == 0 || (list.head as uint) == 0 {
+        return option_none();
+    }
+    let node: *mut LinkedListNode = list.head;
+    let val: uint = node.val;
+    list.head = node.next;
+    if (list.head as uint) != 0 {
+        list.head.prev = 0 as *mut LinkedListNode;
+    } else {
+        list.tail = 0 as *mut LinkedListNode;
+    }
+    list.len = list.len - 1;
+    uses_substrate_free(node as *mut byte, 24);
+    return option_some(val);
+}
+
+fn linked_list_len(list: *const LinkedList) -> uint {
+    return list.len;
+}
+
+fn linked_list_is_empty(list: *const LinkedList) -> bool {
+    return list.len == 0;
+}
+
+fn linked_list_clear(list: *mut LinkedList) {
+    var cur: *mut LinkedListNode = list.head;
+    while (cur as uint) != 0 {
+        let nxt: *mut LinkedListNode = cur.next;
+        uses_substrate_free(cur as *mut byte, 24);
+        cur = nxt;
+    }
+    list.head = 0 as *mut LinkedListNode;
+    list.tail = 0 as *mut LinkedListNode;
+    list.len = 0;
+}
+
+fn linked_list_free(list: *mut LinkedList) {
+    linked_list_clear(list);
+}
+

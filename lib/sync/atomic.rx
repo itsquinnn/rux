@@ -1,0 +1,113 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+const ORDERING_RELAXED: u32 = 0;
+const ORDERING_ACQUIRE: u32 = 1;
+const ORDERING_RELEASE: u32 = 2;
+const ORDERING_ACQ_REL: u32 = 3;
+const ORDERING_SEQ_CST: u32 = 4;
+
+fn atomic_load_u64(ptr: *const uint) -> uint => @atomic.load_u64(ptr);
+
+fn atomic_store_u64(ptr: *mut uint, val: uint) {
+    @atomic.store_u64(ptr, val);
+}
+
+fn atomic_cas_u64(ptr: *mut uint, expected: uint, desired: uint) -> bool {
+    return @atomic.compare_exchange_u64(ptr, expected, desired);
+}
+
+fn atomic_fetch_add_u64(ptr: *mut uint, delta: uint) -> uint {
+    return @atomic.fetch_add_u64(ptr, delta);
+}
+
+fn memory_barrier() {
+    @silicon.mfence();
+}
+
+struct AtomicI64 {
+    val: int,
+}
+
+fn atomic_i64_new(val: int) -> AtomicI64 {
+    return AtomicI64 { val: val };
+}
+
+fn atomic_i64_load(a: *const AtomicI64, ordering: u32) -> int {
+    let ptr: *const uint = (&a.val) as *const uint;
+    let res: uint = @atomic.load_u64(ptr);
+    return res as int;
+}
+
+fn atomic_i64_store(a: *mut AtomicI64, val: int, ordering: u32) {
+    let ptr: *mut uint = (&mut a.val) as *mut uint;
+    @atomic.store_u64(ptr, val as uint);
+}
+
+fn atomic_i64_cas(a: *mut AtomicI64, expected: int, desired: int) -> bool {
+    let ptr: *mut uint = (&mut a.val) as *mut uint;
+    return @atomic.compare_exchange_u64(ptr, expected as uint, desired as uint);
+}
+
+fn atomic_i64_fetch_add(a: *mut AtomicI64, delta: int) -> int {
+    let ptr: *mut uint = (&mut a.val) as *mut uint;
+    let prev: uint = @atomic.fetch_add_u64(ptr, delta as uint);
+    return prev as int;
+}
+
+struct AtomicU64 {
+    val: uint,
+}
+
+fn atomic_u64_new(val: uint) -> AtomicU64 {
+    return AtomicU64 { val: val };
+}
+
+fn atomic_u64_load(a: *const AtomicU64) -> uint {
+    return @atomic.load_u64(&a.val);
+}
+
+fn atomic_u64_store(a: *mut AtomicU64, val: uint) {
+    @atomic.store_u64(&mut a.val, val);
+}
+
+fn atomic_u64_cas(a: *mut AtomicU64, expected: uint, desired: uint) -> bool {
+    return @atomic.compare_exchange_u64(&mut a.val, expected, desired);
+}
+
+fn atomic_u64_fetch_add(a: *mut AtomicU64, delta: uint) -> uint {
+    return @atomic.fetch_add_u64(&mut a.val, delta);
+}
+
+struct AtomicPtr<T> {
+    ptr: *mut T,
+}
+
+fn atomic_ptr_new<T>(p: *mut T) -> AtomicPtr<T> {
+    return AtomicPtr<T> { ptr: p };
+}
+
+fn atomic_ptr_load<T>(a: *const AtomicPtr<T>) -> *mut T {
+    let raw: *const uint = (&a.ptr) as *const uint;
+    let res: uint = @atomic.load_u64(raw);
+    return res as *mut T;
+}
+
+fn atomic_ptr_store<T>(a: *mut AtomicPtr<T>, val: *mut T) {
+    let raw: *mut uint = (&mut a.ptr) as *mut uint;
+    @atomic.store_u64(raw, val as uint);
+}
+
+fn atomic_wait_u64(addr: *const uint, expected: uint) {
+    while @atomic.load_u64(addr) == expected {
+        @silicon.pause();
+    }
+}
+
+fn atomic_notify_one_u64(addr: *const uint) {
+    @silicon.mfence();
+}
+
+fn atomic_notify_all_u64(addr: *const uint) {
+    @silicon.mfence();
+}

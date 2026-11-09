@@ -1,0 +1,157 @@
+fn hash_identifier(start: *u8, len: u32) -> u64 {
+    var h: u64 = 14695981039346656037;
+    var i: u32 = 0;
+    while i < len {
+        let b: u8 = start[i as u64];
+        h = h ^ (b as u64);
+        h = h * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn str_eq(s1: *u8, s2: *u8) -> u32 {
+    var i: u64 = 0;
+    while s1[i] != 0 && s2[i] != 0 {
+        if s1[i] != s2[i] { return 0; }
+        i = i + 1;
+    }
+    if s1[i] == s2[i] { return 1; }
+    return 0;
+}
+
+fn str_starts_with(s: *u8, prefix: *u8, plen: u64) -> u32 {
+    var i: u64 = 0;
+    while i < plen {
+        if s[i] == 0 || s[i] != prefix[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn str_len(s: *u8) -> u64 {
+    var len: u64 = 0;
+    while s[len] != 0 { len = len + 1; }
+    return len;
+}
+
+fn str_ends_with(s: *u8, suffix: *u8) -> u32 {
+    let slen: u64 = str_len(s);
+    let sufflen: u64 = str_len(suffix);
+    if slen < sufflen { return 0; }
+    let offset: u64 = slen - sufflen;
+    var i: u64 = 0;
+    while i < sufflen {
+        let idx: u64 = offset + i;
+        if s[idx] != suffix[i] { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+fn is_digit(c: u8) -> u32 {
+    if c >= 48 && c <= 57 { return 1; }
+    return 0;
+}
+
+fn is_alpha(c: u8) -> u32 {
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 { return 1; }
+    return 0;
+}
+
+fn is_alnum(c: u8) -> u32 {
+    if is_alpha(c) == 1 || is_digit(c) == 1 { return 1; }
+    return 0;
+}
+
+fn classify_keyword(h: u64) -> u32 {
+    if h == 14058172984575203104 || h == 7938019069247444294 { return 10; }
+    if h == 619343937915704565   { return 11; }
+    if h == 1329270083436697466  { return 12; }
+    if h == 7567199770864868670  { return 123; }
+    if h == 7334518323283222324  { return 124; }
+    if h == 569227173069198361   { return 13; }
+    if h == 628046572451291605   { return 125; }
+    if h == 628023482707099174   { return 14; }
+    if h == 9163537027783908656  { return 15; }
+    if h == 14882043299657492846 { return 16; }
+    if h == 14251563519059995999 { return 17; }
+    if h == 6740575782527371194  { return 18; }
+    if h == 620464340264662349   { return 19; }
+
+    if h == 3094732814638223685  { return 20; }
+    if h == 3089943341986682694  { return 21; }
+    if h == 5560783464435099345  { return 22; }
+    if h == 631772817358541784 || h == 7505435266999523071 { return 23; }
+    if h == 3563412735833858527 || h == 14688493613076344265 { return 24; }
+    if h == 5558799945458185151  { return 25; }
+    if h == 627981701265227156   { return 26; }
+    if h == 3092775683940386555  { return 27; }
+    if h == 15594117208746958941 { return 28; }
+    if h == 3143511548502526014  { return 29; }
+    if h == 17483980429552467645 { return 35; }
+    if h == 5563585020063213298  { return 36; }
+    if h == 15670484296631260865 { return 37; }
+    if h == 4128981603702996129  { return 38; }
+    if h == 15952682373371409732 { return 39; }
+    if h == 15957463049929925035 || h == 11532138274943533413 { return 136; }
+    if h == 14785269867199075517 { return 137; }
+    if h == 9398593617327382768  { return 138; }
+    if h == 16642968967524131789 { return 139; }
+    if h == 5298596870147225945  { return 140; }
+    if h == 417800907370030071   { return 141; }
+    if h == 15339943234829454069 { return 142; }
+    if h == 2964518896692351214  { return 143; }
+    if h == 3945654905656722324  { return 144; }
+    if h == 11211927556571564639 { return 145; }
+
+    if h == 3388837930293092456  { return 26; }
+    if h == 8602815819212105030  { return 27; }
+    if h == 15366675508848053990 { return 28; }
+    if h == 12075340201627130925 || h == 13884473414831072921 { return 80; }
+    if h == 10474992716130377088 { return 81; }
+    if h == 15902905282948881040 { return 82; }
+    if h == 628032278800124862   { return 83; }
+    if h == 10644074229358120504 { return 84; }
+    if h == 15186091406668687012 { return 85; }
+    if h == 18093980567233218619 { return 86; }
+    if h == 11238380984761251385 { return 87; }
+    if h == 14105242855728223222 { return 88; }
+    if h == 9964885110000857501  { return 89; }
+    if h == 8643359970820732452 || h == 1027880306282058708 || h == 17127984979764453235 || h == 950007670508113537 { return 90; }
+    if h == 626092740288339108   { return 91; }
+    if h == 1811366505220939735  { return 92; }
+    if h == 16061960144426656011 { return 100; }
+    if h == 17172646240706999863 { return 101; }
+    if h == 8244113706180130863  { return 102; }
+    if h == 219225702944552525   { return 103; }
+    if h == 14587513342974174128 { return 104; }
+    if h == 17957288736874104528 { return 105; }
+    if h == 2130621971215327691  { return 106; }
+    if h == 6272037745333642222  { return 107; }
+    if h == 13957468038051399532 { return 108; }
+    if h == 5416238596490301492  { return 109; }
+    if h == 8939283910062747457  { return 110; }
+    if h == 13652116963433683981 { return 114; }
+    if h == 14838486305852456427 { return 147; }
+    if h == 7571115131772171141  { return 148; }
+    if h == 9384242791558811171  { return 149; }
+    if h == 580780841256168849   { return 150; }
+    return 1;
+}
+
+fn classify_num_suffix(h: u64) -> u32 {
+    if h == 627981701265227156   { return 1; }
+    if h == 3092775683940386555  { return 2; }
+    if h == 3094732814638223685  { return 3; }
+    if h == 3089943341986682694  { return 4; }
+    if h == 15594117208746958941 { return 5; }
+    if h == 631772817358541784   { return 6; }
+    if h == 5558799945458185151  { return 7; }
+    if h == 5560783464435099345  { return 8; }
+    if h == 5563585020063213298  { return 9; }
+    if h == 15670484296631260865 { return 10; }
+    if h == 15952682373371409732 { return 11; }
+    if h == 15957463049929925035 { return 12; }
+    return 0;
+}

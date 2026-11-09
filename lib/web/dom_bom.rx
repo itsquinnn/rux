@@ -1,0 +1,203 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+include "lib/web/bom_events.rx";
+include "lib/web/fetch.rx";
+include "lib/web/canvas.rx";
+
+const ANY_UNDEFINED: uint = 0;
+const ANY_NULL: uint      = 1;
+const ANY_BOOL: uint      = 2;
+const ANY_NUMBER: uint    = 3;
+const ANY_STRING: uint    = 4;
+const ANY_OBJECT: uint    = 5;
+
+struct AnyVal {
+    tag: uint,
+    num_val: int,
+    str_val: *const byte,
+}
+
+fn any_number(n: int) -> AnyVal {
+    var v: AnyVal;
+    v.tag = ANY_NUMBER;
+    v.num_val = n;
+    v.str_val = 0 as *const byte;
+    return v;
+}
+
+fn any_string(s: *const byte) -> AnyVal {
+    var v: AnyVal;
+    v.tag = ANY_STRING;
+    v.num_val = 0;
+    v.str_val = s;
+    return v;
+}
+
+fn any_bool(b: bool) -> AnyVal {
+    var v: AnyVal;
+    v.tag = ANY_BOOL;
+    if b { v.num_val = 1; } else { v.num_val = 0; }
+    v.str_val = 0 as *const byte;
+    return v;
+}
+
+fn any_add(a: AnyVal, b: AnyVal) -> AnyVal {
+    if a.tag == ANY_NUMBER && b.tag == ANY_NUMBER {
+        return any_number(a.num_val + b.num_val);
+    }
+    return any_number(0);
+}
+
+struct DomElement {
+    tag_hash: uint,
+    id_hash: uint,
+    parent_idx: int,
+    first_child: int,
+    next_sibling: int,
+    text_content: *const byte,
+    attr_key_hash: uint,
+    attr_val: *const byte,
+    onclick_fn: uint,
+    event_count: uint,
+}
+
+struct DomDocument {
+    elements: *mut DomElement,
+    elem_count: uint,
+}
+
+fn dom_hash_str(s: *const byte) -> uint {
+    var h: uint = 14695981039346656037;
+    var i: uint = 0;
+    while s[i] != 0 {
+        h = (h ^ (s[i] as uint)) * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn document_init(doc: *mut DomDocument) {
+    doc.elements = uses_substrate_alloc(128 * 80) as *mut DomElement;
+    doc.elem_count = 0;
+}
+
+fn document_create_element(doc: *mut DomDocument, tag_name: *const byte) -> int {
+    if doc.elem_count >= 128 { return -1; }
+    let idx: uint = doc.elem_count;
+    doc.elements[idx].tag_hash = dom_hash_str(tag_name);
+    doc.elements[idx].id_hash = 0;
+    doc.elements[idx].parent_idx = -1;
+    doc.elements[idx].first_child = -1;
+    doc.elements[idx].next_sibling = -1;
+    doc.elements[idx].text_content = "";
+    doc.elements[idx].attr_key_hash = 0;
+    doc.elements[idx].attr_val = "";
+    doc.elements[idx].onclick_fn = 0;
+    doc.elements[idx].event_count = 0;
+    doc.elem_count = idx + 1;
+    return idx as int;
+}
+
+fn element_set_id(doc: *mut DomDocument, elem_idx: int, id_str: *const byte) {
+    if elem_idx >= 0 && (elem_idx as uint) < doc.elem_count {
+        doc.elements[elem_idx as uint].id_hash = dom_hash_str(id_str);
+    }
+}
+
+fn element_set_attribute(doc: *mut DomDocument, elem_idx: int, attr_name: *const byte, attr_val: *const byte) {
+    if elem_idx >= 0 && (elem_idx as uint) < doc.elem_count {
+        doc.elements[elem_idx as uint].attr_key_hash = dom_hash_str(attr_name);
+        doc.elements[elem_idx as uint].attr_val = attr_val;
+    }
+}
+
+fn element_set_text_content(doc: *mut DomDocument, elem_idx: int, text: *const byte) {
+    if elem_idx >= 0 && (elem_idx as uint) < doc.elem_count {
+        doc.elements[elem_idx as uint].text_content = text;
+    }
+}
+
+fn element_append_child(doc: *mut DomDocument, parent_idx: int, child_idx: int) {
+    if parent_idx < 0 || child_idx < 0 { return; }
+    let p: uint = parent_idx as uint;
+    let c: uint = child_idx as uint;
+    doc.elements[c].parent_idx = parent_idx;
+    if doc.elements[p].first_child < 0 {
+        doc.elements[p].first_child = child_idx;
+    } else {
+        var cur: int = doc.elements[p].first_child;
+        while doc.elements[cur as uint].next_sibling >= 0 {
+            cur = doc.elements[cur as uint].next_sibling;
+        }
+        doc.elements[cur as uint].next_sibling = child_idx;
+    }
+}
+
+fn document_get_element_by_id(doc: *const DomDocument, id_str: *const byte) -> int {
+    let target_h: uint = dom_hash_str(id_str);
+    var i: uint = 0;
+    while i < doc.elem_count {
+        if doc.elements[i].id_hash == target_h {
+            return i as int;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn element_add_event_listener(doc: *mut DomDocument, elem_idx: int, handler: fn(int) -> int) {
+    if elem_idx >= 0 && (elem_idx as uint) < doc.elem_count {
+        doc.elements[elem_idx as uint].onclick_fn = handler as uint;
+    }
+}
+
+fn element_dispatch_event(doc: *mut DomDocument, elem_idx: int, event_code: int) -> int {
+    if elem_idx >= 0 && (elem_idx as uint) < doc.elem_count {
+        let u: uint = elem_idx as uint;
+        doc.elements[u].event_count = doc.elements[u].event_count + 1;
+        if doc.elements[u].onclick_fn != 0 {
+            let hf: fn(int) -> int = doc.elements[u].onclick_fn;
+            return hf(event_code);
+        }
+    }
+    return 0;
+}
+
+struct LocalStorage {
+    keys: [uint; 32],
+    vals: [*const byte; 32],
+    count: uint,
+}
+
+fn local_storage_init(ls: *mut LocalStorage) {
+    ls.count = 0;
+}
+
+fn local_storage_set_item(ls: *mut LocalStorage, key: *const byte, val: *const byte) {
+    let kh: uint = dom_hash_str(key);
+    var i: uint = 0;
+    while i < ls.count {
+        if ls.keys[i] == kh {
+            ls.vals[i] = val;
+            return;
+        }
+        i = i + 1;
+    }
+    if ls.count < 32 {
+        ls.keys[ls.count] = kh;
+        ls.vals[ls.count] = val;
+        ls.count = ls.count + 1;
+    }
+}
+
+fn local_storage_get_item(ls: *const LocalStorage, key: *const byte) -> *const byte {
+    let kh: uint = dom_hash_str(key);
+    var i: uint = 0;
+    while i < ls.count {
+        if ls.keys[i] == kh {
+            return ls.vals[i];
+        }
+        i = i + 1;
+    }
+    return "";
+}

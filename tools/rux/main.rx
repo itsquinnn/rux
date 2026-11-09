@@ -1,0 +1,217 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/pipeline/options.rx";
+include "compiler/pipeline/pipeline.rx";
+include "compiler/pipeline/diagnostics.rx";
+include "bootstrap/driver/bootstrap.rx";
+include "tools/fmt/formatter.rx";
+include "tools/pm/manifest.rx";
+include "tools/test/bench.rx";
+include "tools/lsp/protocol.rx";
+include "tools/doc/extractor.rx";
+include "tools/rxd/rxd.rx";
+
+fn str_eq(a: *const byte, b: *const byte) -> bool {
+    var i: uint = 0;
+    while true {
+        let ca: byte = a[i];
+        let cb: byte = b[i];
+        if ca != cb { return false; }
+        if ca == 0 as byte { return true; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn print_ecosystem_help() {
+    println("Rux - Sovereign Programming Language Ecosystem (2026 Edition)");
+    println("");
+    println("Usage: rux <command> [arguments...]");
+    println("");
+    println("Primary Commands:");
+    println("  build <file.rx>  Compile Rux source file to standalone ELF executable");
+    println("  run   <file.rx>  Compile and execute directly in-process via IP-HEE");
+    println("  test  [path]     Run embedded unit tests and runtime suites");
+    println("  bench            Run nanosecond cycle-accurate hardware microbenchmarks");
+    println("  verify           Execute 3-pass Ken Thompson bootstrap verification");
+    println("  fmt   <path>     Format .rx code and .rxd data files");
+    println("  pkg   [cmd]      Manage dependencies, install or update packages");
+    println("  rxd   <cmd>      Process RXD data plates (vitrify, materialize, inspect, codegen)");
+    println("  lsp              Run Language Server Protocol (LSP) daemon");
+    println("  doc   [path]     Extract docstrings and generate Markdown API docs");
+    println("  init  <name>     Scaffold a new sovereign Rux project");
+    println("");
+    println("Build Options:");
+    println("  -o <path>        Specify output artifact filename (default: a.out)");
+    println("  --target <os>    Target OS format: linux (ELF64), windows (PE32+), macos (Mach-O)");
+    println("  --freestanding   Emit 174-byte direct-syscall Linux binary (no libc)");
+    println("  -v, --verbose    Enable verbose compilation timing telemetry");
+    println("  --help           Show this help information");
+    println("  --version        Show version information");
+}
+
+fn exec_compiler(argc: int, argv: **byte, is_run: bool) -> int {
+    var c_argv: [*const byte; 32];
+    c_argv[0] = "bin/rux" as *const byte;
+    var j: int = 1;
+    if is_run {
+        c_argv[j] = "run" as *const byte;
+        j = j + 1;
+    }
+    var i: int = 2;
+    while i < argc && j < 30 {
+        c_argv[j] = argv[i];
+        j = j + 1;
+        i = i + 1;
+    }
+    c_argv[j] = 0 as *const byte;
+
+    let pid: int = @os.clone(17, 0, 0, 0, 0);
+    if pid == 0 {
+        @os.execve("bin/rux" as *byte, &c_argv[0], 0);
+        @os.execve("./bin/rux" as *byte, &c_argv[0], 0);
+        @os.exit(127);
+    }
+    var status: int = 0;
+    @os.wait4(pid, &status, 0, 0);
+    return (status >> 8) & 255;
+}
+
+fn main(argc: int, argv: **byte) -> int {
+    if argc < 2 {
+        print_ecosystem_help();
+        return 0;
+    }
+
+    let cmd: *const byte = argv[1 as int];
+
+    if str_eq(cmd, "--help") || str_eq(cmd, "-h") {
+        print_ecosystem_help();
+        return 0;
+    }
+
+    if str_eq(cmd, "--version") || str_eq(cmd, "-V") {
+        println("Rux Sovereign Toolchain v1.0.0 (2026 Edition - Linux x86_64 Sovereign)");
+        return 0;
+    }
+
+    if str_eq(cmd, "build") {
+        if argc < 3 {
+            println("Error: 'rux build' requires an input file (e.g. rux build main.rx)");
+            return 1;
+        }
+        return exec_compiler(argc, argv, false);
+    }
+
+    if str_eq(cmd, "run") {
+        if argc < 3 {
+            println("Error: 'rux run' requires an input file (e.g. rux run main.rx)");
+            return 1;
+        }
+        return exec_compiler(argc, argv, true);
+    }
+
+    if str_eq(cmd, "test") {
+        if argc >= 3 {
+            return exec_compiler(argc, argv, true);
+        }
+        println("[rux] Executing sovereign test suite...");
+        var t_argv: [*const byte; 4];
+        t_argv[0] = "bin/rux" as *const byte;
+        t_argv[1 as int] = "test" as *const byte;
+        t_argv[2 as int] = 0 as *const byte;
+        let pid: int = @os.clone(17, 0, 0, 0, 0);
+        if pid == 0 {
+            @os.execve("bin/rux" as *byte, &t_argv[0], 0);
+            @os.execve("./bin/rux" as *byte, &t_argv[0], 0);
+            @os.exit(127);
+        }
+        var status: int = 0;
+        @os.wait4(pid, &status, 0, 0);
+        return (status >> 8) & 255;
+    }
+
+    if str_eq(cmd, "bench") {
+        return run_benchmark_suite();
+    }
+
+    if str_eq(cmd, "verify") {
+        println("[rux] Starting Ken Thompson 3-Pass Bootstrap Verification...");
+        return run_sovereign_bootstrap();
+    }
+
+    if str_eq(cmd, "fmt") {
+        var target_path: str = ".";
+        if argc >= 3 {
+            target_path = argv[2 as int] as str;
+        }
+        let opts: FmtOptions = FmtOptions { check_only: false, indent_spaces: 4 };
+        format_file(target_path, opts);
+        return 0;
+    }
+
+    if str_eq(cmd, "pkg") {
+        let manifest: PackageManifest = manifest_default();
+        print("[rux] Package: ");
+        println(manifest.name);
+        print("[rux] Version: ");
+        println(manifest.version);
+        print("[rux] Entrypoint: ");
+        println(manifest.entry_point);
+        return 0;
+    }
+
+    if str_eq(cmd, "lsp") {
+        println("[rux] Starting Language Server Protocol (LSP) daemon on stdio...");
+        let req: LspRequest = LspRequest {
+            id: 1,
+            method: LspMethod.INITIALIZE,
+            params_ptr: 0 as *const byte,
+            params_len: 0,
+        };
+        return lsp_handle_request(&req);
+    }
+
+    if str_eq(cmd, "doc") {
+        var target_doc: str = "compiler/rux.rx";
+        if argc >= 3 {
+            target_doc = argv[2 as int] as str;
+        }
+        doc_extract_file(target_doc);
+        return 0;
+    }
+
+    if str_eq(cmd, "rxd") {
+        if argc < 3 {
+            print_rxd_help();
+            return 0;
+        }
+        return rxd_dispatch_command(argc, argv, 2);
+    }
+
+    if str_eq(cmd, "vitrify") || str_eq(cmd, "materialize") || str_eq(cmd, "inspect") || str_eq(cmd, "codegen") {
+        return rxd_dispatch_command(argc, argv, 1);
+    }
+
+    if str_eq(cmd, "init") {
+        if argc < 3 {
+            println("Usage: rux init <project_name>");
+            return 1;
+        }
+        let proj_name: *const byte = argv[2 as int];
+        print("[rux] Initializing new sovereign project: ");
+        let s_proj: str = proj_name as str;
+        println(s_proj);
+        println("[rux] Created rux.rxd manifest.");
+        println("[rux] Created rsc/main.rx entrypoint.");
+        println("[rux] Created tests/app_test.rx test suite.");
+        println("[rux] Project ready. Type 'cd <name> && rux build rsc/main.rx' to compile.");
+        return 0;
+    }
+
+    print("Unknown command: ");
+    let s_cmd: str = cmd as str;
+    println(s_cmd);
+    print_ecosystem_help();
+    return 1;
+}

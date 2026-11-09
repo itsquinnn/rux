@@ -1,0 +1,59 @@
+include "lib/core/types.rx";
+
+const ANDROID_SDK_API_35: u32 = 35;
+const DARWIN_MACH_MSG_SEND: u32 = 1;
+const DARWIN_MACH_MSG_RCV: u32  = 2;
+
+struct BinderParcel {
+    buf: [byte; 256],
+    write_pos: uint,
+    read_pos: uint,
+    interface_hash: uint,
+}
+
+struct DarwinMachMsgHeader {
+    msgh_bits: u32,
+    msgh_size: u32,
+    msgh_remote_port: u32,
+    msgh_local_port: u32,
+    msgh_voucher_port: u32,
+    msgh_id: u32,
+}
+
+fn binder_parcel_init(p: *mut BinderParcel, iface_hash: uint) {
+    p.write_pos = 0;
+    p.read_pos = 0;
+    p.interface_hash = iface_hash;
+}
+
+fn binder_parcel_write_u32(p: *mut BinderParcel, val: u32) -> bool {
+    if (p.write_pos + 4) > 256 { return false; }
+    let off: uint = p.write_pos;
+    p.buf[off] = (val & 255) as byte;
+    p.buf[off + 1] = ((val >> 8) & 255) as byte;
+    p.buf[off + 2] = ((val >> 16) & 255) as byte;
+    p.buf[off + 3] = ((val >> 24) & 255) as byte;
+    p.write_pos = off + 4;
+    return true;
+}
+
+fn binder_parcel_read_u32(p: *mut BinderParcel, out_val: *mut u32) -> bool {
+    if (p.read_pos + 4) > p.write_pos { return false; }
+    let off: uint = p.read_pos;
+    out_val[0] = (p.buf[off] as u32) |
+                 ((p.buf[off + 1] as u32) << 8) |
+                 ((p.buf[off + 2] as u32) << 16) |
+                 ((p.buf[off + 3] as u32) << 24);
+    p.read_pos = off + 4;
+    return true;
+}
+
+fn ios_mach_msg_init(hdr: *mut DarwinMachMsgHeader, remote_port: u32, local_port: u32, msg_id: u32, payload_bytes: u32) {
+    hdr.msgh_bits = 19;
+    hdr.msgh_size = 24 + payload_bytes;
+    hdr.msgh_remote_port = remote_port;
+    hdr.msgh_local_port = local_port;
+    hdr.msgh_voucher_port = 0;
+    hdr.msgh_id = msg_id;
+}
+

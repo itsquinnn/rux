@@ -1,0 +1,36 @@
+fn opt_dce_stmt_list(stmts: *mut AstNode) {
+    var cur: *mut AstNode = stmts;
+    while cur != (0 as *mut AstNode) {
+        if cur.kind == 109 || cur.kind == 126 || cur.kind == 127 {
+            cur.next = 0 as *mut AstNode;
+            return;
+        }
+        if cur.kind == 108 && cur.child1 != (0 as *mut AstNode) {
+            if cur.child1.kind == 116 && cur.child1.val == 0 {
+                cur.kind = 0;
+            }
+        }
+        if cur.kind == 107 && cur.child1 != (0 as *mut AstNode) {
+            if cur.child1.kind == 116 && cur.child1.val == 0 && cur.child3 == (0 as *mut AstNode) {
+                cur.kind = 0;
+            }
+        }
+        if cur.kind == 106 && cur.child1 != (0 as *mut AstNode) && cur.child2 != (0 as *mut AstNode) {
+            if cur.child1.kind == 117 {
+                let vh: u64 = cur.child1.hash;
+                if cur.child2.kind == 117 && cur.child2.hash == vh {
+                    cur.kind = 0;
+                } else if opt_is_pure_expr(cur.child2) == 1 && cur.next != (0 as *mut AstNode) {
+                    let nx: *mut AstNode = cur.next;
+                    if nx.kind == 106 && nx.child1 != (0 as *mut AstNode) && nx.child1.kind == 117 && nx.child1.hash == vh {
+                        if opt_expr_reads_var(nx.child2, vh) == 0 {
+                            cur.kind = 0;
+                        }
+                    }
+                }
+            }
+        }
+        cur = cur.next;
+    }
+}
+

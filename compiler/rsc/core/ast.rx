@@ -1,0 +1,355 @@
+struct AstNode {
+    kind: u64,
+    is_mut: u64,
+    id: u64,
+    hash: u64,
+    val: u64,
+    child1: *mut AstNode,
+    child2: *mut AstNode,
+    child3: *mut AstNode,
+    next: *mut AstNode,
+}
+
+struct ConstEntry {
+    name_hash: u64,
+    val: u64,
+    extra: u64,
+}
+
+struct FieldMeta {
+    struct_hash: u64,
+    field_hash: u64,
+    type_hash: u64,
+    flags: u64,
+}
+
+struct RodataFixup {
+    hole_offset: u64,
+    rodata_off: u64,
+}
+
+struct Parser {
+    lex: *mut Lexer,
+    arena: *mut Arena,
+    cur_tok: Token,
+    node_count: u64,
+    struct_count: u64,
+    fn_count: u64,
+    consts: *mut ConstEntry,
+    const_count: u64,
+    aliases: *mut ConstEntry,
+    alias_count: u64,
+    known_structs: *mut ConstEntry,
+    known_struct_count: u64,
+    anon_fns: *mut AstNode,
+    anon_fn_last: *mut AstNode,
+    anon_fn_count: u64,
+    generic_structs: *mut u8,
+    generic_struct_count: u64,
+    generic_fns: *mut u8,
+    generic_fn_count: u64,
+    instantiations: *mut ConstEntry,
+    instantiation_count: u64,
+    cg: *mut u8,
+    traits: *mut u8,
+    trait_count: u64,
+    trait_impls: *mut u8,
+    trait_impl_count: u64,
+    fn_asts: *mut u8,
+    fn_ast_count: u64,
+    src_path: *u8,
+    no_exit_on_err: u64,
+    had_error: u64,
+}
+
+fn alloc_node(p: *mut Parser, kind: u32) -> *mut AstNode {
+    let node_ptr: *mut u8 = arena_alloc(p.arena, 72);
+    let node: *mut AstNode = node_ptr as *mut AstNode;
+    node.kind = kind as u64;
+    node.is_mut = 0;
+    node.id = p.node_count;
+    node.hash = 0;
+    node.val = 0;
+    node.child1 = 0 as *mut AstNode;
+    node.child2 = 0 as *mut AstNode;
+    node.child3 = 0 as *mut AstNode;
+    node.next = 0 as *mut AstNode;
+    p.node_count = p.node_count + 1;
+    return node;
+}
+
+fn parser_expect(p: *mut Parser, expected_kind: u32) {
+    if expected_kind == 44 && p.cur_tok.kind == 48 {
+        p.cur_tok.kind = 44;
+        p.cur_tok.start = p.cur_tok.start + 1;
+        p.cur_tok.len = 1;
+        return;
+    }
+    if p.cur_tok.kind == (expected_kind as u64) {
+        let tok_end: *u8 = p.cur_tok.start + p.cur_tok.len;
+        lex_next_token(p.lex, &mut p.cur_tok);
+        if expected_kind == 63 && p.cur_tok.start == tok_end {
+            if p.cur_tok.kind == 1 || p.cur_tok.kind == 2 || (p.cur_tok.kind >= 10 && p.cur_tok.kind <= 28) {
+                if p.cur_tok.kind != 15 {
+                    diag_syntax_unexpected_tok(p, "Unexpected token after '}'");
+                }
+            }
+        }
+    } else {
+        diag_syntax_expected_kind(p, expected_kind);
+    }
+}
+
+fn parser_expect_ident(p: *mut Parser) {
+    if p.cur_tok.kind == 1 || p.cur_tok.hash != 0 {
+        lex_next_token(p.lex, &mut p.cur_tok);
+    } else {
+        diag_syntax_unexpected_tok(p, "Expected identifier, got");
+    }
+}
+
+fn consume_optional_semi(p: *mut Parser) {
+    if p.cur_tok.kind == 71 {
+        lex_next_token(p.lex, &mut p.cur_tok);
+    }
+}
+
+fn combine_ns_hash(ns_hash: u64, member_hash: u64) -> u64 {
+    var h: u64 = ns_hash ^ 46;
+    h = h * 1099511628211;
+    h = h ^ member_hash;
+    h = h * 1099511628211;
+    return h;
+}
+
+fn parser_add_const(p: *mut Parser, name_hash: u64, val: u64, extra: u64) {
+    if p.consts == (0 as *mut ConstEntry) { return; }
+    var i: u64 = 0;
+    while i < p.const_count {
+        let ce: *mut ConstEntry = ((p.consts as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if ce.name_hash == name_hash {
+            ce.val = val;
+            ce.extra = extra;
+            return;
+        }
+        i = i + 1;
+    }
+    if p.const_count < 4096 {
+        let nce: *mut ConstEntry = ((p.consts as *mut u8) + (p.const_count * 24)) as *mut ConstEntry;
+        nce.name_hash = name_hash;
+        nce.val = val;
+        nce.extra = extra;
+        p.const_count = p.const_count + 1;
+    }
+}
+
+fn parser_find_const(p: *mut Parser, name_hash: u64) -> *mut ConstEntry {
+    if p.consts == (0 as *mut ConstEntry) { return 0 as *mut ConstEntry; }
+    var i: u64 = p.const_count;
+    while i > 0 {
+        i = i - 1;
+        let ce: *mut ConstEntry = ((p.consts as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if ce.name_hash == name_hash {
+            return ce;
+        }
+    }
+    return 0 as *mut ConstEntry;
+}
+
+fn parser_add_alias(p: *mut Parser, name_hash: u64, target_hash: u64, target_kind: u64) {
+    if p.aliases == (0 as *mut ConstEntry) { return; }
+    var i: u64 = 0;
+    while i < p.alias_count {
+        let ce: *mut ConstEntry = ((p.aliases as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if ce.name_hash == name_hash {
+            ce.val = target_hash;
+            ce.extra = target_kind;
+            return;
+        }
+        i = i + 1;
+    }
+    if p.alias_count < 2048 {
+        let nce: *mut ConstEntry = ((p.aliases as *mut u8) + (p.alias_count * 24)) as *mut ConstEntry;
+        nce.name_hash = name_hash;
+        nce.val = target_hash;
+        nce.extra = target_kind;
+        p.alias_count = p.alias_count + 1;
+    }
+}
+
+fn parser_find_alias(p: *mut Parser, name_hash: u64) -> *mut ConstEntry {
+    if p.aliases == (0 as *mut ConstEntry) { return 0 as *mut ConstEntry; }
+    var i: u64 = p.alias_count;
+    while i > 0 {
+        i = i - 1;
+        let ce: *mut ConstEntry = ((p.aliases as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if ce.name_hash == name_hash {
+            return ce;
+        }
+    }
+    return 0 as *mut ConstEntry;
+}
+
+fn parser_register_struct(p: *mut Parser, name_hash: u64, byte_size: u64) {
+    if p.known_structs == (0 as *mut ConstEntry) { return; }
+    var i: u64 = 0;
+    while i < p.known_struct_count {
+        let ce: *mut ConstEntry = ((p.known_structs as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if ce.name_hash == name_hash {
+            ce.val = byte_size;
+            return;
+        }
+        i = i + 1;
+    }
+    if p.known_struct_count < 2048 {
+        let nce: *mut ConstEntry = ((p.known_structs as *mut u8) + (p.known_struct_count * 24)) as *mut ConstEntry;
+        nce.name_hash = name_hash;
+        nce.val = byte_size;
+        nce.extra = 1;
+        p.known_struct_count = p.known_struct_count + 1;
+    }
+}
+
+fn parser_find_known_struct(p: *mut Parser, name_hash: u64) -> *mut ConstEntry {
+    if p.known_structs == (0 as *mut ConstEntry) { return 0 as *mut ConstEntry; }
+    var i: u64 = p.known_struct_count;
+    while i > 0 {
+        i = i - 1;
+        let ce: *mut ConstEntry = ((p.known_structs as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if ce.name_hash == name_hash {
+            return ce;
+        }
+    }
+    return 0 as *mut ConstEntry;
+}
+
+fn type_prim_size_from_tok(kind: u32, hash: u64) -> u64 {
+    if kind == 23 || kind == 26 || kind == 137 || hash == 631772817358541784 || hash == 627981701265227156 || hash == 7505435266999523071 || hash == 14785269867199075517 {
+        return 1;
+    }
+    if kind == 25 || kind == 27 || kind == 35 || hash == 5558799945458185151 || hash == 3092775683940386555 {
+        return 2;
+    }
+    if kind == 20 || kind == 22 || kind == 24 || kind == 39 || hash == 5560783464435099345 || hash == 3094732814638223685 {
+        return 4;
+    }
+    if kind == 139 {
+        return 16;
+    }
+    return 8;
+}
+
+fn is_signed_type_hash(kind: u32, hash: u64) -> u32 {
+    if kind == 20 || kind == 21 || kind == 26 || kind == 27 || kind == 28 || kind == 29 {
+        return 1;
+    }
+    if hash == 3143511548502526014 || hash == 3089943341986682694 || hash == 3094732814638223685 || hash == 3092775683940386555 || hash == 627981701265227156 || hash == 15594117208746958941 {
+        return 1;
+    }
+    return 0;
+}
+
+fn is_float_type_hash(kind: u32, hash: u64) -> u32 {
+    if kind == 39 || kind == 136 {
+        return 1;
+    }
+    if hash == 5559899321443657389 || hash == 5560983464435099345 {
+        return 1;
+    }
+    return 0;
+}
+
+fn is_any_type_hash(kind: u32, hash: u64) -> u32 {
+    if kind == 139 || hash == 627981701265227156 {
+        return 1;
+    }
+    return 0;
+}
+
+fn is_primitive_type_tok(kind: u32) -> u32 {
+    if (kind >= 20 && kind <= 29) || (kind >= 35 && kind <= 39) || (kind >= 136 && kind <= 140) {
+        return 1;
+    }
+    return 0;
+}
+
+fn is_const_evaluatable(p: *mut Parser, n: *mut AstNode) -> u32 {
+    if n == (0 as *mut AstNode) { return 0; }
+    if n.kind == 116 || n.kind == 118 { return 1; }
+    if n.kind == 117 {
+        let ce: *mut ConstEntry = parser_find_const(p, n.hash);
+        if ce != (0 as *mut ConstEntry) { return 1; }
+        return 0;
+    }
+    if n.kind == 131 || n.kind == 112 {
+        return is_const_evaluatable(p, n.child1);
+    }
+    if n.kind == 106 {
+        if is_const_evaluatable(p, n.child1) == 0 { return 0; }
+        return is_const_evaluatable(p, n.child2);
+    }
+    if n.kind == 113 || n.kind == 114 || n.kind == 124 || n.kind == 129 {
+        return 1;
+    }
+    return 0;
+}
+
+fn eval_const_ast(p: *mut Parser, n: *mut AstNode) -> u64 {
+    if n == (0 as *mut AstNode) { return 0; }
+    if n.kind == 116 { return n.val; }
+    if n.kind == 117 {
+        let ce: *mut ConstEntry = parser_find_const(p, n.hash);
+        if ce != (0 as *mut ConstEntry) { return ce.val; }
+        return 0;
+    }
+    if n.kind == 131 {
+        let v: u64 = eval_const_ast(p, n.child1);
+        if n.is_mut == 0 {
+            let sz: u64 = type_prim_size_from_tok(n.val as u32, n.hash);
+            if sz == 1 { return v & 255; }
+            if sz == 2 { return v & 65535; }
+            if sz == 4 { return v & 4294967295; }
+        }
+        return v;
+    }
+    if n.kind == 112 {
+        let uv: u64 = eval_const_ast(p, n.child1);
+        if n.val == 53 {
+            if uv == 0 { return 1; }
+            return 0;
+        }
+        if n.val == 54 {
+            let all_ones: u64 = 0 - 1;
+            return uv ^ all_ones;
+        }
+        return uv;
+    }
+    if n.kind == 106 {
+        let l: u64 = eval_const_ast(p, n.child1);
+        let r: u64 = eval_const_ast(p, n.child2);
+        let op: u64 = n.val;
+        if op == 30 { return l + r; }
+        if op == 31 { return l - r; }
+        if op == 32 { return l * r; }
+        if op == 33 { if r != 0 { return l / r; } return 0; }
+        if op == 34 { if r != 0 { return l % r; } return 0; }
+        if op == 47 { return l << r; }
+        if op == 48 { return l >> r; }
+        if op == 50 { return l & r; }
+        if op == 51 { return l | r; }
+        if op == 52 { return l ^ r; }
+        if op == 41 { if l == r { return 1; } return 0; }
+        if op == 42 { if l != r { return 1; } return 0; }
+        if op == 43 { if l < r { return 1; } return 0; }
+        if op == 44 { if l > r { return 1; } return 0; }
+        if op == 45 { if l <= r { return 1; } return 0; }
+        if op == 46 { if l >= r { return 1; } return 0; }
+        if op == 91 || op == 111 { if l != 0 { return l; } return r; }
+        if op == 49 { if l != 0 && r != 0 { return 1; } return 0; }
+        if op == 57 { if l != 0 || r != 0 { return 1; } return 0; }
+    }
+    if n.kind == 113 || n.kind == 124 || n.kind == 129 {
+        return eval_comptime_node(p, n);
+    }
+    return 0;
+}

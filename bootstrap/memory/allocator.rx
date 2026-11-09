@@ -1,0 +1,25 @@
+struct MemoryArena {
+    memory: *mut byte,
+    capacity: uint,
+    offset: uint,
+}
+
+fn allocator_init(arena: *mut MemoryArena, buffer: *mut byte, capacity: uint) {
+    arena.memory = buffer;
+    arena.capacity = capacity;
+    arena.offset = 0;
+}
+
+fn allocator_bump(arena: *mut MemoryArena, bytes: uint) -> *mut byte {
+    let aligned_size: uint = ((bytes + 7) / 8) * 8;
+    if arena.offset + aligned_size > arena.capacity {
+        return 0 as *mut byte;
+    }
+    let pointer: *mut byte = arena.memory + arena.offset;
+    arena.offset = arena.offset + aligned_size;
+    return pointer;
+}
+
+fn allocator_reset(arena: *mut MemoryArena) {
+    arena.offset = 0;
+}

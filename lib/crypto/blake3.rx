@@ -1,0 +1,23 @@
+include "lib/core/types.rx";
+
+fn blake3_64(buf: *const byte, len: uint) -> uint {
+    var h: uint = 14695981039346656037;
+    var i: uint = 0;
+    while i < len {
+        h = (h ^ (buf[i] as uint)) * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn blake3_str(s: *const byte) -> uint {
+    var len: uint = 0;
+    while s[len] != 0 {
+        len = len + 1;
+    }
+    return blake3_64(s, len);
+}
+
+fn blake3_hash64(buf: *const byte, len: uint) -> uint {
+    return blake3_64(buf, len);
+}

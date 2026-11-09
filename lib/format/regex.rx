@@ -1,0 +1,140 @@
+include "lib/core/types.rx";
+
+fn regex_match_class(c: byte, pat: *const byte, p_off: uint, p_end: uint) -> bool {
+    var i: uint = p_off;
+    var invert: bool = false;
+    if i < p_end && pat[i] == 94 {
+        invert = true;
+        i = i + 1;
+    }
+    var matched: bool = false;
+    while i < p_end {
+        if (i + 2) < p_end && pat[i + 1] == 45 {
+            if c >= pat[i] && c <= pat[i + 2] {
+                matched = true;
+            }
+            i = i + 3;
+        } else {
+            if c == pat[i] {
+                matched = true;
+            }
+            i = i + 1;
+        }
+    }
+    if invert { return !matched; }
+    return matched;
+}
+
+fn regex_char_eq(c: byte, pat: *const byte, pi: uint, step_out: *mut uint) -> bool {
+    if pat[pi] == 46 {
+        unsafe { *step_out = 1; }
+        return c != 0 && c != 10;
+    }
+    if pat[pi] == 92 && pat[pi + 1] != 0 {
+        unsafe { *step_out = 2; }
+        let esc: byte = pat[pi + 1];
+        if esc == 100 {
+            return c >= 48 && c <= 57;
+        }
+        if esc == 119 {
+            return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95;
+        }
+        if esc == 115 {
+            return c == 32 || c == 9 || c == 10 || c == 13;
+        }
+        return c == esc;
+    }
+    if pat[pi] == 91 {
+        var end_b: uint = pi + 1;
+        while pat[end_b] != 0 && pat[end_b] != 93 {
+            end_b = end_b + 1;
+        }
+        unsafe { *step_out = (end_b - pi) + 1; }
+        return regex_match_class(c, pat, pi + 1, end_b);
+    }
+    unsafe { *step_out = 1; }
+    return c == pat[pi];
+}
+
+fn regex_atom_len(pat: *const byte, pi: uint) -> uint {
+    if pat[pi] == 92 && pat[pi + 1] != 0 { return 2; }
+    if pat[pi] == 91 {
+        var e: uint = pi + 1;
+        while pat[e] != 0 && pat[e] != 93 { e = e + 1; }
+        if pat[e] == 93 { return (e - pi) + 1; }
+    }
+    return 1;
+}
+
+fn regex_match_here(pat: *const byte, pi: uint, text: *const byte, ti: uint) -> bool {
+    if pat[pi] == 0 {
+        return true;
+    }
+    if pat[pi] == 36 && pat[pi + 1] == 0 {
+        return text[ti] == 0;
+    }
+    let alen: uint = regex_atom_len(pat, pi);
+    let quant: byte = pat[pi + alen];
+
+    if quant == 42 {
+        var cur_ti: uint = ti;
+        var dummy: uint = 0;
+        while true {
+            if regex_match_here(pat, pi + alen + 1, text, cur_ti) {
+                return true;
+            }
+            if text[cur_ti] == 0 || !regex_char_eq(text[cur_ti], pat, pi, &mut dummy) {
+                return false;
+            }
+            cur_ti = cur_ti + 1;
+        }
+    }
+    if quant == 43 {
+        var dummy2: uint = 0;
+        if text[ti] == 0 || !regex_char_eq(text[ti], pat, pi, &mut dummy2) {
+            return false;
+        }
+        var cur_ti2: uint = ti + 1;
+        while true {
+            if regex_match_here(pat, pi + alen + 1, text, cur_ti2) {
+                return true;
+            }
+            if text[cur_ti2] == 0 || !regex_char_eq(text[cur_ti2], pat, pi, &mut dummy2) {
+                return false;
+            }
+            cur_ti2 = cur_ti2 + 1;
+        }
+    }
+    if quant == 63 {
+        var dummy3: uint = 0;
+        if text[ti] != 0 && regex_char_eq(text[ti], pat, pi, &mut dummy3) {
+            if regex_match_here(pat, pi + alen + 1, text, ti + 1) {
+                return true;
+            }
+        }
+        return regex_match_here(pat, pi + alen + 1, text, ti);
+    }
+
+    var step: uint = 0;
+    if text[ti] != 0 && regex_char_eq(text[ti], pat, pi, &mut step) {
+        return regex_match_here(pat, pi + step, text, ti + 1);
+    }
+    return false;
+}
+
+fn regex_is_match(pat: *const byte, text: *const byte) -> bool {
+    if pat[0] == 94 {
+        return regex_match_here(pat, 1, text, 0);
+    }
+    var ti: uint = 0;
+    while true {
+        if regex_match_here(pat, 0, text, ti) {
+            return true;
+        }
+        if text[ti] == 0 {
+            return false;
+        }
+        ti = ti + 1;
+    }
+    return false;
+}

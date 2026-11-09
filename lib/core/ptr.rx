@@ -1,0 +1,82 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+struct NonNull<T> {
+    ptr: *mut T,
+}
+
+fn non_null_new<T>(ptr: *mut T) -> NonNull<T> {
+    if (ptr as uint) == 0 {
+        panic("Attempted to construct NonNull from null pointer");
+    }
+    return NonNull<T> { ptr: ptr };
+}
+
+fn non_null_as_ptr<T>(nn: NonNull<T>) -> *mut T {
+    return nn.ptr;
+}
+
+struct Slice<T> {
+    data: *const T,
+    len: usize,
+}
+
+fn slice_new<T>(data: *const T, len: usize) -> Slice<T> {
+    return Slice<T> { data: data, len: len };
+}
+
+fn slice_len<T>(s: *const Slice<T>) -> usize {
+    return s.len;
+}
+
+fn slice_is_empty<T>(s: *const Slice<T>) -> bool {
+    return s.len == 0;
+}
+
+fn ptr_offset<T>(ptr: *const T, count: isize, elem_size: usize) -> *const T {
+    let byte_offset: isize = count * (elem_size as isize);
+    let addr: uint = ((ptr as uint) as isize + byte_offset) as uint;
+    return addr as *const T;
+}
+
+fn ptr_wrapping_offset<T>(ptr: *const T, count: isize, elem_size: usize) -> *const T {
+    return ptr_offset<T>(ptr, count, elem_size);
+}
+
+fn ptr_diff<T>(p1: *const T, p2: *const T, elem_size: usize) -> isize {
+    let diff_bytes: isize = (p1 as isize) - (p2 as isize);
+    if elem_size == 0 { return 0; }
+    return diff_bytes / (elem_size as isize);
+}
+
+fn is_aligned(addr: uint, align: usize) -> bool {
+    if align == 0 { return false; }
+    return (addr & ((align - 1) as uint)) == 0;
+}
+
+fn align_up(addr: uint, align: usize) -> uint {
+    if align == 0 { return addr; }
+    let mask: uint = (align - 1) as uint;
+    return (addr + mask) & (~mask);
+}
+
+fn align_down(addr: uint, align: usize) -> uint {
+    if align == 0 { return addr; }
+    let mask: uint = (align - 1) as uint;
+    return addr & (~mask);
+}
+
+struct PacketDST<T> {
+    id: u32,
+    length: u32,
+    payload: T,
+}
+
+fn packet_dst_new<T>(id: u32, length: u32, payload: T) -> PacketDST<T> {
+    return PacketDST<T> {
+        id: id,
+        length: length,
+        payload: payload,
+    };
+}
+

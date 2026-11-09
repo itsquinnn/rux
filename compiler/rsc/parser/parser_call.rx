@@ -1,0 +1,128 @@
+fn resolve_named_call_args(p: *mut Parser, call_node: *mut AstNode) {
+    if p == (0 as *mut Parser) || call_node == (0 as *mut AstNode) { return; }
+    let fn_ast: *mut AstNode = find_comptime_fn(p, call_node.hash);
+    if fn_ast == (0 as *mut AstNode) { return; }
+    var ordered_args: [u64; 16];
+    var matched_args: [u32; 16];
+    var param_count: u32 = 0;
+    var cur_p: *mut AstNode = fn_ast.child2;
+    while cur_p != (0 as *mut AstNode) && param_count < 16 {
+        ordered_args[param_count] = 0;
+        matched_args[param_count] = 0;
+        param_count = param_count + 1;
+        cur_p = cur_p.next;
+    }
+    var arg_idx: u32 = 0;
+    var cur_a: *mut AstNode = call_node.child2;
+    while cur_a != (0 as *mut AstNode) {
+        if cur_a.id == 0 {
+            if arg_idx < param_count {
+                ordered_args[arg_idx] = cur_a as u64;
+                matched_args[arg_idx] = 1;
+            }
+        } else {
+            var pi: u32 = 0;
+            var cp: *mut AstNode = fn_ast.child2;
+            var found: u32 = 0;
+            while cp != (0 as *mut AstNode) && pi < param_count {
+                if cp.hash == cur_a.id {
+                    ordered_args[pi] = cur_a as u64;
+                    matched_args[pi] = 1;
+                    found = 1;
+                    break;
+                }
+                pi = pi + 1;
+                cp = cp.next;
+            }
+            if found == 0 {
+                diag_syntax_unexpected_tok(p, "unknown argument name");
+            }
+        }
+        arg_idx = arg_idx + 1;
+        cur_a = cur_a.next;
+    }
+    var mi: u32 = 0;
+    while mi < param_count {
+        if matched_args[mi] == 0 {
+            diag_syntax_unexpected_tok(p, "missing required argument");
+        }
+        mi = mi + 1;
+    }
+    var head: *mut AstNode = 0 as *mut AstNode;
+    var tail: *mut AstNode = 0 as *mut AstNode;
+    var oi: u32 = 0;
+    while oi < param_count {
+        let node_ptr: *mut AstNode = ordered_args[oi] as *mut AstNode;
+        node_ptr.next = 0 as *mut AstNode;
+        if head == (0 as *mut AstNode) {
+            head = node_ptr;
+        } else {
+            tail.next = node_ptr;
+        }
+        tail = node_ptr;
+        oi = oi + 1;
+    }
+    call_node.child2 = head;
+}
+
+fn parse_cast_expr(p: *mut Parser, left: *mut AstNode) -> *mut AstNode {
+    parser_expect(p, 19);
+    let cn: *mut AstNode = alloc_node(p, 131);
+    cn.child1 = left;
+    var ptr_depth: u64 = 0;
+    while p.cur_tok.kind == 32 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 || p.cur_tok.kind == 124 || p.cur_tok.kind == 50 {
+        if p.cur_tok.kind == 32 || p.cur_tok.kind == 50 {
+            ptr_depth = ptr_depth + 1;
+        }
+        lex_next_token(p.lex, &mut p.cur_tok);
+    }
+    var c_kind: u64 = p.cur_tok.kind;
+    var c_hash: u64 = p.cur_tok.hash;
+    if p.cur_tok.kind != 0 && p.cur_tok.kind != 71 && p.cur_tok.kind != 72 && p.cur_tok.kind != 61 && p.cur_tok.kind != 65 {
+        lex_next_token(p.lex, &mut p.cur_tok);
+    }
+    if c_kind == 11 {
+        if p.cur_tok.kind == 60 {
+            parser_expect(p, 60);
+            var pdepth: u32 = 1;
+            while pdepth > 0 && p.cur_tok.kind != 0 {
+                if p.cur_tok.kind == 60 { pdepth = pdepth + 1; }
+                else if p.cur_tok.kind == 61 { pdepth = pdepth - 1; }
+                lex_next_token(p.lex, &mut p.cur_tok);
+            }
+        }
+        if p.cur_tok.kind == 74 {
+            parser_expect(p, 74);
+            while p.cur_tok.kind == 32 || p.cur_tok.kind == 50 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 || p.cur_tok.kind == 124 {
+                lex_next_token(p.lex, &mut p.cur_tok);
+            }
+            if p.cur_tok.kind != 0 {
+                lex_next_token(p.lex, &mut p.cur_tok);
+            }
+        }
+        ptr_depth = 1;
+    }
+    if c_kind == 1 {
+        let cal: *mut ConstEntry = parser_find_alias(p, c_hash);
+        if cal != (0 as *mut ConstEntry) {
+            if cal.extra >= 1000 && ptr_depth == 0 {
+                ptr_depth = 1;
+                c_hash = cal.val;
+            } else if cal.extra < 1000 {
+                c_hash = cal.val;
+                c_kind = cal.extra;
+            }
+        }
+    }
+    if c_kind == 138 {
+        if ptr_depth == 0 { ptr_depth = 1; c_hash = 631772817358541784; c_kind = 23; }
+    }
+    cn.hash = c_hash;
+    cn.val = c_kind;
+    if ptr_depth > 1 {
+        cn.is_mut = 11;
+    } else {
+        cn.is_mut = ptr_depth;
+    }
+    return cn;
+}

@@ -1,0 +1,337 @@
+include "bootstrap/binary/elf.rx";
+include "bootstrap/binary/pe.rx";
+include "bootstrap/binary/macho.rx";
+include "bootstrap/emitter/codegen.rx";
+include "lib/os/uses_substrate.rx";
+
+const TARGET_OS_LINUX: uint   = 1;
+const TARGET_OS_WINDOWS: uint = 2;
+const TARGET_OS_MACOS: uint   = 3;
+
+const DEFAULT_BASE_VADDR: uint = 4194304;
+
+struct ExecutableVessel {
+    code_ptr: *const byte,
+    code_len: uint,
+    entry_offset: uint,
+}
+
+fn write_header_and_body_to_file(
+    header: *const u8,
+    hlen: uint,
+    body: *const u8,
+    blen: uint,
+    pad_len: uint,
+    output_filepath: *byte
+) -> int {
+    let flags: uint = 577;
+    let mode: uint = 493;
+    let fd: int = uses_substrate_open(output_filepath as *const byte, flags, mode);
+    if fd < 0 {
+        return -1;
+    }
+    if hlen > 0 {
+        var written: uint = 0;
+        while written < hlen {
+            let chunk: uint = hlen - written;
+            let p: *const byte = (header + written) as *const byte;
+            let n: int = uses_substrate_write(fd as uint, p, chunk);
+            if n <= 0 { uses_substrate_close(fd as uint); return -2; }
+            written = written + (n as uint);
+        }
+    }
+    if blen > 0 {
+        var written: uint = 0;
+        while written < blen {
+            let chunk: uint = blen - written;
+            let p: *const byte = (body + written) as *const byte;
+            let n: int = uses_substrate_write(fd as uint, p, chunk);
+            if n <= 0 { uses_substrate_close(fd as uint); return -2; }
+            written = written + (n as uint);
+        }
+    }
+    if pad_len > 0 {
+        var pad: [u8; 512];
+        var pi: uint = 0;
+        while pi < 512 { pad[pi] = 0; pi = pi + 1; }
+        var remaining: uint = pad_len;
+        while remaining > 0 {
+            var chunk: uint = remaining;
+            if chunk > 512 { chunk = 512; }
+            uses_substrate_write(fd as uint, &pad[0] as *const byte, chunk);
+            remaining = remaining - chunk;
+        }
+    }
+    uses_substrate_close(fd as uint);
+    return (hlen + blen + pad_len) as int;
+}
+
+fn write_vessel_elf(vessel: *const ExecutableVessel, output_filepath: *byte) -> int {
+    let header_size: uint = 120;
+    let total_file_size: uint = header_size + vessel.code_len;
+
+    var binary_buffer: [u8; 128];
+
+    binary_buffer[0] = 127;
+    binary_buffer[1] = 69;
+    binary_buffer[2] = 76;
+    binary_buffer[3] = 70;
+    binary_buffer[4] = 2;
+    binary_buffer[5] = 1;
+    binary_buffer[6] = 1;
+    binary_buffer[7] = 0;
+
+    var i: uint = 8;
+    while i < 16 { binary_buffer[i] = 0; i = i + 1; }
+
+    binary_buffer[16] = 2; binary_buffer[17] = 0;
+    binary_buffer[18] = 62; binary_buffer[19] = 0;
+    binary_buffer[20] = 1; binary_buffer[21] = 0; binary_buffer[22] = 0; binary_buffer[23] = 0;
+
+    let entry_vaddr: uint = DEFAULT_BASE_VADDR + header_size + vessel.entry_offset;
+    var b: uint = 0;
+    while b < 8 {
+        binary_buffer[24 + b] = ((entry_vaddr >> (b * 8)) & 255) as u8;
+        b = b + 1;
+    }
+
+    binary_buffer[32] = 64; binary_buffer[33] = 0; binary_buffer[34] = 0; binary_buffer[35] = 0;
+    binary_buffer[36] = 0;  binary_buffer[37] = 0; binary_buffer[38] = 0; binary_buffer[39] = 0;
+
+    b = 0; while b < 8 { binary_buffer[40 + b] = 0; b = b + 1; }
+
+    binary_buffer[48] = 0; binary_buffer[49] = 0; binary_buffer[50] = 0; binary_buffer[51] = 0;
+    binary_buffer[52] = 64; binary_buffer[53] = 0;
+    binary_buffer[54] = 56; binary_buffer[55] = 0;
+    binary_buffer[56] = 1;  binary_buffer[57] = 0;
+    binary_buffer[58] = 64; binary_buffer[59] = 0;
+    binary_buffer[60] = 0;  binary_buffer[61] = 0;
+    binary_buffer[62] = 0;  binary_buffer[63] = 0;
+
+    binary_buffer[64] = 1; binary_buffer[65] = 0; binary_buffer[66] = 0; binary_buffer[67] = 0;
+    binary_buffer[68] = 5; binary_buffer[69] = 0; binary_buffer[70] = 0; binary_buffer[71] = 0;
+    b = 0; while b < 8 { binary_buffer[72 + b] = 0; b = b + 1; }
+    b = 0; while b < 8 { binary_buffer[80 + b] = ((DEFAULT_BASE_VADDR >> (b * 8)) & 255) as u8; b = b + 1; }
+    b = 0; while b < 8 { binary_buffer[88 + b] = ((DEFAULT_BASE_VADDR >> (b * 8)) & 255) as u8; b = b + 1; }
+    b = 0; while b < 8 { binary_buffer[96 + b] = ((total_file_size >> (b * 8)) & 255) as u8; b = b + 1; }
+    b = 0; while b < 8 { binary_buffer[104 + b] = ((total_file_size >> (b * 8)) & 255) as u8; b = b + 1; }
+    binary_buffer[112] = 0; binary_buffer[113] = 16; binary_buffer[114] = 0; binary_buffer[115] = 0;
+    binary_buffer[116] = 0; binary_buffer[117] = 0;  binary_buffer[118] = 0; binary_buffer[119] = 0;
+
+    return write_header_and_body_to_file(&binary_buffer[0], header_size, vessel.code_ptr, vessel.code_len, 0, output_filepath);
+}
+
+fn write_vessel_pe(vessel: *const ExecutableVessel, output_filepath: *byte) -> int {
+    let header_size: uint = 512;
+    let raw_code_len: uint = vessel.code_len;
+    let aligned_raw_code: uint = ((raw_code_len + 511) / 512) * 512;
+    let pad_len: uint = aligned_raw_code - raw_code_len;
+
+    var binary_buffer: [u8; 512];
+
+    var z: uint = 0;
+    while z < 512 { binary_buffer[z] = 0; z = z + 1; }
+
+    binary_buffer[0] = 77;
+    binary_buffer[1] = 90;
+    binary_buffer[60] = 64;
+    binary_buffer[61] = 0; binary_buffer[62] = 0; binary_buffer[63] = 0;
+
+    binary_buffer[64] = 80;
+    binary_buffer[65] = 69;
+    binary_buffer[66] = 0;
+    binary_buffer[67] = 0;
+
+    binary_buffer[68] = 100; binary_buffer[69] = 134;
+    binary_buffer[70] = 1;   binary_buffer[71] = 0;
+    binary_buffer[72] = 0; binary_buffer[73] = 0; binary_buffer[74] = 0; binary_buffer[75] = 0;
+    binary_buffer[76] = 0; binary_buffer[77] = 0; binary_buffer[78] = 0; binary_buffer[79] = 0;
+    binary_buffer[80] = 0; binary_buffer[81] = 0; binary_buffer[82] = 0; binary_buffer[83] = 0;
+    binary_buffer[84] = 240; binary_buffer[85] = 0;
+    binary_buffer[86] = 34;  binary_buffer[87] = 0;
+
+    let opt: uint = 88;
+    binary_buffer[opt + 0] = 11; binary_buffer[opt + 1] = 2;
+    binary_buffer[opt + 2] = 1;  binary_buffer[opt + 3] = 0;
+    binary_buffer[opt + 4] = (aligned_raw_code & 255) as u8;
+    binary_buffer[opt + 5] = ((aligned_raw_code >> 8) & 255) as u8;
+    binary_buffer[opt + 6] = 0; binary_buffer[opt + 7] = 0;
+
+    let ep_rva: uint = 4096 + vessel.entry_offset;
+    binary_buffer[opt + 16] = (ep_rva & 255) as u8;
+    binary_buffer[opt + 17] = ((ep_rva >> 8) & 255) as u8;
+    binary_buffer[opt + 18] = 0; binary_buffer[opt + 19] = 0;
+
+    binary_buffer[opt + 20] = 0;  binary_buffer[opt + 21] = 16;
+    binary_buffer[opt + 22] = 0;  binary_buffer[opt + 23] = 0;
+
+    binary_buffer[opt + 24] = 0; binary_buffer[opt + 25] = 0; binary_buffer[opt + 26] = 0; binary_buffer[opt + 27] = 64;
+    binary_buffer[opt + 28] = 1; binary_buffer[opt + 29] = 0; binary_buffer[opt + 30] = 0; binary_buffer[opt + 31] = 0;
+
+    binary_buffer[opt + 32] = 0;  binary_buffer[opt + 33] = 16;
+    binary_buffer[opt + 36] = 0;  binary_buffer[opt + 37] = 2;
+
+    binary_buffer[opt + 40] = 6; binary_buffer[opt + 41] = 0;
+    binary_buffer[opt + 48] = 6; binary_buffer[opt + 49] = 0;
+
+    binary_buffer[opt + 56] = 0; binary_buffer[opt + 57] = 32;
+    binary_buffer[opt + 60] = 0; binary_buffer[opt + 61] = 2;
+
+    binary_buffer[opt + 68] = 3; binary_buffer[opt + 69] = 0;
+    binary_buffer[opt + 70] = 96; binary_buffer[opt + 71] = 129;
+
+    binary_buffer[opt + 74] = 16;
+    binary_buffer[opt + 81] = 16;
+    binary_buffer[opt + 108] = 16; binary_buffer[opt + 109] = 0;
+
+    let sec: uint = opt + 240;
+    binary_buffer[sec + 0] = 46; binary_buffer[sec + 1] = 116; binary_buffer[sec + 2] = 101;
+    binary_buffer[sec + 3] = 120; binary_buffer[sec + 4] = 116; binary_buffer[sec + 5] = 0;
+
+    binary_buffer[sec + 8] = (raw_code_len & 255) as u8;
+    binary_buffer[sec + 9] = ((raw_code_len >> 8) & 255) as u8;
+
+    binary_buffer[sec + 12] = 0; binary_buffer[sec + 13] = 16;
+
+    binary_buffer[sec + 16] = (aligned_raw_code & 255) as u8;
+    binary_buffer[sec + 17] = ((aligned_raw_code >> 8) & 255) as u8;
+
+    binary_buffer[sec + 20] = 0; binary_buffer[sec + 21] = 2;
+
+    binary_buffer[sec + 36] = 32; binary_buffer[sec + 37] = 0; binary_buffer[sec + 38] = 0; binary_buffer[sec + 39] = 96;
+
+    return write_header_and_body_to_file(&binary_buffer[0], header_size, vessel.code_ptr, raw_code_len, pad_len, output_filepath);
+}
+
+fn write_vessel_macho(vessel: *const ExecutableVessel, output_filepath: *byte) -> int {
+    let raw_code_len: uint = vessel.code_len;
+    let header_size: uint = 280;
+    let total_file_size: uint = header_size + raw_code_len;
+
+    var binary_buffer: [u8; 288];
+
+    var z: uint = 0;
+    while z < header_size { binary_buffer[z] = 0; z = z + 1; }
+
+    binary_buffer[0] = 207; binary_buffer[1] = 250; binary_buffer[2] = 237; binary_buffer[3] = 254;
+    binary_buffer[4] = 7; binary_buffer[5] = 0; binary_buffer[6] = 0; binary_buffer[7] = 1;
+    binary_buffer[8] = 3; binary_buffer[9] = 0; binary_buffer[10] = 0; binary_buffer[11] = 128;
+    binary_buffer[12] = 2; binary_buffer[13] = 0; binary_buffer[14] = 0; binary_buffer[15] = 0;
+    binary_buffer[16] = 3; binary_buffer[17] = 0; binary_buffer[18] = 0; binary_buffer[19] = 0;
+    let sizeofcmds: uint = 72 + 152 + 24;
+    binary_buffer[20] = (sizeofcmds & 255) as u8; binary_buffer[21] = 0; binary_buffer[22] = 0; binary_buffer[23] = 0;
+    binary_buffer[24] = 1; binary_buffer[25] = 0; binary_buffer[26] = 32; binary_buffer[27] = 0;
+
+    let pz: uint = 32;
+    binary_buffer[pz + 0] = 25; binary_buffer[pz + 1] = 0; binary_buffer[pz + 2] = 0; binary_buffer[pz + 3] = 0;
+    binary_buffer[pz + 4] = 72; binary_buffer[pz + 5] = 0; binary_buffer[pz + 6] = 0; binary_buffer[pz + 7] = 0;
+    binary_buffer[pz + 8] = 95; binary_buffer[pz + 9] = 95; binary_buffer[pz + 10] = 80; binary_buffer[pz + 11] = 65;
+    binary_buffer[pz + 12] = 71; binary_buffer[pz + 13] = 69; binary_buffer[pz + 14] = 90; binary_buffer[pz + 15] = 69;
+    binary_buffer[pz + 16] = 82; binary_buffer[pz + 17] = 79;
+    binary_buffer[pz + 36] = 1;
+
+    let tx: uint = 104;
+    binary_buffer[tx + 0] = 25; binary_buffer[tx + 1] = 0; binary_buffer[tx + 2] = 0; binary_buffer[tx + 3] = 0;
+    binary_buffer[tx + 4] = 152; binary_buffer[tx + 5] = 0; binary_buffer[tx + 6] = 0; binary_buffer[tx + 7] = 0;
+    binary_buffer[tx + 8] = 95; binary_buffer[tx + 9] = 95; binary_buffer[tx + 10] = 84; binary_buffer[tx + 11] = 69;
+    binary_buffer[tx + 12] = 88; binary_buffer[tx + 13] = 84;
+    binary_buffer[tx + 28] = 1;
+    binary_buffer[tx + 32] = 0; binary_buffer[tx + 33] = 16;
+    binary_buffer[tx + 48] = (total_file_size & 255) as u8;
+    binary_buffer[tx + 49] = ((total_file_size >> 8) & 255) as u8;
+    binary_buffer[tx + 56] = 5; binary_buffer[tx + 60] = 5;
+    binary_buffer[tx + 64] = 1;
+
+    let sc: uint = tx + 72;
+    binary_buffer[sc + 0] = 95; binary_buffer[sc + 1] = 95; binary_buffer[sc + 2] = 116; binary_buffer[sc + 3] = 101;
+    binary_buffer[sc + 4] = 120; binary_buffer[sc + 5] = 116;
+    binary_buffer[sc + 16] = 95; binary_buffer[sc + 17] = 95; binary_buffer[sc + 18] = 84; binary_buffer[sc + 19] = 69;
+    binary_buffer[sc + 20] = 88; binary_buffer[sc + 21] = 84;
+    let text_vaddr: uint = header_size;
+    binary_buffer[sc + 32] = (text_vaddr & 255) as u8;
+    binary_buffer[sc + 33] = ((text_vaddr >> 8) & 255) as u8;
+    binary_buffer[sc + 36] = 1;
+    binary_buffer[sc + 40] = (raw_code_len & 255) as u8;
+    binary_buffer[sc + 41] = ((raw_code_len >> 8) & 255) as u8;
+    binary_buffer[sc + 48] = (header_size & 255) as u8;
+    binary_buffer[sc + 49] = ((header_size >> 8) & 255) as u8;
+    binary_buffer[sc + 68] = 0; binary_buffer[sc + 69] = 4; binary_buffer[sc + 70] = 0; binary_buffer[sc + 71] = 128;
+
+    let mn: uint = 256;
+    binary_buffer[mn + 0] = 40; binary_buffer[mn + 1] = 0; binary_buffer[mn + 2] = 0; binary_buffer[mn + 3] = 128;
+    binary_buffer[mn + 4] = 24; binary_buffer[mn + 5] = 0; binary_buffer[mn + 6] = 0; binary_buffer[mn + 7] = 0;
+    let main_entry_offset: uint = header_size + vessel.entry_offset;
+    binary_buffer[mn + 8] = (main_entry_offset & 255) as u8;
+    binary_buffer[mn + 9] = ((main_entry_offset >> 8) & 255) as u8;
+
+    return write_header_and_body_to_file(&binary_buffer[0], header_size, vessel.code_ptr, raw_code_len, 0, output_filepath);
+}
+
+fn write_executable_binary_elf(cg: *mut CodeGenerator, output_filepath: *byte) -> int {
+    var v: ExecutableVessel;
+    v.code_ptr = &cg.stream.buffer[0];
+    v.code_len = cg.stream.length;
+    v.entry_offset = cg.entry_point_offset;
+    return write_vessel_elf(&v, output_filepath);
+}
+
+fn write_executable_binary_pe(cg: *mut CodeGenerator, output_filepath: *byte) -> int {
+    var v: ExecutableVessel;
+    v.code_ptr = &cg.stream.buffer[0];
+    v.code_len = cg.stream.length;
+    v.entry_offset = cg.entry_point_offset;
+    return write_vessel_pe(&v, output_filepath);
+}
+
+fn write_executable_binary_macho(cg: *mut CodeGenerator, output_filepath: *byte) -> int {
+    var v: ExecutableVessel;
+    v.code_ptr = &cg.stream.buffer[0];
+    v.code_len = cg.stream.length;
+    v.entry_offset = cg.entry_point_offset;
+    return write_vessel_macho(&v, output_filepath);
+}
+
+fn write_executable_binary_target(
+    cg: *mut CodeGenerator,
+    output_filepath: *byte,
+    target_os: uint
+) -> int {
+    if target_os == TARGET_OS_WINDOWS {
+        return write_executable_binary_pe(cg, output_filepath);
+    } else if target_os == TARGET_OS_MACOS {
+        return write_executable_binary_macho(cg, output_filepath);
+    }
+    return write_executable_binary_elf(cg, output_filepath);
+}
+
+fn write_executable_binary(cg: *mut CodeGenerator, output_filepath: *byte) -> int {
+    return write_executable_binary_elf(cg, output_filepath);
+}
+
+fn write_buffer_to_file(buf: *const u8, total_file_size: uint, output_filepath: *byte) -> int {
+    return uses_substrate_write_file(output_filepath as *const byte, buf, total_file_size);
+}
+
+fn emit_linux_elf64(code_ptr: *const byte, code_len: uint, entry_offset: uint, output_filepath: *byte) -> int {
+    var v: ExecutableVessel;
+    v.code_ptr = code_ptr;
+    v.code_len = code_len;
+    v.entry_offset = entry_offset;
+    return write_vessel_elf(&v, output_filepath);
+}
+
+fn emit_windows_pe(code_ptr: *const byte, code_len: uint, entry_offset: uint, output_filepath: *byte) -> int {
+    var v: ExecutableVessel;
+    v.code_ptr = code_ptr;
+    v.code_len = code_len;
+    v.entry_offset = entry_offset;
+    return write_vessel_pe(&v, output_filepath);
+}
+
+fn emit_macos_macho(code_ptr: *const byte, code_len: uint, entry_offset: uint, output_filepath: *byte) -> int {
+    var v: ExecutableVessel;
+    v.code_ptr = code_ptr;
+    v.code_len = code_len;
+    v.entry_offset = entry_offset;
+    return write_vessel_macho(&v, output_filepath);
+}

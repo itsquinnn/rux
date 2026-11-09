@@ -1,0 +1,52 @@
+const TOKEN_EOF: uint         = 0;
+const TOKEN_IDENT: uint       = 1;
+const TOKEN_INT: uint         = 2;
+const TOKEN_STRING: uint      = 3;
+const TOKEN_CHAR: uint        = 4;
+
+const TOKEN_SHAPE: uint       = 10;
+const TOKEN_FN: uint          = 11;
+const TOKEN_LET: uint         = 12;
+const TOKEN_MUT: uint         = 13;
+const TOKEN_IF: uint          = 14;
+const TOKEN_ELSE: uint        = 15;
+const TOKEN_WHILE: uint       = 16;
+const TOKEN_RETURN: uint      = 17;
+const TOKEN_SYSCALL: uint     = 18;
+const TOKEN_AS: uint          = 19;
+
+const TOKEN_TYPE_INT: uint    = 20;
+const TOKEN_TYPE_UINT: uint   = 21;
+const TOKEN_TYPE_U32: uint    = 22;
+const TOKEN_TYPE_BYTE: uint   = 23;
+const TOKEN_TYPE_VOID: uint   = 24;
+const TOKEN_TYPE_STR: uint    = 25;
+const TOKEN_PRINTLN: uint     = 26;
+
+const TOKEN_PLUS: uint        = 30;
+const TOKEN_MINUS: uint       = 31;
+const TOKEN_STAR: uint        = 32;
+const TOKEN_SLASH: uint       = 33;
+const TOKEN_PERCENT: uint     = 34;
+const TOKEN_EQ: uint          = 40;
+const TOKEN_LPAREN: uint      = 60;
+const TOKEN_RPAREN: uint      = 61;
+const TOKEN_LBRACE: uint      = 62;
+const TOKEN_RBRACE: uint      = 63;
+const TOKEN_COLON: uint       = 70;
+const TOKEN_SEMICOLON: uint   = 71;
+const TOKEN_COMMA: uint       = 72;
+const TOKEN_ARROW: uint       = 74;
+const TOKEN_PIPE: uint        = 75;
+const TOKEN_FAT_ARROW: uint   = 76;
+const TOKEN_VAR: uint         = 123;
+const TOKEN_CONST: uint       = 124;
+const TOKEN_IS: uint          = 125;
+
+struct Token {
+    kind: uint,
+    start: *byte,
+    length: uint,
+    int_value: uint,
+    name_hash: uint,
+}

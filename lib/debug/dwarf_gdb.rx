@@ -1,0 +1,102 @@
+include "lib/core/types.rx";
+
+struct DwarfLineRow {
+    address: u64,
+    file_id: u32,
+    line: u32,
+    column: u32,
+    is_stmt: bool,
+}
+
+struct DwarfLineTable {
+    rows: [DwarfLineRow; 64],
+    count: uint,
+}
+
+struct GdbBreakpoint {
+    addr: u64,
+    saved_byte: byte,
+    enabled: bool,
+}
+
+fn dwarf_line_init(tbl: *mut DwarfLineTable) {
+    tbl.count = 0;
+}
+
+fn dwarf_line_append(tbl: *mut DwarfLineTable, addr: u64, file_id: u32, line: u32, col: u32) -> bool {
+    if tbl.count >= 64 { return false; }
+    let idx: uint = tbl.count;
+    tbl.rows[idx].address = addr;
+    tbl.rows[idx].file_id = file_id;
+    tbl.rows[idx].line = line;
+    tbl.rows[idx].column = col;
+    tbl.rows[idx].is_stmt = true;
+    tbl.count = idx + 1;
+    return true;
+}
+
+fn dwarf_lookup_pc(tbl: *const DwarfLineTable, pc: u64, out_file: *mut u32, out_line: *mut u32) -> bool {
+    var best_idx: int = -1;
+    var best_addr: u64 = 0;
+    var i: uint = 0;
+    while i < tbl.count {
+        let a: u64 = tbl.rows[i].address;
+        if a <= pc && (best_idx < 0 || a >= best_addr) {
+            best_addr = a;
+            best_idx = i as int;
+        }
+        i = i + 1;
+    }
+    if best_idx < 0 { return false; }
+    let u: uint = best_idx as uint;
+    out_file[0] = tbl.rows[u].file_id;
+    out_line[0] = tbl.rows[u].line;
+    return true;
+}
+
+fn gdb_hex_nibble(v: u8) -> byte {
+    let n: u8 = v & 15;
+    if n < 10 { return (48 + n) as byte; }
+    return (87 + n) as byte;
+}
+
+fn gdb_from_hex_char(ch: byte) -> int {
+    if ch >= 48 && ch <= 57 { return (ch - 48) as int; }
+    if ch >= 97 && ch <= 102 { return (ch - 87) as int; }
+    if ch >= 65 && ch <= 70 { return (ch - 55) as int; }
+    return -1;
+}
+
+fn gdb_rsp_encode_packet(payload: *const byte, payload_len: uint, dst: *mut byte) -> uint {
+    dst[0] = 36;
+    var sum: u8 = 0;
+    var i: uint = 0;
+    while i < payload_len {
+        dst[1 + i] = payload[i];
+        sum = (sum + payload[i]) & 255;
+        i = i + 1;
+    }
+    let end: uint = 1 + payload_len;
+    dst[end] = 35;
+    dst[end + 1] = gdb_hex_nibble(sum >> 4);
+    dst[end + 2] = gdb_hex_nibble(sum & 15);
+    dst[end + 3] = 0;
+    return end + 3;
+}
+
+fn gdb_rsp_verify_packet(pkt: *const byte, pkt_len: uint) -> bool {
+    if pkt_len < 4 { return false; }
+    if pkt[0] != 36 || pkt[pkt_len - 3] != 35 { return false; }
+    var sum: u8 = 0;
+    var i: uint = 1;
+    while i < (pkt_len - 3) {
+        sum = (sum + pkt[i]) & 255;
+        i = i + 1;
+    }
+    let hi: int = gdb_from_hex_char(pkt[pkt_len - 2]);
+    let lo: int = gdb_from_hex_char(pkt[pkt_len - 1]);
+    if hi < 0 || lo < 0 { return false; }
+    let expected: u8 = (((hi as u8) << 4) | (lo as u8)) & 255;
+    return sum == expected;
+}
+

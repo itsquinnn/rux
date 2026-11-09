@@ -1,0 +1,28 @@
+fn opt_optimize_stmt_list(stmts: *mut AstNode) {
+    var cur: *mut AstNode = stmts;
+    while cur != (0 as *mut AstNode) {
+        if cur.kind == 105 || cur.kind == 109 || cur.kind == 110 {
+            opt_simplify_expr(cur.child1);
+        } else if cur.kind == 106 {
+            opt_simplify_expr(cur.child1);
+            opt_simplify_expr(cur.child2);
+        } else if cur.kind == 107 {
+            opt_simplify_expr(cur.child1);
+            opt_optimize_stmt_list(cur.child2);
+            opt_optimize_stmt_list(cur.child3);
+        } else if cur.kind == 108 {
+            opt_simplify_expr(cur.child1);
+            opt_optimize_stmt_list(cur.child2);
+        } else if cur.kind == 125 {
+            opt_simplify_expr(cur.child1);
+            opt_simplify_expr(cur.child2);
+            opt_optimize_stmt_list(cur.child3);
+        } else if cur.kind == 132 || cur.kind == 128 {
+            opt_optimize_stmt_list(cur.child1);
+        }
+        cur = cur.next;
+    }
+    opt_cse_stmt_list(stmts);
+    opt_dce_stmt_list(stmts);
+}
+

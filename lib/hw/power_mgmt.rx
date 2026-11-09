@@ -1,0 +1,54 @@
+include "lib/core/types.rx";
+
+const POWER_STATE_S0_WORKING: u8 = 0;
+const POWER_STATE_S3_SLEEP: u8   = 3;
+const POWER_STATE_S4_HIBER: u8   = 4;
+const POWER_STATE_S5_SOFT_OFF: u8 = 5;
+
+const ACPI_SLP_EN_BIT: u16 = 8192;
+
+struct PowerController {
+    pm1a_cnt_port: u16,
+    slp_typa_s3: u8,
+    slp_typa_s5: u8,
+    current_s_state: u8,
+    min_freq_mhz: u32,
+    max_freq_mhz: u32,
+    cur_freq_mhz: u32,
+}
+
+fn power_ctrl_init(p: *mut PowerController, pm1a_port: u16, slp_s3: u8, slp_s5: u8, min_mhz: u32, max_mhz: u32) {
+    p.pm1a_cnt_port = pm1a_port;
+    p.slp_typa_s3 = slp_s3;
+    p.slp_typa_s5 = slp_s5;
+    p.current_s_state = POWER_STATE_S0_WORKING;
+    p.min_freq_mhz = min_mhz;
+    p.max_freq_mhz = max_mhz;
+    p.cur_freq_mhz = max_mhz;
+}
+
+fn power_encode_pm1a_sleep(p: *mut PowerController, target_state: u8) -> u16 {
+    p.current_s_state = target_state;
+    var slp_typ: u16 = 0;
+    if target_state == POWER_STATE_S3_SLEEP {
+        slp_typ = (p.slp_typa_s3 as u16) & 7;
+    } else if target_state == POWER_STATE_S5_SOFT_OFF {
+        slp_typ = (p.slp_typa_s5 as u16) & 7;
+    }
+    return (slp_typ << 10) | ACPI_SLP_EN_BIT;
+}
+
+fn power_governor_select_mhz(p: *mut PowerController, cpu_load_pct: u32) -> u32 {
+    if cpu_load_pct >= 80 {
+        p.cur_freq_mhz = p.max_freq_mhz;
+        return p.cur_freq_mhz;
+    }
+    if cpu_load_pct <= 15 {
+        p.cur_freq_mhz = p.min_freq_mhz;
+        return p.cur_freq_mhz;
+    }
+    let span: u32 = p.max_freq_mhz - p.min_freq_mhz;
+    p.cur_freq_mhz = p.min_freq_mhz + ((span * cpu_load_pct) / 100);
+    return p.cur_freq_mhz;
+}
+

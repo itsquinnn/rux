@@ -1,0 +1,86 @@
+include "lib/core/types.rx";
+
+const SCHED_PRIO_IDLE: uint     = 0;
+const SCHED_PRIO_NORMAL: uint   = 1;
+const SCHED_PRIO_HIGH: uint     = 2;
+const SCHED_PRIO_REALTIME: uint = 3;
+
+struct PreemptTask {
+    tid: uint,
+    priority: uint,
+    quantum_ns: uint,
+    consumed_ns: uint,
+    vruntime: uint,
+    active: bool,
+    preempted_count: uint,
+}
+
+struct PriorityScheduler {
+    tasks: [PreemptTask; 32],
+    count: uint,
+    current_slot: int,
+    total_preemptions: uint,
+}
+
+fn prio_sched_init(ps: *mut PriorityScheduler) {
+    ps.count = 0;
+    ps.current_slot = -1;
+    ps.total_preemptions = 0;
+    var i: uint = 0;
+    while i < 32 {
+        ps.tasks[i].active = false;
+        i = i + 1;
+    }
+}
+
+fn prio_sched_spawn(ps: *mut PriorityScheduler, priority: uint, quantum_ns: uint) -> uint {
+    if ps.count >= 32 { return 0; }
+    let idx: uint = ps.count;
+    ps.tasks[idx].tid = idx + 1;
+    ps.tasks[idx].priority = priority;
+    ps.tasks[idx].quantum_ns = quantum_ns;
+    ps.tasks[idx].consumed_ns = 0;
+    ps.tasks[idx].vruntime = 0;
+    ps.tasks[idx].active = true;
+    ps.tasks[idx].preempted_count = 0;
+    ps.count = idx + 1;
+    return idx + 1;
+}
+
+fn prio_sched_pick_next(ps: *mut PriorityScheduler) -> int {
+    var best: int = -1;
+    var best_prio: uint = 0;
+    var best_vrun: uint = 18446744073709551615;
+    var i: uint = 0;
+    while i < ps.count {
+        if ps.tasks[i].active {
+            if best < 0 || ps.tasks[i].priority > best_prio ||
+               (ps.tasks[i].priority == best_prio && ps.tasks[i].vruntime < best_vrun) {
+                best = i as int;
+                best_prio = ps.tasks[i].priority;
+                best_vrun = ps.tasks[i].vruntime;
+            }
+        }
+        i = i + 1;
+    }
+    ps.current_slot = best;
+    return best;
+}
+
+fn prio_sched_timer_interrupt(ps: *mut PriorityScheduler, elapsed_ns: uint) -> int {
+    if ps.current_slot >= 0 {
+        let u: uint = ps.current_slot as uint;
+        ps.tasks[u].consumed_ns = ps.tasks[u].consumed_ns + elapsed_ns;
+        let weight: uint = ps.tasks[u].priority + 1;
+        ps.tasks[u].vruntime = ps.tasks[u].vruntime + (elapsed_ns / weight);
+        if ps.tasks[u].consumed_ns >= ps.tasks[u].quantum_ns {
+            ps.tasks[u].consumed_ns = 0;
+            ps.tasks[u].preempted_count = ps.tasks[u].preempted_count + 1;
+            ps.total_preemptions = ps.total_preemptions + 1;
+            return prio_sched_pick_next(ps);
+        }
+        return ps.current_slot;
+    }
+    return prio_sched_pick_next(ps);
+}
+

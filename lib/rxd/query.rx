@@ -1,0 +1,136 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "lib/crypto/blake3.rx";
+
+fn rxd_plate_from_bytes(data: *mut u8, len: u64) -> RxdPlate {
+    var plate: RxdPlate;
+    plate.raw_ptr = data;
+    plate.byte_length = len;
+    plate.shape_hash = 0;
+    plate.slot_count = 0;
+    plate.arena_offset = 64;
+
+    if len < 64 {
+        return plate;
+    }
+
+    let hdr: *const RxdHeader = data as *const RxdHeader;
+    if hdr.magic != 4479058 {
+        return plate;
+    }
+
+    plate.shape_hash = hdr.shape_schema_hash;
+    plate.slot_count = hdr.slot_count as u64;
+    plate.arena_offset = hdr.arena_offset;
+    return plate;
+}
+
+fn rxd_plate_from_file(path: *const byte, max_size: u64) -> RxdPlate {
+    let mapped_ptr: *mut u8 = os_map_file(path, max_size as uint);
+    if (mapped_ptr as u64) == 0 {
+        var empty_plate: RxdPlate;
+        empty_plate.raw_ptr = 0 as *mut u8;
+        empty_plate.byte_length = 0;
+        empty_plate.shape_hash = 0;
+        empty_plate.slot_count = 0;
+        empty_plate.arena_offset = 0;
+        return empty_plate;
+    }
+    return rxd_plate_from_bytes(mapped_ptr, max_size);
+}
+
+fn rxd_plate_as_shape(plate: *const RxdPlate) -> *mut u8 {
+    return plate.raw_ptr + 64;
+}
+
+fn rxd_bytes_equal(a: *const u8, a_len: u64, b: *const u8, b_len: u64) -> bool {
+    if a_len != b_len {
+        return false;
+    }
+    var i: u64 = 0;
+    while i < a_len {
+        if a[i] != b[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn rxd_plate_find_slot(plate: *const RxdPlate, name: *const byte) -> int {
+    var name_len: u64 = 0;
+    while name[name_len] != 0 {
+        name_len = name_len + 1;
+    }
+
+    let arena_base: *const u8 = plate.raw_ptr + plate.arena_offset;
+    let slots_base: *const u8 = plate.raw_ptr + 64;
+
+    var i: u64 = 0;
+    while i < plate.slot_count {
+        let slot_ptr: *const RxdSlotDescriptor = (slots_base + (i * 16)) as *const RxdSlotDescriptor;
+        let k_ptr: *const u8 = arena_base + (slot_ptr.name_offset as u64);
+        let k_len: u64 = slot_ptr.name_len as u64;
+
+        if rxd_bytes_equal(k_ptr, k_len, name as *const u8, name_len) {
+            return i as int;
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn rxd_plate_get_slot(plate: *const RxdPlate, index: u64) -> *mut RxdSlotDescriptor {
+    if index >= plate.slot_count {
+        return 0 as *mut RxdSlotDescriptor;
+    }
+    let slots_base: *mut u8 = plate.raw_ptr + 64;
+    return (slots_base + (index * 16)) as *mut RxdSlotDescriptor;
+}
+
+fn rxd_plate_get_int(plate: *const RxdPlate, name: *const byte, default_val: i64) -> i64 {
+    let idx: int = rxd_plate_find_slot(plate, name);
+    if idx < 0 {
+        return default_val;
+    }
+    let slot: *mut RxdSlotDescriptor = rxd_plate_get_slot(plate, idx as u64);
+    return slot.val_or_len as i64;
+}
+
+fn rxd_plate_get_uint(plate: *const RxdPlate, name: *const byte, default_val: u64) -> u64 {
+    let idx: int = rxd_plate_find_slot(plate, name);
+    if idx < 0 {
+        return default_val;
+    }
+    let slot: *mut RxdSlotDescriptor = rxd_plate_get_slot(plate, idx as u64);
+    return slot.val_or_len;
+}
+
+fn rxd_plate_get_bool(plate: *const RxdPlate, name: *const byte, default_val: bool) -> bool {
+    let idx: int = rxd_plate_find_slot(plate, name);
+    if idx < 0 {
+        return default_val;
+    }
+    let slot: *mut RxdSlotDescriptor = rxd_plate_get_slot(plate, idx as u64);
+    return (slot.val_or_len != 0);
+}
+
+fn rxd_plate_get_str(plate: *const RxdPlate, name: *const byte) -> *const byte {
+    let idx: int = rxd_plate_find_slot(plate, name);
+    if idx < 0 {
+        return "" as *const byte;
+    }
+    let slot: *mut RxdSlotDescriptor = rxd_plate_get_slot(plate, idx as u64);
+    let arena_base: *const u8 = plate.raw_ptr + plate.arena_offset;
+    return (arena_base + (slot.arena_offset as u64)) as *const byte;
+}
+
+fn rxd_plate_get_len(plate: *const RxdPlate, name: *const byte) -> u64 {
+    let idx: int = rxd_plate_find_slot(plate, name);
+    if idx < 0 {
+        return 0;
+    }
+    let slot: *mut RxdSlotDescriptor = rxd_plate_get_slot(plate, idx as u64);
+    return slot.val_or_len;
+}
+

@@ -1,0 +1,18 @@
+subsystem: "ACRQ-Controller"
+revision: 0x0002_u16
+
+mmio_registers {
+    command_ring_base: 0xFFFF_8000_0000_1000_u64
+    completion_ring_base: 0xFFFF_8000_0000_2000_u64
+    doorbell_offset: 0x0040_u32
+    interrupt_vector: 0x2A_u8
+}
+
+hardware_capability {
+    base_vaddr: 0x7FFF_0000_0000_u64
+    span_length: 16MB
+    permissions_mask: 0b1101_0000_u8
+    tag_bit: true
+}
+
+authorized_authority_key: hex"e2b0c369a41b71e89351cb7602497643ad5fa232496779e4d18d8c63d240f99a"

@@ -1,0 +1,270 @@
+struct InterpState {
+    p: *mut Parser,
+    cg: *mut CodeGen,
+    heap: *mut u8,
+    heap_off: u64,
+    heap_cap: u64,
+    var_hashes: *mut u8,
+    var_vals: *mut u8,
+    var_kinds: *mut u8,
+    var_caps: *mut u8,
+    var_top: u64,
+    frame_base: u64,
+    flow: u32,
+    ret_val: i64,
+    last_val: i64,
+    last_kind: u64,
+    last_was_expr: u32,
+    call_depth: u64,
+    repl_mode: u32,
+    had_runtime_err: u32,
+}
+
+fn interp_init(st: *mut InterpState, p: *mut Parser, cg: *mut CodeGen, repl_mode: u32) {
+    st.p = p;
+    st.cg = cg;
+    st.heap_cap = 4194304;
+    st.heap = uses_alloc(st.heap_cap);
+    st.heap_off = 64;
+    st.var_hashes = uses_alloc(131072);
+    st.var_vals = uses_alloc(131072);
+    st.var_kinds = uses_alloc(131072);
+    st.var_caps = uses_alloc(131072);
+    st.var_top = 0;
+    st.frame_base = 0;
+    st.flow = 0;
+    st.ret_val = 0;
+    st.last_val = 0;
+    st.last_kind = 0;
+    st.last_was_expr = 0;
+    st.call_depth = 0;
+    st.repl_mode = repl_mode;
+    st.had_runtime_err = 0;
+}
+
+fn interp_heap_alloc(st: *mut InterpState, bytes: u64) -> *mut u8 {
+    var sz: u64 = bytes;
+    if sz == 0 { sz = 8; }
+    let aligned: u64 = ((sz + 7) / 8) * 8;
+    if (st.heap_off + aligned + 16) >= st.heap_cap {
+        let extra: *mut u8 = uses_alloc(aligned + 4096);
+        var zi0: u64 = 0;
+        while zi0 < aligned { extra[zi0] = 0; zi0 = zi0 + 1; }
+        return extra;
+    }
+    let ptr: *mut u8 = st.heap + st.heap_off;
+    st.heap_off = st.heap_off + aligned;
+    var zi: u64 = 0;
+    while zi < aligned {
+        ptr[zi] = 0;
+        zi = zi + 1;
+    }
+    return ptr;
+}
+
+fn interp_unescape_str(st: *mut InterpState, raw_ptr: *u8, raw_len: u64) -> *mut u8 {
+    let dst: *mut u8 = interp_heap_alloc(st, raw_len + 8);
+    var out_i: u64 = 0;
+    if raw_len >= 2 {
+        var si: u64 = 1;
+        let s_end: u64 = raw_len - 1;
+        while si < s_end {
+            let sc: u8 = raw_ptr[si];
+            var out_c: u8 = sc;
+            if sc == 92 && (si + 1) < s_end {
+                si = si + 1;
+                let esc: u8 = raw_ptr[si];
+                out_c = esc;
+                if esc == 110 { out_c = 10; }
+                if esc == 116 { out_c = 9; }
+                if esc == 114 { out_c = 13; }
+                if esc == 48 { out_c = 0; }
+            }
+            dst[out_i] = out_c;
+            out_i = out_i + 1;
+            si = si + 1;
+        }
+    }
+    dst[out_i] = 0;
+    return dst;
+}
+
+fn interp_runtime_err(st: *mut InterpState, err_cls: *u8, msg: *u8) {
+    diag_write_cstr("Uncaught ");
+    diag_write_cstr(err_cls);
+    diag_write_cstr(": ");
+    diag_write_cstr(msg);
+    diag_write_cstr("\n");
+    if st.repl_mode == 1 {
+        st.had_runtime_err = 1;
+        st.flow = 1;
+        return;
+    }
+    sys_exit(1);
+}
+
+fn interp_slot_hash(st: *mut InterpState, idx: u64) -> u64 {
+    let p: *u64 = (st.var_hashes + (idx * 8)) as *u64;
+    return p[0];
+}
+
+fn interp_slot_val(st: *mut InterpState, idx: u64) -> i64 {
+    let p: *i64 = (st.var_vals + (idx * 8)) as *i64;
+    return p[0];
+}
+
+fn interp_slot_kind(st: *mut InterpState, idx: u64) -> u64 {
+    let p: *u64 = (st.var_kinds + (idx * 8)) as *u64;
+    return p[0];
+}
+
+fn interp_slot_cap(st: *mut InterpState, idx: u64) -> u64 {
+    let p: *u64 = (st.var_caps + (idx * 8)) as *u64;
+    return p[0];
+}
+
+fn interp_set_slot(st: *mut InterpState, idx: u64, h: u64, v: i64, k: u64, cap: u64) {
+    if idx >= 16384 { return; }
+    let ph: *mut u64 = (st.var_hashes + (idx * 8)) as *mut u64;
+    let pv: *mut i64 = (st.var_vals + (idx * 8)) as *mut i64;
+    let pk: *mut u64 = (st.var_kinds + (idx * 8)) as *mut u64;
+    let pc: *mut u64 = (st.var_caps + (idx * 8)) as *mut u64;
+    ph[0] = h;
+    pv[0] = v;
+    pk[0] = k;
+    pc[0] = cap;
+}
+
+fn interp_find_slot(st: *mut InterpState, h: u64) -> i64 {
+    var i: u64 = st.var_top;
+    while i > st.frame_base {
+        i = i - 1;
+        if interp_slot_hash(st, i) == h {
+            return i as i64;
+        }
+    }
+    return 0 - 1;
+}
+
+fn interp_bind_slot(st: *mut InterpState, h: u64, v: i64, k: u64, cap: u64) -> u64 {
+    let ex: i64 = interp_find_slot(st, h);
+    if ex >= 0 {
+        let uex: u64 = ex as u64;
+        interp_set_slot(st, uex, h, v, k, cap);
+        return uex;
+    }
+    let idx: u64 = st.var_top;
+    interp_set_slot(st, idx, h, v, k, cap);
+    if st.var_top < 16383 {
+        st.var_top = st.var_top + 1;
+    }
+    return idx;
+}
+
+fn interp_write_i64(fd: u32, val: i64) {
+    var buf: [u8; 32];
+    if val == 0 {
+        buf[0] = 48;
+        acrq_port_submit(1, fd, 0, (&buf[0]) as u64, 0, 1);
+        return;
+    }
+    var neg: u32 = 0;
+    var uv: u64 = val as u64;
+    if val < 0 {
+        neg = 1;
+        uv = (0 - val) as u64;
+    }
+    var tmp: [u8; 32];
+    var n: u64 = 0;
+    while uv > 0 && n < 28 {
+        tmp[n] = (48 + (uv % 10)) as u8;
+        uv = uv / 10;
+        n = n + 1;
+    }
+    var out_len: u64 = 0;
+    if neg == 1 {
+        buf[0] = 45;
+        out_len = 1;
+    }
+    var i: u64 = 0;
+    while i < n {
+        buf[out_len + i] = tmp[n - 1 - i];
+        i = i + 1;
+    }
+    out_len = out_len + n;
+    acrq_port_submit(1, fd, 0, (&buf[0]) as u64, 0, out_len);
+}
+
+fn interp_eval_dynamic_str(st: *mut InterpState, code_str: *u8, out_kind: *mut u64) -> i64 {
+    if code_str == (0 as *u8) {
+        *out_kind = 0;
+        return 0;
+    }
+    let clen: u64 = str_len(code_str);
+    if clen == 0 {
+        *out_kind = 0;
+        return 0;
+    }
+    let saved_lex: *mut Lexer = st.p.lex;
+    let saved_tok: Token = st.p.cur_tok;
+    let saved_path: *u8 = st.p.src_path;
+    let saved_no_exit: u64 = st.p.no_exit_on_err;
+
+    var sub_lex: Lexer;
+    sub_lex.src = code_str;
+    sub_lex.len = clen;
+    sub_lex.pos = 0;
+    sub_lex.line = 1;
+    sub_lex.col = 1;
+
+    st.p.lex = &mut sub_lex;
+    st.p.src_path = "<eval>";
+    st.p.had_error = 0;
+    if st.repl_mode == 1 {
+        st.p.no_exit_on_err = 1;
+    }
+    lex_next_token(st.p.lex, &mut st.p.cur_tok);
+
+    st.last_val = 0;
+    st.last_kind = 0;
+    while st.p.cur_tok.kind != 0 && st.p.had_error == 0 && st.had_runtime_err == 0 {
+        if st.p.cur_tok.kind == 11 || st.p.cur_tok.kind == 102 {
+            let _efn: *mut AstNode = parse_fn(st.p, 0);
+        } else if st.p.cur_tok.kind == 12 && st.p.cur_tok.hash == 7334518323283222324 {
+            parse_top_const(st.p);
+        } else if st.p.cur_tok.kind == 10 {
+            let esn: *mut AstNode = parse_struct(st.p);
+            if esn != (0 as *mut AstNode) && st.cg != (0 as *mut CodeGen) {
+                register_parsed_struct_cg(st.p, st.cg, esn);
+            }
+        } else if st.p.cur_tok.kind == 71 {
+            lex_next_token(st.p.lex, &mut st.p.cur_tok);
+        } else {
+            let est: *mut AstNode = parse_stmt(st.p);
+            if st.p.had_error == 0 && est != (0 as *mut AstNode) {
+                interp_exec_stmt(st, est);
+            }
+        }
+    }
+
+    st.p.lex = saved_lex;
+    st.p.cur_tok = saved_tok;
+    st.p.src_path = saved_path;
+    st.p.no_exit_on_err = saved_no_exit;
+
+    *out_kind = st.last_kind;
+    if st.flow == 1 {
+        let rv: i64 = st.ret_val;
+        st.flow = 0;
+        return rv;
+    }
+    return st.last_val;
+}
+
+fn interp_stride_for_kind(k: u64) -> i64 {
+    if k == 1 { return 1; }
+    if k == 2 { return 2; }
+    if k == 4 { return 4; }
+    return 8;
+}
+

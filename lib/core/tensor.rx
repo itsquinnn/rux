@@ -1,0 +1,51 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+const TENSOR2D_MAX_CAP: usize = 64;
+
+struct Tensor2D {
+    rows: usize,
+    cols: usize,
+    is_column_major: bool,
+    data: [i64; 64],
+}
+
+fn tensor2d_new(rows: usize, cols: usize) -> Tensor2D {
+    var t: Tensor2D;
+    t.rows = rows;
+    t.cols = cols;
+    t.is_column_major = false;
+    var i: usize = 0;
+    while i < TENSOR2D_MAX_CAP {
+        t.data[i] = 0;
+        i = i + 1;
+    }
+    return t;
+}
+
+fn tensor2d_new_column_major(rows: usize, cols: usize) -> Tensor2D {
+    var t: Tensor2D = tensor2d_new(rows, cols);
+    t.is_column_major = true;
+    return t;
+}
+
+fn tensor2d_calc_index(t: *const Tensor2D, r: usize, c: usize) -> usize {
+    if r >= t.rows || c >= t.cols {
+        panic("Tensor2D index out of bounds");
+    }
+    if t.is_column_major {
+        return (c * t.rows) + r;
+    }
+    return (r * t.cols) + c;
+}
+
+fn tensor2d_get(t: *const Tensor2D, r: usize, c: usize) -> i64 {
+    let idx: usize = tensor2d_calc_index(t, r, c);
+    return t.data[idx];
+}
+
+fn tensor2d_set(t: *mut Tensor2D, r: usize, c: usize, val: i64) {
+    let idx: usize = tensor2d_calc_index(t, r, c);
+    t.data[idx] = val;
+}
+

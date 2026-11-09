@@ -1,0 +1,26 @@
+fn buffer_copy(dst: *mut byte, src: *byte, count: uint) {
+    var i: uint = 0;
+    while i < count {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+}
+
+fn buffer_fill(dst: *mut byte, value: byte, count: uint) {
+    var i: uint = 0;
+    while i < count {
+        dst[i] = value;
+        i = i + 1;
+    }
+}
+
+fn buffer_equal(a: *byte, b: *byte, count: uint) -> int {
+    var i: uint = 0;
+    while i < count {
+        if a[i] != b[i] {
+            return 0;
+        }
+        i = i + 1;
+    }
+    return 1;
+}

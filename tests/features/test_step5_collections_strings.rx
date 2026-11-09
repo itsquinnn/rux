@@ -1,0 +1,271 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/core/vec.rx";
+include "lib/core/vecdeque.rx";
+include "lib/core/linked_list.rx";
+include "lib/core/hashmap.rx";
+include "lib/core/btreemap.rx";
+include "lib/core/hashset.rx";
+include "lib/core/btreeset.rx";
+include "lib/core/binary_heap.rx";
+include "lib/core/iter.rx";
+include "lib/core/string.rx";
+include "lib/core/box.rx";
+include "lib/core/cow.rx";
+
+struct Config {
+    port: uint,
+    max_conn: uint,
+    timeout: uint,
+}
+
+fn test_decision_201_structures() -> bool {
+    let base: Config = Config { port: 8080, max_conn: 1000, timeout: 30 };
+    let updated: Config = Config { port: 9090, ..base };
+    if updated.port != 9090 { return false; }
+    if updated.max_conn != 1000 { return false; }
+    if updated.timeout != 30 { return false; }
+    return true;
+}
+
+fn test_decision_202_arrays_slices() -> bool {
+    let zeros: [uint; 8] = [0; 8];
+    var i: uint = 0;
+    while i < 8 {
+        if zeros[i] != 0 { return false; }
+        i = i + 1;
+    }
+
+    let arr: [uint; 4] = [10, 20, 30, 40];
+    if arr[0] != 10 { return false; }
+    if arr[3] != 40 { return false; }
+    return true;
+}
+
+fn test_decision_203_collections() -> bool {
+    var v: Vec;
+    vec_init(&mut v, 4);
+    vec_push(&mut v, 100);
+    vec_push(&mut v, 200);
+    if vec_len(&v) != 2 { return false; }
+    let v_opt: Option = vec_get(&v, 1);
+    if !option_is_some(v_opt) || option_unwrap(v_opt) != 200 { return false; }
+    vec_free(&mut v);
+
+    var q: VecDeque;
+    vecdeque_init(&mut q, 8);
+    vecdeque_push_back(&mut q, 10);
+    vecdeque_push_front(&mut q, 5);
+    if vecdeque_len(&q) != 2 { return false; }
+    let q_front: Option = vecdeque_pop_front(&mut q);
+    if !option_is_some(q_front) || option_unwrap(q_front) != 5 { return false; }
+    vecdeque_free(&mut q);
+
+    var list: LinkedList = linked_list_new();
+    linked_list_push_back(&mut list, 10);
+    linked_list_push_front(&mut list, 5);
+    if linked_list_len(&list) != 2 { return false; }
+    let l_back: Option = linked_list_pop_back(&mut list);
+    if !option_is_some(l_back) || option_unwrap(l_back) != 10 { return false; }
+    let l_front: Option = linked_list_pop_front(&mut list);
+    if !option_is_some(l_front) || option_unwrap(l_front) != 5 { return false; }
+    linked_list_free(&mut list);
+
+    var heap: BinaryHeap;
+    binary_heap_init(&mut heap, 8);
+    binary_heap_push(&mut heap, 10);
+    binary_heap_push(&mut heap, 50);
+    binary_heap_push(&mut heap, 20);
+    let top1: Option = binary_heap_pop(&mut heap);
+    if !option_is_some(top1) || option_unwrap(top1) != 50 { return false; }
+    let top2: Option = binary_heap_pop(&mut heap);
+    if !option_is_some(top2) || option_unwrap(top2) != 20 { return false; }
+    binary_heap_free(&mut heap);
+
+    return true;
+}
+
+fn test_decision_204_collection_literals() -> bool {
+    let rep: [uint; 4] = [7; 4];
+    if rep[0] != 7 || rep[1] != 7 || rep[2] != 7 || rep[3] != 7 { return false; }
+    return true;
+}
+
+fn helper_double(x: uint) -> uint {
+    return x * 2;
+}
+
+fn helper_is_even(x: uint) -> bool {
+    return (x % 2) == 0;
+}
+
+fn test_decision_205_iterators() -> bool {
+    var raw: [uint; 5] = [1, 2, 3, 4, 5];
+    var map_it: MapIterator;
+    map_iter_init(&mut map_it, &raw[0], 5, helper_double);
+    var d_val: [uint; 1];
+    map_iter_next(&mut map_it, &mut d_val[0]);
+    if d_val[0] != 2 { return false; }
+    map_iter_next(&mut map_it, &mut d_val[0]);
+    if d_val[0] != 4 { return false; }
+
+    var filter_it: FilterIterator;
+    filter_iter_init(&mut filter_it, &raw[0], 5, helper_is_even);
+    var ev_val: [uint; 1];
+    filter_iter_next(&mut filter_it, &mut ev_val[0]);
+    if ev_val[0] != 2 { return false; }
+    filter_iter_next(&mut filter_it, &mut ev_val[0]);
+    if ev_val[0] != 4 { return false; }
+
+    var take_it: TakeIterator;
+    take_iter_init(&mut take_it, &raw[0], 5, 2);
+    var t_val: [uint; 1];
+    var t_count: uint = 0;
+    while take_iter_next(&mut take_it, &mut t_val[0]) {
+        t_count = t_count + 1;
+    }
+    if t_count != 2 { return false; }
+
+    var enum_it: EnumerateIterator;
+    enumerate_iter_init(&mut enum_it, &raw[0], 3);
+    var pair: EnumeratePair;
+    enumerate_iter_next(&mut enum_it, &mut pair);
+    if pair.index != 0 || pair.value != 1 { return false; }
+    enumerate_iter_next(&mut enum_it, &mut pair);
+    if pair.index != 1 || pair.value != 2 { return false; }
+
+    return true;
+}
+
+fn test_decision_206_string_model() -> bool {
+    var s: String = string_from("Hello");
+    string_push_str(&mut s, " Rux");
+    if string_len(&s) != 9 { return false; }
+    let cstr: str = string_as_str(&s);
+    if cstr[0] != 72 as byte { return false; }
+    if cstr[6] != 82 as byte { return false; }
+    string_free(&mut s);
+    return true;
+}
+
+fn test_decision_207_unicode_indexing() -> bool {
+    let s: String = string_from("Rux🚀Lang");
+    var c_it: CharIterator = string_chars(&s);
+    var c: [uint; 1];
+    char_iter_next(&mut c_it, &mut c[0]);
+    if c[0] != 82 { return false; }
+    char_iter_next(&mut c_it, &mut c[0]);
+    if c[0] != 117 { return false; }
+    char_iter_next(&mut c_it, &mut c[0]);
+    if c[0] != 120 { return false; }
+    char_iter_next(&mut c_it, &mut c[0]);
+    if c[0] != 128640 { return false; }
+
+    let last_byte: Option = string_negative_index(&s, -1);
+    if !option_is_some(last_byte) || option_unwrap(last_byte) != 103 { return false; }
+
+    let sub_opt: Option = string_get_range(&s, 0, 3);
+    if !option_is_some(sub_opt) { return false; }
+    let sub_str: str = option_unwrap(sub_opt) as str;
+    if sub_str[0] != 82 as byte || sub_str[1] != 117 as byte || sub_str[2] != 120 as byte { return false; }
+
+    return true;
+}
+
+fn test_decision_208_maps_sets() -> bool {
+    var hmap: HashMap;
+    hashmap_init(&mut hmap, 16);
+    hashmap_insert(&mut hmap, 1, 100);
+    hashmap_insert(&mut hmap, 2, 200);
+    let opt_v: Option = hashmap_get(&hmap, 2);
+    if !option_is_some(opt_v) || option_unwrap(opt_v) != 200 { return false; }
+    hashmap_free(&mut hmap);
+
+    var bmap: BTreeMap;
+    btreemap_init(&mut bmap, 16);
+    btreemap_insert(&mut bmap, 30, 300);
+    btreemap_insert(&mut bmap, 10, 100);
+    btreemap_insert(&mut bmap, 20, 200);
+    let min_k: Option = btreemap_min_key(&bmap);
+    if !option_is_some(min_k) || option_unwrap(min_k) != 10 { return false; }
+    let max_k: Option = btreemap_max_key(&bmap);
+    if !option_is_some(max_k) || option_unwrap(max_k) != 30 { return false; }
+    btreemap_free(&mut bmap);
+
+    var hset: HashSet;
+    hashset_init(&mut hset, 16);
+    hashset_insert(&mut hset, 42);
+    hashset_insert(&mut hset, 42);
+    if hashset_len(&hset) != 1 { return false; }
+    if !hashset_contains(&hset, 42) { return false; }
+    hashset_free(&mut hset);
+
+    var bset: BTreeSet;
+    btreeset_init(&mut bset, 16);
+    btreeset_insert(&mut bset, 50);
+    btreeset_insert(&mut bset, 10);
+    btreeset_insert(&mut bset, 30);
+    if btreeset_len(&bset) != 3 { return false; }
+    let bmin: Option = btreeset_min(&bset);
+    if !option_is_some(bmin) || option_unwrap(bmin) != 10 { return false; }
+    let bmax: Option = btreeset_max(&bset);
+    if !option_is_some(bmax) || option_unwrap(bmax) != 50 { return false; }
+    btreeset_free(&mut bset);
+
+    return true;
+}
+
+fn test_decision_209_abstractions() -> bool {
+    var raw_data: [uint; 3] = [10, 20, 30];
+    let s_it: SliceIterator;
+    slice_iter_init(&mut s_it, &raw_data[0], 3);
+    let s_sum: uint = slice_iter_sum(&mut s_it);
+    if s_sum != 60 { return false; }
+    return true;
+}
+
+fn test_decision_210_memory_layout() -> bool {
+    var v: Vec = vec_with_capacity(32);
+    vec_push(&mut v, 1);
+    vec_push(&mut v, 2);
+    vec_reserve(&mut v, 64);
+    if v.cap < 66 { return false; }
+    vec_shrink_to_fit(&mut v);
+    if v.cap != 2 { return false; }
+    let slice_ptr: *const uint = vec_as_slice(&v);
+    if slice_ptr[0] != 1 || slice_ptr[1] != 2 { return false; }
+    vec_free(&mut v);
+
+    var b: Box = box_new(12345);
+    if box_get(&b) != 12345 { return false; }
+    box_set(&mut b, 67890);
+    if box_get(&b) != 67890 { return false; }
+    box_free(&mut b);
+
+    var cow_borrowed_val: Cow = cow_from_borrowed("hello");
+    if cow_is_owned(&cow_borrowed_val) { return false; }
+    let mut_ptr: *mut byte = cow_to_mut(&mut cow_borrowed_val);
+    if !cow_is_owned(&cow_borrowed_val) { return false; }
+    mut_ptr[0] = 74 as byte;
+    let modified: str = cow_as_str(&cow_borrowed_val);
+    if modified[0] != 74 as byte { return false; }
+    cow_free(&mut cow_borrowed_val);
+
+    return true;
+}
+
+fn main() -> int {
+    if !test_decision_201_structures() { print("Decision 201 failed\n"); return 1; }
+    if !test_decision_202_arrays_slices() { print("Decision 202 failed\n"); return 2; }
+    if !test_decision_203_collections() { print("Decision 203 failed\n"); return 3; }
+    if !test_decision_204_collection_literals() { print("Decision 204 failed\n"); return 4; }
+    if !test_decision_205_iterators() { print("Decision 205 failed\n"); return 5; }
+    if !test_decision_206_string_model() { print("Decision 206 failed\n"); return 6; }
+    if !test_decision_207_unicode_indexing() { print("Decision 207 failed\n"); return 7; }
+    if !test_decision_208_maps_sets() { print("Decision 208 failed\n"); return 8; }
+    if !test_decision_209_abstractions() { print("Decision 209 failed\n"); return 9; }
+    if !test_decision_210_memory_layout() { print("Decision 210 failed\n"); return 10; }
+
+    print("Rux Step 5 Data Structures, Collections & Strings (Decisions 201-210) Master Specification 100% Verified!\n");
+    return 0;
+}

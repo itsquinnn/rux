@@ -1,0 +1,50 @@
+include "lib/core/types.rx";
+include "lib/time/clock.rx";
+include "lib/io/print.rx";
+
+struct BenchMeasurement {
+    iterations: uint,
+    total_cycles: uint,
+    cycles_per_op: uint,
+    ns_per_op: uint,
+}
+
+fn bench_start() -> uint {
+    return rdtsc();
+}
+
+fn bench_stop(t0: uint) -> uint {
+    let t1: uint = rdtsc();
+    if t1 < t0 {
+        return 0;
+    }
+    return t1 - t0;
+}
+
+fn bench_compute(iterations: uint, elapsed_cycles: uint) -> BenchMeasurement {
+    var c_per_op: uint = 0;
+    var ns_per_op: uint = 0;
+    if iterations > 0 {
+        c_per_op = elapsed_cycles / iterations;
+        ns_per_op = (elapsed_cycles * 10) / (iterations * 30);
+    }
+    return BenchMeasurement {
+        iterations: iterations,
+        total_cycles: elapsed_cycles,
+        cycles_per_op: c_per_op,
+        ns_per_op: ns_per_op,
+    };
+}
+
+fn bench_report(name: *const byte, m: BenchMeasurement) {
+    print("[bench] ");
+    let s_name: str = name as str;
+    print(s_name);
+    print(": ");
+    print_uint(m.iterations);
+    print(" ops | ");
+    print_uint(m.cycles_per_op);
+    print(" cycles/op | ");
+    print_uint(m.ns_per_op);
+    println(" ns/op");
+}

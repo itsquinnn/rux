@@ -1,0 +1,151 @@
+include "lib/core/types.rx";
+
+const BUDDY_MAX_ORDER: uint = 9;
+
+struct BuddyFrameAllocator {
+    base_paddr: u64,
+    free_lists: [int; 10],
+    next_link: [int; 512],
+    block_order: [u8; 512],
+    is_free: [bool; 512],
+    free_pages: uint,
+}
+
+fn buddy_push(ba: *mut BuddyFrameAllocator, order: uint, frame_idx: uint) {
+    ba.is_free[frame_idx] = true;
+    ba.block_order[frame_idx] = order as u8;
+    ba.next_link[frame_idx] = ba.free_lists[order];
+    ba.free_lists[order] = frame_idx as int;
+}
+
+fn buddy_remove(ba: *mut BuddyFrameAllocator, order: uint, target_idx: uint) -> bool {
+    var prev: int = -1;
+    var cur: int = ba.free_lists[order];
+    while cur >= 0 {
+        let u: uint = cur as uint;
+        if u == target_idx {
+            if prev < 0 {
+                ba.free_lists[order] = ba.next_link[u];
+            } else {
+                ba.next_link[prev as uint] = ba.next_link[u];
+            }
+            ba.is_free[u] = false;
+            return true;
+        }
+        prev = cur;
+        cur = ba.next_link[u];
+    }
+    return false;
+}
+
+fn buddy_init(ba: *mut BuddyFrameAllocator, base_paddr: u64) {
+    ba.base_paddr = base_paddr;
+    var o: uint = 0;
+    while o <= BUDDY_MAX_ORDER {
+        ba.free_lists[o] = -1;
+        o = o + 1;
+    }
+    var i: uint = 0;
+    while i < 512 {
+        ba.next_link[i] = -1;
+        ba.block_order[i] = 0;
+        ba.is_free[i] = false;
+        i = i + 1;
+    }
+    buddy_push(ba, BUDDY_MAX_ORDER, 0);
+    ba.free_pages = 512;
+}
+
+fn buddy_alloc_pages(ba: *mut BuddyFrameAllocator, req_order: uint) -> u64 {
+    if req_order > BUDDY_MAX_ORDER { return 0; }
+    var k: uint = req_order;
+    while k <= BUDDY_MAX_ORDER && ba.free_lists[k] < 0 {
+        k = k + 1;
+    }
+    if k > BUDDY_MAX_ORDER { return 0; }
+
+    let block_idx: uint = ba.free_lists[k] as uint;
+    ba.free_lists[k] = ba.next_link[block_idx];
+    ba.is_free[block_idx] = false;
+
+    while k > req_order {
+        k = k - 1;
+        let split_buddy: uint = block_idx + ((1 as uint) << k);
+        buddy_push(ba, k, split_buddy);
+    }
+    ba.block_order[block_idx] = req_order as u8;
+    let pages: uint = (1 as uint) << req_order;
+    if ba.free_pages >= pages { ba.free_pages = ba.free_pages - pages; }
+    return ba.base_paddr + ((block_idx as u64) * 4096);
+}
+
+fn buddy_free_pages(ba: *mut BuddyFrameAllocator, paddr: u64, order: uint) {
+    if paddr < ba.base_paddr || order > BUDDY_MAX_ORDER { return; }
+    var idx: uint = ((paddr - ba.base_paddr) / 4096) as uint;
+    var cur_order: uint = order;
+    let pages: uint = (1 as uint) << order;
+    ba.free_pages = ba.free_pages + pages;
+
+    while cur_order < BUDDY_MAX_ORDER {
+        let buddy_idx: uint = idx ^ ((1 as uint) << cur_order);
+        if buddy_idx < 512 && ba.is_free[buddy_idx] && (ba.block_order[buddy_idx] as uint) == cur_order {
+            buddy_remove(ba, cur_order, buddy_idx);
+            if buddy_idx < idx { idx = buddy_idx; }
+            cur_order = cur_order + 1;
+        } else {
+            break;
+        }
+    }
+    buddy_push(ba, cur_order, idx);
+}
+
+struct SlabCache {
+    obj_size: uint,
+    capacity: uint,
+    free_head: int,
+    free_next: [int; 128],
+    used_count: uint,
+    backing: [u8; 8192],
+}
+
+fn slab_init(sc: *mut SlabCache, obj_size: uint) {
+    var sz: uint = obj_size;
+    if sz < 8 { sz = 8; }
+    sz = ((sz + 7) / 8) * 8;
+    sc.obj_size = sz;
+    var cap: uint = 8192 / sz;
+    if cap > 128 { cap = 128; }
+    sc.capacity = cap;
+    sc.used_count = 0;
+    var i: uint = 0;
+    while i < cap {
+        if (i + 1) < cap {
+            sc.free_next[i] = (i + 1) as int;
+        } else {
+            sc.free_next[i] = -1;
+        }
+        i = i + 1;
+    }
+    sc.free_head = 0;
+}
+
+fn slab_alloc(sc: *mut SlabCache) -> *mut u8 {
+    if sc.free_head < 0 { return 0 as *mut u8; }
+    let slot: uint = sc.free_head as uint;
+    sc.free_head = sc.free_next[slot];
+    sc.used_count = sc.used_count + 1;
+    return (&mut sc.backing[slot * sc.obj_size]) as *mut u8;
+}
+
+fn slab_free(sc: *mut SlabCache, ptr: *mut u8) -> bool {
+    let base: uint = (&sc.backing[0]) as uint;
+    let addr: uint = ptr as uint;
+    if addr < base { return false; }
+    let slot: uint = (addr - base) / sc.obj_size;
+    if slot >= sc.capacity { return false; }
+    sc.free_next[slot] = sc.free_head;
+    sc.free_head = slot as int;
+    if sc.used_count > 0 { sc.used_count = sc.used_count - 1; }
+    return true;
+}
+

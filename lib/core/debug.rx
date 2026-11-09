@@ -1,0 +1,53 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+
+struct StackFrame {
+    depth: uint,
+    frame_rbp: uint,
+    return_rip: uint,
+}
+
+fn debug_unwind_stack(out_frames: *mut StackFrame, max_frames: uint) -> uint {
+    let anchor: uint = 0;
+    let p_anchor: *const uint = &anchor;
+    var curr_rbp: uint = (p_anchor as uint) + 24;
+    var count: uint = 0;
+
+    while count < max_frames {
+        let p_rbp: *const uint = curr_rbp as *const uint;
+        let caller_rbp: uint = p_rbp[0];
+        let caller_rip: uint = p_rbp[1];
+
+        if caller_rip >= 0x400000 && caller_rip < 0x7FFFFFFFFFFF {
+            out_frames[count].depth = count;
+            out_frames[count].frame_rbp = curr_rbp;
+            out_frames[count].return_rip = caller_rip;
+            count = count + 1;
+        } else {
+            break;
+        }
+
+        if caller_rbp <= curr_rbp || caller_rbp >= 0x7FFFFFFFFFFF {
+            break;
+        }
+        curr_rbp = caller_rbp;
+    }
+
+    return count;
+}
+
+fn debug_print_backtrace() {
+    var frames: [StackFrame; 8];
+    let n: uint = debug_unwind_stack(&mut frames[0], 8);
+
+    println("=== CALL STACK BACKTRACE (UNWOUND via RBP CHAIN) ===");
+    var i: uint = 0;
+    while i < n {
+        print("  #");
+        print_uint(frames[i].depth);
+        print(" [Frame] RIP: ");
+        print_uint(frames[i].return_rip);
+        i = i + 1;
+    }
+    println("====================================================");
+}

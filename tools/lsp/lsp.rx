@@ -1,0 +1,95 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+
+struct LspSymbol {
+    name_hash: uint,
+    line: uint,
+    col: uint,
+    kind: uint,
+}
+
+struct LspServer {
+    symbols: *mut LspSymbol,
+    symbol_count: uint,
+    initialized: bool,
+}
+
+fn lsp_hash_bytes(buf: *const byte, start: uint, len: uint) -> uint {
+    var h: uint = 14695981039346656037;
+    var i: uint = 0;
+    while i < len {
+        h = h ^ (buf[start + i] as uint);
+        h = h * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn lsp_init(srv: *mut LspServer) {
+    srv.symbols = uses_substrate_alloc(256 * 32) as *mut LspSymbol;
+    srv.symbol_count = 0;
+    srv.initialized = true;
+}
+
+fn lsp_index_document(srv: *mut LspServer, src: *const byte, len: uint) -> uint {
+    srv.symbol_count = 0;
+    var i: uint = 0;
+    var line: uint = 1;
+    var col: uint = 1;
+    while (i + 6) < len {
+        if src[i] == 10 {
+            line = line + 1;
+            col = 1;
+            i = i + 1;
+        } else {
+            if src[i] == 102 && src[i + 1] == 110 && src[i + 2] == 32 {
+                var ns: uint = i + 3;
+                while ns < len && src[ns] == 32 { ns = ns + 1; }
+                var ne: uint = ns;
+                while ne < len && ((src[ne] >= 97 && src[ne] <= 122) || (src[ne] >= 65 && src[ne] <= 90) || (src[ne] >= 48 && src[ne] <= 57) || src[ne] == 95) {
+                    ne = ne + 1;
+                }
+                if ne > ns && srv.symbol_count < 256 {
+                    let idx: uint = srv.symbol_count;
+                    srv.symbols[idx].name_hash = lsp_hash_bytes(src, ns, ne - ns);
+                    srv.symbols[idx].line = line;
+                    srv.symbols[idx].col = col;
+                    srv.symbols[idx].kind = 1;
+                    srv.symbol_count = idx + 1;
+                }
+                i = ne;
+            } else if src[i] == 115 && src[i + 1] == 116 && src[i + 2] == 114 && src[i + 3] == 117 && src[i + 4] == 99 && src[i + 5] == 116 && src[i + 6] == 32 {
+                var ns2: uint = i + 7;
+                while ns2 < len && src[ns2] == 32 { ns2 = ns2 + 1; }
+                var ne2: uint = ns2;
+                while ne2 < len && ((src[ne2] >= 97 && src[ne2] <= 122) || (src[ne2] >= 65 && src[ne2] <= 90) || (src[ne2] >= 48 && src[ne2] <= 57) || src[ne2] == 95) {
+                    ne2 = ne2 + 1;
+                }
+                if ne2 > ns2 && srv.symbol_count < 256 {
+                    let idx2: uint = srv.symbol_count;
+                    srv.symbols[idx2].name_hash = lsp_hash_bytes(src, ns2, ne2 - ns2);
+                    srv.symbols[idx2].line = line;
+                    srv.symbols[idx2].col = col;
+                    srv.symbols[idx2].kind = 2;
+                    srv.symbol_count = idx2 + 1;
+                }
+                i = ne2;
+            } else {
+                col = col + 1;
+                i = i + 1;
+            }
+        }
+    }
+    return srv.symbol_count;
+}
+
+fn lsp_goto_definition(srv: *const LspServer, sym_hash: uint) -> uint {
+    var i: uint = 0;
+    while i < srv.symbol_count {
+        if srv.symbols[i].name_hash == sym_hash {
+            return srv.symbols[i].line;
+        }
+        i = i + 1;
+    }
+    return 0;
+}

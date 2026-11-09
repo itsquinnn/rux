@@ -1,0 +1,64 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+
+struct Cow {
+    is_owned: bool,
+    ptr: *mut byte,
+    len: uint,
+}
+
+fn cow_from_borrowed(s: str) -> Cow {
+    var c: Cow;
+    c.is_owned = false;
+    c.ptr = s as *mut byte;
+    var l: uint = 0;
+    while c.ptr[l] != 0 as byte { l = l + 1; }
+    c.len = l;
+    return c;
+}
+
+fn cow_from_owned(ptr: *mut byte, len: uint) -> Cow {
+    var c: Cow;
+    c.is_owned = true;
+    c.ptr = ptr;
+    c.len = len;
+    return c;
+}
+
+fn cow_as_str(c: *const Cow) -> str {
+    return c.ptr as str;
+}
+
+fn cow_to_mut(c: *mut Cow) -> *mut byte {
+    if c.is_owned {
+        return c.ptr;
+    }
+    let new_buf: *mut byte = uses_substrate_alloc(c.len + 1) as *mut byte;
+    var i: uint = 0;
+    while i < c.len {
+        new_buf[i] = c.ptr[i];
+        i = i + 1;
+    }
+    new_buf[c.len] = 0 as byte;
+    c.ptr = new_buf;
+    c.is_owned = true;
+    return c.ptr;
+}
+
+fn cow_len(c: *const Cow) -> uint {
+    return c.len;
+}
+
+fn cow_is_owned(c: *const Cow) -> bool {
+    return c.is_owned;
+}
+
+fn cow_free(c: *mut Cow) {
+    if c.is_owned && (c.ptr as uint) != 0 {
+        uses_substrate_free(c.ptr, c.len + 1);
+        c.ptr = 0 as *mut byte;
+        c.len = 0;
+        c.is_owned = false;
+    }
+}
+

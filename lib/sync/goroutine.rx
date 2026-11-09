@@ -1,0 +1,135 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+
+const G_IDLE: uint      = 0;
+const G_RUNNABLE: uint  = 1;
+const G_RUNNING: uint   = 2;
+const G_DEAD: uint      = 3;
+
+struct GoroutineG {
+    id: uint,
+    step_fn: uint,
+    pc_quantum: uint,
+    accum: uint,
+    status: uint,
+}
+
+struct ProcessorP {
+    id: uint,
+    runq: [uint; 64],
+    head: uint,
+    tail: uint,
+    steal_count: uint,
+}
+
+struct MNScheduler {
+    all_g: *mut GoroutineG,
+    g_count: uint,
+    procs: *mut ProcessorP,
+    p_count: uint,
+    preempt_ticks: uint,
+    completed_g: uint,
+    total_accum: uint,
+}
+
+fn mn_sched_init(s: *mut MNScheduler, num_procs: uint) {
+    var np: uint = num_procs;
+    if np == 0 { np = 4; }
+    if np > 16 { np = 16; }
+    s.all_g = uses_substrate_alloc(256 * 40) as *mut GoroutineG;
+    s.g_count = 0;
+    s.procs = uses_substrate_alloc(np * 544) as *mut ProcessorP;
+    s.p_count = np;
+    s.preempt_ticks = 0;
+    s.completed_g = 0;
+    s.total_accum = 0;
+
+    var pi: uint = 0;
+    while pi < np {
+        s.procs[pi].id = pi;
+        s.procs[pi].head = 0;
+        s.procs[pi].tail = 0;
+        s.procs[pi].steal_count = 0;
+        pi = pi + 1;
+    }
+}
+
+fn mn_runq_push(p: *mut ProcessorP, g_idx: uint) {
+    let idx: uint = p.tail % 64;
+    p.runq[idx] = g_idx;
+    p.tail = p.tail + 1;
+}
+
+fn mn_runq_pop(p: *mut ProcessorP, out_g: *mut uint) -> bool {
+    if p.head >= p.tail {
+        return false;
+    }
+    let idx: uint = p.head % 64;
+    unsafe { *out_g = p.runq[idx]; }
+    p.head = p.head + 1;
+    return true;
+}
+
+fn go_spawn_on(s: *mut MNScheduler, p_hint: uint, step_fn: fn(uint, *mut uint) -> uint, init_acc: uint) -> uint {
+    if s.g_count >= 256 { return 0; }
+    let gid: uint = s.g_count;
+    s.all_g[gid].id = gid;
+    s.all_g[gid].step_fn = step_fn as uint;
+    s.all_g[gid].pc_quantum = 0;
+    s.all_g[gid].accum = init_acc;
+    s.all_g[gid].status = G_RUNNABLE;
+    s.g_count = gid + 1;
+
+    let target_p: uint = p_hint % s.p_count;
+    mn_runq_push(&mut s.procs[target_p], gid);
+    return gid;
+}
+
+fn mn_steal_work(s: *mut MNScheduler, thief_p: uint, out_g: *mut uint) -> bool {
+    var vi: uint = 0;
+    while vi < s.p_count {
+        let victim_p: uint = (thief_p + 1 + vi) % s.p_count;
+        if mn_runq_pop(&mut s.procs[victim_p], out_g) {
+            s.procs[thief_p].steal_count = s.procs[thief_p].steal_count + 1;
+            return true;
+        }
+        vi = vi + 1;
+    }
+    return false;
+}
+
+fn mn_sched_run(s: *mut MNScheduler) -> uint {
+    var guard: uint = 0;
+    while s.completed_g < s.g_count && guard < 2048 {
+        var pi: uint = 0;
+        while pi < s.p_count {
+            var gid: uint = 0;
+            var has_task: bool = mn_runq_pop(&mut s.procs[pi], &mut gid);
+            if !has_task {
+                has_task = mn_steal_work(s, pi, &mut gid);
+            }
+            if has_task {
+                s.all_g[gid].status = G_RUNNING;
+                let sf: fn(uint, *mut uint) -> uint = s.all_g[gid].step_fn;
+                let q: uint = s.all_g[gid].pc_quantum;
+                var acc: uint = s.all_g[gid].accum;
+                let done: uint = sf(q, &mut acc);
+                s.all_g[gid].accum = acc;
+                s.all_g[gid].pc_quantum = q + 1;
+                s.preempt_ticks = s.preempt_ticks + 1;
+
+                if done == 1 {
+                    s.all_g[gid].status = G_DEAD;
+                    s.completed_g = s.completed_g + 1;
+                    s.total_accum = s.total_accum + acc;
+                } else {
+                    s.all_g[gid].status = G_RUNNABLE;
+                    mn_runq_push(&mut s.procs[pi], gid);
+                }
+            }
+            pi = pi + 1;
+        }
+        guard = guard + 1;
+    }
+    return s.total_accum;
+}

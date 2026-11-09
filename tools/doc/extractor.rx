@@ -1,0 +1,16 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "lib/fs/file.rx";
+
+struct DocItem {
+    symbol_name: str,
+    signature: str,
+    doc_comment: str,
+    line_number: uint,
+}
+
+fn doc_extract_file(path: str) -> uint {
+    print("[doc] Extracting API comments from ");
+    println(path);
+    return 1;
+}

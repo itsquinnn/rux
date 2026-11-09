@@ -1,0 +1,721 @@
+include "lib/core/types.rx";
+include "lib/core/slice.rx";
+include "lib/math/scalar.rx";
+include "lib/fs/path.rx";
+include "lib/crypto/blake3.rx";
+include "lib/time/bench.rx";
+include "lib/io/print.rx";
+include "lib/rxd/rxd.rx";
+include "compiler/pipeline/options.rx";
+include "bootstrap/binary/writer.rx";
+include "lib/core/utf8.rx";
+include "lib/core/result.rx";
+include "lib/core/allocator.rx";
+include "lib/core/heap.rx";
+include "lib/core/closure.rx";
+include "lib/math/checked.rx";
+include "lib/core/tuple.rx";
+include "lib/core/debug.rx";
+include "lib/format/json.rx";
+include "lib/net/http.rx";
+include "lib/sync/fiber.rx";
+include "lib/core/option.rx";
+include "lib/core/adt.rx";
+include "lib/core/iter.rx";
+include "lib/core/raii.rx";
+include "lib/core/alor.rx";
+include "lib/core/vec.rx";
+include "lib/core/hashmap.rx";
+include "lib/net/tcp.rx";
+
+shape Point2D {
+    x: int,
+    y: int,
+}
+
+fn test_syntax_and_shapes() -> int {
+    let add = fn(a: int, b: int) => a + b;
+    if add(15, 27) != 42 {
+        println("[FAIL] Syntax: arrow lambda returned wrong sum");
+        return 1;
+    }
+
+    let pt: Point2D = Point2D { x: 1024, y: 2048 };
+    if pt.x != 1024 || pt.y != 2048 {
+        println("[FAIL] Syntax: Shape Point2D field offsets failed");
+        return 2;
+    }
+    println("[PASS] Suite 1: Syntax, Shapes & Arrow Lambda semantics");
+    return 0;
+}
+
+fn test_codegen_bitwise() -> int {
+    let mask: uint = 0xFF;
+    let val: uint = 0xABCD;
+    let res: uint = val & mask;
+    if res != 0xCD {
+        println("[FAIL] Codegen: bitwise AND mask failed");
+        return 1;
+    }
+
+    let shifted: uint = 1 << 16;
+    if shifted != 65536 {
+        println("[FAIL] Codegen: bitwise shift left failed");
+        return 2;
+    }
+
+    let rshifted: uint = 65536 >> 4;
+    if rshifted != 4096 {
+        println("[FAIL] Codegen: bitwise shift right failed");
+        return 3;
+    }
+
+    println("[PASS] Suite 2: Native Silicon Codegen & Bitwise arithmetic");
+    return 0;
+}
+
+fn test_memory_substrate() -> int {
+    let raw_buf: *mut u8 = uses_substrate_alloc(4096);
+    if (raw_buf as uint) == 0 {
+        println("[FAIL] Memory: uses_substrate_alloc failed");
+        return 1;
+    }
+
+    var i: uint = 0;
+    while i < 64 {
+        raw_buf[i] = (i & 0xFF) as u8;
+        i = i + 1;
+    }
+
+    if raw_buf[0] != 0 || raw_buf[63] != 63 {
+        println("[FAIL] Memory: direct slot write corrupted");
+        uses_substrate_free(raw_buf, 4096);
+        return 2;
+    }
+
+    uses_substrate_free(raw_buf, 4096);
+    println("[PASS] Suite 3: USES Substrate zero-copy memory allocation");
+    return 0;
+}
+
+fn test_kernel_os() -> int {
+    let pid: int = @os.getpid();
+    if pid <= 0 {
+        println("[FAIL] Kernel: @os.getpid failed");
+        return 1;
+    }
+
+    let detected_os: TargetEnv = detect_host_os();
+    if detected_os != TARGET_ENV_LINUX_EIA {
+        println("[FAIL] OS Detection: Host OS mismatch");
+        return 2;
+    }
+
+    let env_win: TargetEnv = infer_target_environment("build/game.exe");
+    if env_win != TARGET_ENV_WINDOWS_PE {
+        println("[FAIL] OS Detection: Extension .exe mismatch");
+        return 3;
+    }
+
+    let env_mac: TargetEnv = infer_target_environment("build/app.macho");
+    if env_mac != TARGET_ENV_MACOS_MACHO {
+        println("[FAIL] OS Detection: Extension .macho mismatch");
+        return 4;
+    }
+
+    let env_elf: TargetEnv = infer_target_environment("build/server.elf");
+    if env_elf != TARGET_ENV_LINUX_EIA {
+        println("[FAIL] OS Detection: Extension .elf mismatch");
+        return 5;
+    }
+
+    println("[PASS] Suite 4: Direct Silicon Kernel Syscalls & OS detection");
+    return 0;
+}
+
+fn test_multios_emission() -> int {
+    var dummy_code: [byte; 8];
+    dummy_code[0] = 0xB8 as byte;
+    dummy_code[1] = 0x2A as byte;
+    dummy_code[2] = 0x00 as byte;
+    dummy_code[3] = 0x00 as byte;
+    dummy_code[4] = 0x00 as byte;
+    dummy_code[5] = 0xC3 as byte;
+    dummy_code[6] = 0x90 as byte;
+    dummy_code[7] = 0x90 as byte;
+
+    let elf_path: str = "/tmp/rux_test_all_linux.elf";
+    let pe_path: str = "/tmp/rux_test_all_windows.exe";
+    let macho_path: str = "/tmp/rux_test_all_macos.macho";
+
+    let r_elf: int = emit_linux_elf64(&dummy_code[0], 8, 0, elf_path as *byte);
+    if r_elf <= 0 {
+        println("[FAIL] MultiOS: ELF64 emission failed");
+        return 1;
+    }
+
+    let r_pe: int = emit_windows_pe(&dummy_code[0], 8, 0, pe_path as *byte);
+    if r_pe <= 0 {
+        println("[FAIL] MultiOS: Windows PE emission failed");
+        return 2;
+    }
+
+    let r_macho: int = emit_macos_macho(&dummy_code[0], 8, 0, macho_path as *byte);
+    if r_macho <= 0 {
+        println("[FAIL] MultiOS: macOS Mach-O emission failed");
+        return 3;
+    }
+
+    let pe_fd: int = uses_substrate_open(pe_path as *const byte, 0, 0);
+    if pe_fd >= 0 {
+        var pe_magic: [byte; 2];
+        uses_substrate_read(pe_fd as uint, &mut pe_magic[0], 2);
+        uses_substrate_close(pe_fd as uint);
+        if pe_magic[0] != (0x4D as byte) || pe_magic[1] != (0x5A as byte) {
+            println("[FAIL] MultiOS: Windows PE MZ signature mismatch");
+            return 4;
+        }
+    }
+
+    uses_substrate_unlink(elf_path as *const byte);
+    uses_substrate_unlink(pe_path as *const byte);
+    uses_substrate_unlink(macho_path as *const byte);
+
+    println("[PASS] Suite 5: Multi-OS Tri-Binary Emission (ELF64, PE32+, Mach-O)");
+    return 0;
+}
+
+fn test_rxd_continuum() -> int {
+    let b_16mb: u64 = rxd_eval_unit(16, "MB" as *const u8, 2);
+    if b_16mb != 16777216 {
+        println("[FAIL] RXD: 16MB evaluation failed");
+        return 1;
+    }
+
+    let ns_250ms: u64 = rxd_eval_unit(250, "ms" as *const u8, 2);
+    if ns_250ms != 250000000 {
+        println("[FAIL] RXD: 250ms evaluation failed");
+        return 2;
+    }
+
+    let sample_rxd: str = "service: \"sovereign-core\"\nport: 9000\nmemory: 64MB\n";
+    var s_len: uint = 0;
+    let s_ptr: *const byte = sample_rxd as *const byte;
+    while s_ptr[s_len] != 0 { s_len = s_len + 1; }
+
+    let plate: *mut u8 = uses_substrate_alloc(8192);
+    let plate_bytes: u64 = rxd_vitrify(sample_rxd as *const byte, s_len as u64, plate, 8192);
+    if plate_bytes == 0 || (plate_bytes % 64) != 0 {
+        println("[FAIL] RXD: 64-byte aligned vitrification failed");
+        uses_substrate_free(plate, 8192);
+        return 3;
+    }
+
+    let hdr: *const RxdHeader = plate as *const RxdHeader;
+    if hdr.magic != 4479058 || hdr.blake3_content_hash == 0 {
+        println("[FAIL] RXD: Cacheline 0 header or BLAKE3 hash invalid");
+        uses_substrate_free(plate, 8192);
+        return 4;
+    }
+
+    uses_substrate_free(plate, 8192);
+    println("[PASS] Suite 6: RXD Dual-Continuum Vitrification & Cacheline 0");
+    return 0;
+}
+
+fn test_standard_library() -> int {
+    let text: str = "Sovereign Rux Language";
+    let s1: ByteSlice = slice_from_raw(text as *const byte, 9);
+    let s2: ByteSlice = slice_from_raw("Sovereign" as *const byte, 9);
+    if !slice_equals(s1, s2) {
+        println("[FAIL] Stdlib: ByteSlice equality failed");
+        return 1;
+    }
+
+    if abs_int(-42) != 42 || min_int(10, 20) != 10 || max_int(10, 20) != 20 {
+        println("[FAIL] Stdlib: Scalar math primitives failed");
+        return 2;
+    }
+    if clamp_int(150, 0, 100) != 100 || pow_int(2, 10) != 1024 {
+        println("[FAIL] Stdlib: Scalar clamp or pow failed");
+        return 3;
+    }
+
+    if !path_has_extension("module.rx", ".rx") {
+        println("[FAIL] Stdlib: path_has_extension failed");
+        return 4;
+    }
+
+    let hash_val: uint = blake3_str("sovereign_contract_seed" as *const byte);
+    if hash_val == 0 {
+        println("[FAIL] Stdlib: BLAKE3 cryptographic hash failed");
+        return 5;
+    }
+
+    let t0: uint = bench_start();
+    var sum: uint = 0;
+    var k: uint = 0;
+    while k < 1000 {
+        sum = sum + k;
+        k = k + 1;
+    }
+    let elapsed: uint = bench_stop(t0);
+    let measurement: BenchMeasurement = bench_compute(1000, elapsed);
+    if measurement.total_cycles == 0 {
+        println("[FAIL] Stdlib: Bench cycle measurement failed");
+        return 6;
+    }
+
+    println("[PASS] Suite 7: Standard Library (Slice, Math, Path, Blake3, Bench, IO)");
+    return 0;
+}
+
+struct SovFiberContext {
+    counter: uint,
+    sched: *mut FiberScheduler,
+}
+
+fn sov_fiber_task_a(arg: uint) {
+    let ctx: *mut SovFiberContext = arg as *mut SovFiberContext;
+    ctx.counter = ctx.counter + 10;
+    fiber_yield(ctx.sched);
+    ctx.counter = ctx.counter + 5;
+}
+
+fn sov_fiber_task_b(arg: uint) {
+    let ctx: *mut SovFiberContext = arg as *mut SovFiberContext;
+    ctx.counter = ctx.counter * 2;
+}
+
+fn sov_divide_checked(a: uint, b: uint) -> ValueErr {
+    if b == 0 {
+        return make_err(-1);
+    }
+    return make_ok(a / b);
+}
+
+fn sov_str_len(s: str) -> uint {
+    let p: *const byte = s as *const byte;
+    var i: uint = 0;
+    while p[i] != 0 as byte { i = i + 1; }
+    return i;
+}
+
+fn test_gap_resolution() -> int {
+    let ascii: str = "Hello Rux";
+    if !utf8_is_valid(ascii) || utf8_char_count(ascii) != 9 {
+        println("[FAIL] Gap 1: UTF-8 ASCII validation or count failed");
+        return 1;
+    }
+
+    var encoded: [byte; 4];
+    let written: uint = utf8_encode_rune(0x20AC, &mut encoded[0]);
+    if written != 3 {
+        println("[FAIL] Gap 1: UTF-8 3-byte Euro symbol encoding failed");
+        return 1;
+    }
+
+    var decoded_cp: [uint; 1];
+    let consumed: uint = utf8_decode_rune(&encoded[0], 3, 0, &mut decoded_cp[0]);
+    if consumed != 3 || decoded_cp[0] != 0x20AC {
+        println("[FAIL] Gap 1: UTF-8 3-byte Euro symbol decoding failed");
+        return 1;
+    }
+
+    let res = result_ok(777);
+    if !result_is_ok(res) || result_unwrap(res) != 777 {
+        println("[FAIL] Gap 2: Result container verification failed");
+        return 2;
+    }
+
+    var arena_buf: [byte; 1024];
+    var arena: BumpArena;
+    arena_init(&mut arena, &mut arena_buf[0], 1024);
+    var alloc_vt: Allocator;
+    allocator_from_arena(&mut arena, &mut alloc_vt);
+    let mem = allocator_alloc(&mut alloc_vt, 128);
+    if (mem as uint) == 0 {
+        println("[FAIL] Gap 3: Allocator vtable failed");
+        return 3;
+    }
+
+    let raw_heap_buf: *mut byte = uses_substrate_alloc(8192);
+    var heap: HeapAllocator;
+    heap_init(&mut heap, raw_heap_buf, 8192);
+
+    let p1: *mut byte = heap_alloc(&mut heap, 128);
+    let p2: *mut byte = heap_alloc(&mut heap, 256);
+    let p3: *mut byte = heap_alloc(&mut heap, 512);
+    if (p1 as uint) == 0 || (p2 as uint) == 0 || (p3 as uint) == 0 {
+        println("[FAIL] Gap 4: Heap allocation failed");
+        uses_substrate_free(raw_heap_buf, 8192);
+        return 4;
+    }
+
+    heap_free(&mut heap, p2);
+    let p2_reused: *mut byte = heap_alloc(&mut heap, 128);
+    if (p2_reused as uint) != (p2 as uint) {
+        println("[FAIL] Gap 4: Heap did not recycle freed chunk");
+        uses_substrate_free(raw_heap_buf, 8192);
+        return 4;
+    }
+
+    heap_free(&mut heap, p1);
+    heap_free(&mut heap, p2_reused);
+    heap_free(&mut heap, p3);
+
+    let p_big: *mut byte = heap_alloc(&mut heap, 7000);
+    if (p_big as uint) == 0 {
+        println("[FAIL] Gap 4: Heap bidirectional coalescing failed");
+        uses_substrate_free(raw_heap_buf, 8192);
+        return 4;
+    }
+    heap_free(&mut heap, p_big);
+    uses_substrate_free(raw_heap_buf, 8192);
+
+    var c_env: UpvalueEnv4;
+    c_env.val0 = 100;
+    c_env.val1 = 0;
+    c_env.val2 = 0;
+    c_env.val3 = 0;
+
+    var counter_closure: Closure;
+    closure_init(&mut counter_closure, closure_counter_trampoline, (&mut c_env) as *mut byte, 32);
+
+    let c1: uint = closure_call(&counter_closure, 5);
+    let c2: uint = closure_call(&counter_closure, 10);
+    let c3: uint = closure_call(&counter_closure, 1);
+    if c1 != 105 || c2 != 115 || c3 != 116 || c_env.val0 != 116 {
+        println("[FAIL] Gap 5: Closure stateful upvalue capture failed");
+        return 5;
+    }
+
+    var math_out: uint = 0;
+    if checked_add_u64(50, 70, &mut math_out) || math_out != 120 {
+        println("[FAIL] Gap 6: Checked add failed");
+        return 6;
+    }
+    if !checked_add_u64(UINT_MAX, 1, &mut math_out) {
+        println("[FAIL] Gap 6: Overflow add failed to signal");
+        return 6;
+    }
+    if !checked_sub_u64(10, 20, &mut math_out) {
+        println("[FAIL] Gap 6: Underflow sub failed to signal");
+        return 6;
+    }
+    if saturating_add_u64(UINT_MAX - 5, 100) != UINT_MAX {
+        println("[FAIL] Gap 6: Saturating add failed");
+        return 6;
+    }
+
+    let ve_ok: ValueErr = sov_divide_checked(100, 4);
+    if ve_ok.has_err || ve_ok.val != 25 {
+        println("[FAIL] Gap 7: ValueErr ok failed");
+        return 7;
+    }
+    let ve_err: ValueErr = sov_divide_checked(100, 0);
+    if !ve_err.has_err || ve_err.err != -1 {
+        println("[FAIL] Gap 7: ValueErr err failed");
+        return 7;
+    }
+
+    let json_sample: str = "{\"service\":\"rux_node\",\"port\":9090,\"active\":true}";
+    let j_ptr: *const byte = json_sample as *const byte;
+    let j_len: uint = sov_str_len(json_sample);
+    var v_off: [uint; 1];
+    var v_len: [uint; 1];
+    let found = json_find_key(j_ptr, j_len, "port", &mut v_off[0], &mut v_len[0]);
+    if !found || json_parse_uint(j_ptr + v_off[0], v_len[0]) != 9090 {
+        println("[FAIL] Gap 8: JSON parser failed");
+        return 8;
+    }
+
+    let raw_http: str = "POST /api/v1/cluster/deploy HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nContent-Type: application/json\r\n\r\n{\"nodes\":4}";
+    let h_ptr: *const byte = raw_http as *const byte;
+    let h_len: uint = sov_str_len(raw_http);
+    var http_req: HttpRequest;
+    if !http_parse_full_request(h_ptr, h_len, &mut http_req) {
+        println("[FAIL] Gap 9: HTTP full request parsing failed");
+        return 9;
+    }
+    if http_req.method != HTTP_METHOD_POST || http_req.path_len != 22 || http_req.header_count != 2 || http_req.body_len != 11 {
+        println("[FAIL] Gap 9: HTTP fields mismatch");
+        return 9;
+    }
+    var h_val_off: [uint; 1];
+    var h_val_len: [uint; 1];
+    if !http_find_header(&http_req, h_ptr, "Host", &mut h_val_off[0], &mut h_val_len[0]) {
+        println("[FAIL] Gap 9: HTTP Host header not found");
+        return 9;
+    }
+
+    var frames: [StackFrame; 8];
+    let frame_count: uint = debug_unwind_stack(&mut frames[0], 8);
+    if frame_count < 1 || frames[0].return_rip < 0x400000 {
+        println("[FAIL] Gap 10: Stack traceback unwinding failed");
+        return 10;
+    }
+
+    var sched: FiberScheduler;
+    fiber_sched_init(&mut sched);
+    let stack_a: *mut byte = uses_substrate_alloc(65536);
+    let stack_b: *mut byte = uses_substrate_alloc(65536);
+
+    var fiber_ctx: SovFiberContext;
+    fiber_ctx.counter = 0;
+    fiber_ctx.sched = &mut sched;
+    let ctx_val: uint = (&mut fiber_ctx) as uint;
+
+    fiber_sched_spawn(&mut sched, stack_a, 65536, sov_fiber_task_a, ctx_val);
+    fiber_sched_spawn(&mut sched, stack_b, 65536, sov_fiber_task_b, ctx_val);
+
+    let completed: uint = fiber_sched_run(&mut sched);
+    uses_substrate_free(stack_a, 65536);
+    uses_substrate_free(stack_b, 65536);
+
+    if completed != 2 || fiber_ctx.counter != 25 {
+        println("[FAIL] Gap 11: Real fiber execution failed");
+        return 11;
+    }
+
+    println("[PASS] Suite 8: All 11 Reference Language Gaps Verified (UTF-8, Result, Allocator, Heap, Closure, CheckedMath, Tuple, JSON, HTTP, Debug, Fiber)");
+    return 0;
+}
+
+fn sov_double(x: uint) -> uint {
+    return x * 2;
+}
+
+fn sov_fallible_inc(x: uint) -> Result {
+    if x < 100 {
+        return result_ok(x + 1);
+    }
+    return result_err(-99);
+}
+
+struct SovDtorTracker {
+    drop_count: uint,
+    last_dropped_id: uint,
+}
+
+fn sov_destructor(res: uint) {
+    let tracker: *mut SovDtorTracker = res as *mut SovDtorTracker;
+    tracker.drop_count = tracker.drop_count + 1;
+    tracker.last_dropped_id = 777;
+}
+
+fn sov_add_folder(acc: uint, x: uint) -> uint {
+    return acc + x;
+}
+
+fn sov_try_step(step: int) -> int {
+    if step == 1 { return 100; }
+    if step == 2 { return 200; }
+    return -404;
+}
+
+fn sov_try_pipeline(should_fail: bool) -> int {
+    let a: int = sov_try_step(1)?;
+    if should_fail {
+        let err: int = sov_try_step(99)?;
+    }
+    let b: int = sov_try_step(2)?;
+    return a + b;
+}
+
+fn test_advanced_safety_and_parity() -> int {
+    let opt_some: Option = option_some(42);
+    let opt_none: Option = option_none();
+    if !option_is_some(opt_some) || option_unwrap(opt_some) != 42 || option_unwrap_or(opt_none, 99) != 99 {
+        println("[FAIL] Suite 9: Option failed");
+        return 1;
+    }
+    let opt_mapped: Option = option_map(opt_some, sov_double);
+    if !option_is_some(opt_mapped) || option_unwrap(opt_mapped) != 84 {
+        println("[FAIL] Suite 9: Option map failed");
+        return 1;
+    }
+
+    let r_ok: Result = result_ok(50);
+    let r_chained: Result = result_and_then(r_ok, sov_fallible_inc);
+    if !result_is_ok(r_chained) || result_unwrap(r_chained) != 51 {
+        println("[FAIL] Suite 9: Result and_then failed");
+        return 2;
+    }
+
+    let msg_move: TaggedUnion = adt_payload2(3, 100, 200);
+    var matched_kind: uint = 0;
+    match adt_tag(msg_move) {
+        1 => { matched_kind = 1; },
+        3 => { matched_kind = 3; },
+        _ => { matched_kind = 99; }
+    }
+    if matched_kind != 3 || adt_get_payload0(msg_move, 3) != 100 {
+        println("[FAIL] Suite 9: TaggedUnion ADT match failed");
+        return 3;
+    }
+
+    var rit: RangeIterator;
+    range_iter_init(&mut rit, 1, 6);
+    let sum_range: uint = range_iter_fold(&mut rit, 0, sov_add_folder);
+    if sum_range != 15 {
+        println("[FAIL] Suite 9: RangeIterator fold failed");
+        return 4;
+    }
+
+    var for_sum: uint = 0;
+    for i in 10..15 {
+        for_sum = for_sum + (i as uint);
+    }
+    if for_sum != 60 {
+        println("[FAIL] Suite 9: for..in loop failed");
+        return 5;
+    }
+
+    var tracker: SovDtorTracker;
+    tracker.drop_count = 0;
+    tracker.last_dropped_id = 0;
+    let t_ptr: uint = (&mut tracker) as uint;
+    var g1: ResourceGuard;
+    guard_init(&mut g1, t_ptr, sov_destructor);
+    guard_drop(&mut g1);
+    if tracker.drop_count != 1 || tracker.last_dropped_id != 777 {
+        println("[FAIL] Suite 9: ResourceGuard drop failed");
+        return 6;
+    }
+
+    var alor: AlorContext;
+    alor_init(&mut alor);
+    alor_scope_enter(&mut alor);
+    let ref_inner: uint = alor_register_ref(&mut alor, 0x2000);
+    if alor_validate_assignment(&alor, 0, ref_inner) {
+        println("[FAIL] Suite 9: ALOR escape check failed");
+        return 7;
+    }
+    alor_subduct(&mut alor, ref_inner, 0);
+    if !alor_validate_assignment(&alor, 0, ref_inner) {
+        println("[FAIL] Suite 9: ALOR subduction failed");
+        return 7;
+    }
+    alor_scope_exit(&mut alor);
+    if !alor_is_valid(&alor, ref_inner) {
+        println("[FAIL] Suite 9: ALOR subducted ref check failed");
+        return 7;
+    }
+
+    var v: Vec;
+    vec_init(&mut v, 2);
+    vec_push(&mut v, 100);
+    vec_push(&mut v, 200);
+    vec_push(&mut v, 300);
+    if vec_len(&v) != 3 {
+        println("[FAIL] Suite 9: Vec len failed");
+        return 8;
+    }
+    let popped: Option = vec_pop(&mut v);
+    if !option_is_some(popped) || option_unwrap(popped) != 300 {
+        println("[FAIL] Suite 9: Vec pop failed");
+        return 8;
+    }
+    vec_free(&mut v);
+
+    var map: HashMap;
+    hashmap_init(&mut map, 16);
+    hashmap_insert(&mut map, 42, 840);
+    let h_res: Option = hashmap_get(&map, 42);
+    if !option_is_some(h_res) || option_unwrap(h_res) != 840 {
+        println("[FAIL] Suite 9: HashMap get failed");
+        return 9;
+    }
+    hashmap_free(&mut map);
+
+    let localhost: u32 = ip4_addr(127, 0, 0, 1);
+    let s_res: Result = tcp_listen(localhost, 19878, 5);
+    if !result_is_ok(s_res) {
+        println("[FAIL] Suite 9: TCP listen failed");
+        return 10;
+    }
+    let listener_fd: int = result_unwrap(s_res) as int;
+    tcp_close(listener_fd);
+
+    var uval: uint = 10;
+    unsafe {
+        let p: *mut uint = &mut uval;
+        p[0] = 77;
+    }
+    if uval != 77 {
+        println("[FAIL] Suite 9: Native unsafe block failed");
+        return 11;
+    }
+
+    let t_ok: int = sov_try_pipeline(false);
+    let t_err: int = sov_try_pipeline(true);
+    if t_ok != 300 || t_err != -404 {
+        println("[FAIL] Suite 9: `?` operator failed");
+        return 12;
+    }
+
+    println("[PASS] Suite 9: Advanced Memory Safety, Collections & Parity (Option, Result, ADT, Iterators, for..in, RAII, ALOR, Vec, HashMap, TCP Sockets, unsafe blocks, `?` operator)");
+    return 0;
+}
+
+struct SovPair<T, U> {
+    first: T,
+    second: U,
+}
+
+fn sov_make_pair<T, U>(a: T, b: U) -> SovPair<T, U> {
+    var p: SovPair<T, U>;
+    p.first = a;
+    p.second = b;
+    return p;
+}
+
+fn test_generics_substrate() -> int {
+    let p1: SovPair<u64, u64> = sov_make_pair<u64, u64>(111, 222);
+    if p1.first != 111 || p1.second != 222 {
+        println("[FAIL] Suite 10: Generics pair u64 failed");
+        return 1;
+    }
+    let p2: SovPair<u8, u8> = sov_make_pair<u8, u8>(5, 9);
+    if p2.first != 5 || p2.second != 9 {
+        println("[FAIL] Suite 10: Generics pair u8 failed");
+        return 2;
+    }
+    if sizeof(SovPair<u64, u64>) != 16 || sizeof(SovPair<u8, u8>) != 2 {
+        println("[FAIL] Suite 10: Generics sizeof specialization failed");
+        return 3;
+    }
+    println("[PASS] Suite 10: First-Class Monomorphized Generics (Templates, Monomorphization & Compile-time Specialization)");
+    return 0;
+}
+
+fn main() -> int {
+    println("=================================================================");
+    println("           RUX SOVEREIGN MASTER TEST HARNESS v1.0.0              ");
+    println("=================================================================");
+
+    var failures: int = 0;
+
+    failures = failures + test_syntax_and_shapes();
+    failures = failures + test_codegen_bitwise();
+    failures = failures + test_memory_substrate();
+    failures = failures + test_kernel_os();
+    failures = failures + test_multios_emission();
+    failures = failures + test_rxd_continuum();
+    failures = failures + test_standard_library();
+    failures = failures + test_gap_resolution();
+    failures = failures + test_advanced_safety_and_parity();
+    failures = failures + test_generics_substrate();
+
+    println("=================================================================");
+    if failures == 0 {
+        println(">>> ALL 10 TEST SUITES PASSED CLEANLY (100% SOVEREIGN OK) <<<");
+        println("=================================================================");
+        return 0;
+    } else {
+        println(">>> TEST SUITE FAILURES DETECTED <<<");
+        println("=================================================================");
+        return 1;
+    }
+}

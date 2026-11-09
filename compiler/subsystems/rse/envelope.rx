@@ -1,0 +1,33 @@
+const UPBP_MAGIC: u32 = 0x50425055;
+
+struct UpbpEnvelopeHeader {
+    magic: u32,
+    version: u32,
+    total_file_size: uint,
+    header_crc32: u32,
+    flags: u32,
+    merkle_blake3_root: uint,
+    entry_point_offset: uint,
+    sector_manifest_off: uint,
+    reserved: uint,
+}
+
+fn rse_upbp_envelope_init(
+    env: *mut UpbpEnvelopeHeader,
+    total_size: uint,
+    entry_off: uint
+) {
+    env.magic = UPBP_MAGIC;
+    env.version = 1;
+    env.total_file_size = total_size;
+    env.header_crc32 = 0;
+    env.flags = 0;
+    env.merkle_blake3_root = 0;
+    env.entry_point_offset = entry_off;
+    env.sector_manifest_off = 64;
+    env.reserved = 0;
+}
+
+fn rse_upbp_envelope_verify(env: *const UpbpEnvelopeHeader) -> bool {
+    return env.magic == UPBP_MAGIC;
+}

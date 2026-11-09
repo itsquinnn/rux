@@ -1,0 +1,71 @@
+include "lib/core/types.rx";
+
+struct DepGraph {
+    node_count: uint,
+    edges_from: [uint; 128],
+    edges_to: [uint; 128],
+    edge_count: uint,
+}
+
+fn dep_graph_init(dg: *mut DepGraph, node_count: uint) {
+    dg.node_count = node_count;
+    dg.edge_count = 0;
+}
+
+fn dep_graph_add_edge(dg: *mut DepGraph, step_idx: uint, depends_on_idx: uint) {
+    if dg.edge_count < 128 {
+        dg.edges_from[dg.edge_count] = depends_on_idx;
+        dg.edges_to[dg.edge_count] = step_idx;
+        dg.edge_count = dg.edge_count + 1;
+    }
+}
+
+fn dep_graph_topo_sort(dg: *const DepGraph, total_nodes: uint, out_order: *mut uint) -> int {
+    var in_deg: [uint; 32];
+    var visited: [bool; 32];
+    var i: uint = 0;
+    while i < 32 {
+        in_deg[i] = 0;
+        visited[i] = false;
+        i = i + 1;
+    }
+    var e: uint = 0;
+    while e < dg.edge_count {
+        let dst: uint = dg.edges_to[e];
+        if dst < total_nodes {
+            in_deg[dst] = in_deg[dst] + 1;
+        }
+        e = e + 1;
+    }
+    var emitted: uint = 0;
+    while emitted < total_nodes {
+        var found: int = -1;
+        var n: uint = 0;
+        while n < total_nodes && found < 0 {
+            if !visited[n] && in_deg[n] == 0 {
+                found = n as int;
+            }
+            n = n + 1;
+        }
+        if found < 0 {
+            return -1;
+        }
+        let u: uint = found as uint;
+        visited[u] = true;
+        out_order[emitted] = u;
+        emitted = emitted + 1;
+
+        e = 0;
+        while e < dg.edge_count {
+            if dg.edges_from[e] == u {
+                let v: uint = dg.edges_to[e];
+                if v < total_nodes && in_deg[v] > 0 {
+                    in_deg[v] = in_deg[v] - 1;
+                }
+            }
+            e = e + 1;
+        }
+    }
+    return emitted as int;
+}
+

@@ -1,0 +1,73 @@
+include "bootstrap/emitter/instructions.rx";
+
+struct Stencil {
+    id: uint,
+    bytes: [byte; 32],
+    length: uint,
+    hole_offset: uint,
+}
+
+struct StencilBank {
+    stencils: [Stencil; 8],
+    count: uint,
+}
+
+fn stencil_bank_init(bank: *mut StencilBank) {
+    bank.count = 0;
+
+    var s0: *mut Stencil = &mut bank.stencils[0];
+    s0.id = 0;
+    s0.bytes[0] = 0x55;
+    s0.bytes[1] = 0x48; s0.bytes[2] = 0x89; s0.bytes[3] = 0xE5;
+    s0.bytes[4] = 0x48; s0.bytes[5] = 0x83; s0.bytes[6] = 0xEC; s0.bytes[7] = 0x80;
+    s0.length = 8;
+    s0.hole_offset = 0;
+
+    var s1: *mut Stencil = &mut bank.stencils[1];
+    s1.id = 1;
+    s1.bytes[0] = 0x48; s1.bytes[1] = 0x89; s1.bytes[2] = 0xEC;
+    s1.bytes[3] = 0x5D;
+    s1.bytes[4] = 0xC3;
+    s1.length = 5;
+    s1.hole_offset = 0;
+
+    var s2: *mut Stencil = &mut bank.stencils[2];
+    s2.id = 2;
+    s2.bytes[0] = 0x48; s2.bytes[1] = 0xB8;
+    s2.length = 10;
+    s2.hole_offset = 2;
+
+    var s3: *mut Stencil = &mut bank.stencils[3];
+    s3.id = 3;
+    s3.bytes[0] = 0x48; s3.bytes[1] = 0xC7; s3.bytes[2] = 0xC0;
+    s3.bytes[3] = 1;    s3.bytes[4] = 0;    s3.bytes[5] = 0;    s3.bytes[6] = 0;
+    s3.bytes[7] = 0x48; s3.bytes[8] = 0xC7; s3.bytes[9] = 0xC7;
+    s3.bytes[10] = 1;   s3.bytes[11] = 0;   s3.bytes[12] = 0;   s3.bytes[13] = 0;
+    s3.bytes[14] = 0x0F; s3.bytes[15] = 0x05;
+    s3.length = 16;
+    s3.hole_offset = 0;
+
+    bank.count = 4;
+}
+
+fn splice_stencil(bank: *mut StencilBank, stream: *mut InstructionStream, stencil_id: uint, imm_operand: uint) -> uint {
+    if stencil_id >= bank.count { return 0; }
+    let s: *mut Stencil = &mut bank.stencils[stencil_id];
+
+    var i: uint = 0;
+    while i < s.length {
+        emit_byte(stream, s.bytes[i]);
+        i = i + 1;
+    }
+
+    if s.hole_offset > 0 {
+        let hole_start: uint = stream.length - s.length + s.hole_offset;
+    var b: uint = 0;
+        while b < 8 {
+            stream.buffer[hole_start + b] = ((imm_operand >> (b * 8)) & 0xFF) as byte;
+            b = b + 1;
+        }
+    }
+
+    return s.length;
+}

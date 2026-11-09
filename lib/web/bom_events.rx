@@ -1,0 +1,58 @@
+include "lib/core/types.rx";
+
+struct BrowserHistory {
+    entries: [*const byte; 32],
+    count: uint,
+    cursor: uint,
+}
+
+struct WindowBom {
+    inner_width: uint,
+    inner_height: uint,
+    device_pixel_ratio: uint,
+    online: bool,
+    current_url: *const byte,
+    user_agent: *const byte,
+    history: BrowserHistory,
+}
+
+fn bom_window_init(win: *mut WindowBom, width: uint, height: uint, start_url: *const byte) {
+    win.inner_width = width;
+    win.inner_height = height;
+    win.device_pixel_ratio = 2;
+    win.online = true;
+    win.current_url = start_url;
+    win.user_agent = "RuxWebRuntime/1.0 (WASM64; Sovereign)";
+    win.history.entries[0] = start_url;
+    win.history.count = 1;
+    win.history.cursor = 0;
+}
+
+fn bom_history_push(win: *mut WindowBom, url: *const byte) {
+    let next_idx: uint = win.history.cursor + 1;
+    if next_idx < 32 {
+        win.history.entries[next_idx] = url;
+        win.history.cursor = next_idx;
+        win.history.count = next_idx + 1;
+        win.current_url = url;
+    }
+}
+
+fn bom_history_back(win: *mut WindowBom) -> bool {
+    if win.history.cursor > 0 {
+        win.history.cursor = win.history.cursor - 1;
+        win.current_url = win.history.entries[win.history.cursor];
+        return true;
+    }
+    return false;
+}
+
+fn bom_history_forward(win: *mut WindowBom) -> bool {
+    if (win.history.cursor + 1) < win.history.count {
+        win.history.cursor = win.history.cursor + 1;
+        win.current_url = win.history.entries[win.history.cursor];
+        return true;
+    }
+    return false;
+}
+

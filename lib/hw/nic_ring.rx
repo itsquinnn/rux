@@ -1,0 +1,73 @@
+include "lib/core/types.rx";
+
+const NIC_DESC_FLAG_NEXT: u16  = 1;
+const NIC_DESC_FLAG_WRITE: u16 = 2;
+
+struct NicDmaDesc {
+    phys_addr: u64,
+    length: u32,
+    flags: u16,
+    next_idx: u16,
+}
+
+struct NicRingQueue {
+    descs: [NicDmaDesc; 32],
+    avail_ring: [u16; 32],
+    avail_idx: u16,
+    used_idx: u16,
+    mac_addr: [u8; 6],
+    promiscuous: bool,
+    tx_packets: u64,
+    rx_packets: u64,
+}
+
+fn nic_ring_init(q: *mut NicRingQueue, mac: *const u8) {
+    q.avail_idx = 0;
+    q.used_idx = 0;
+    var i: uint = 0;
+    while i < 6 {
+        q.mac_addr[i] = mac[i];
+        i = i + 1;
+    }
+    q.promiscuous = false;
+    q.tx_packets = 0;
+    q.rx_packets = 0;
+}
+
+fn nic_submit_tx_desc(q: *mut NicRingQueue, pkt_phys: u64, pkt_len: u32) -> u16 {
+    let slot: uint = (q.avail_idx as uint) & 31;
+    q.descs[slot].phys_addr = pkt_phys;
+    q.descs[slot].length = pkt_len;
+    q.descs[slot].flags = 0;
+    q.descs[slot].next_idx = 0;
+    q.avail_ring[slot] = slot as u16;
+    q.avail_idx = q.avail_idx + 1;
+    q.tx_packets = q.tx_packets + 1;
+    return slot as u16;
+}
+
+fn nic_post_rx_buffer(q: *mut NicRingQueue, buf_phys: u64, buf_cap: u32) -> u16 {
+    let slot: uint = (q.avail_idx as uint) & 31;
+    q.descs[slot].phys_addr = buf_phys;
+    q.descs[slot].length = buf_cap;
+    q.descs[slot].flags = NIC_DESC_FLAG_WRITE;
+    q.descs[slot].next_idx = 0;
+    q.avail_ring[slot] = slot as u16;
+    q.avail_idx = q.avail_idx + 1;
+    return slot as u16;
+}
+
+fn nic_accepts_dst_mac(q: *const NicRingQueue, dst_mac: *const u8) -> bool {
+    if q.promiscuous {
+        return true;
+    }
+    var all_ff: bool = true;
+    var exact: bool = true;
+    var i: uint = 0;
+    while i < 6 {
+        if dst_mac[i] != 255 { all_ff = false; }
+        if dst_mac[i] != q.mac_addr[i] { exact = false; }
+        i = i + 1;
+    }
+    return all_ff || exact;
+}

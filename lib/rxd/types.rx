@@ -1,0 +1,52 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "lib/crypto/blake3.rx";
+
+const RXD_MAGIC_UINT: u32 = 4479058;
+const RXD_VERSION_1: u16  = 1;
+const RXD_FLAG_LITTLE: u16 = 1;
+const RXD_FLAG_SEALED: u16 = 2;
+
+const RXD_KIND_INT: u8   = 1;
+const RXD_KIND_UINT: u8  = 2;
+const RXD_KIND_FLOAT: u8 = 3;
+const RXD_KIND_BOOL: u8  = 4;
+const RXD_KIND_STR: u8   = 5;
+const RXD_KIND_BLOB: u8  = 6;
+const RXD_KIND_SHAPE: u8 = 7;
+const RXD_KIND_ARRAY: u8 = 8;
+
+const RXD_FLAG_INLINE: u8 = 1;
+const RXD_FLAG_UNIT: u8   = 2;
+
+struct RxdHeader {
+    magic: u32,
+    format_version: u16,
+    flags: u16,
+    total_byte_size: u64,
+    root_kind: u16,
+    slot_count: u16,
+    reserved_pad: u32,
+    shape_schema_hash: u64,
+    blake3_content_hash: u64,
+    arena_offset: u64,
+    reserved0: u64,
+}
+
+struct RxdSlotDescriptor {
+    kind: u8,
+    flags: u8,
+    name_offset: u16,
+    name_len: u16,
+    arena_offset: u16,
+    val_or_len: u64,
+}
+
+struct RxdPlate {
+    raw_ptr: *mut u8,
+    byte_length: u64,
+    shape_hash: u64,
+    slot_count: u64,
+    arena_offset: u64,
+}
+

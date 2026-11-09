@@ -1,0 +1,40 @@
+enum MemoryTier {
+    TIER_0_L1_FAST = 0,
+    TIER_1_L3_RESIDENT = 1,
+    TIER_2_NVRAM_PERSISTENT = 2,
+    TIER_3_COLD_STORAGE = 3,
+}
+
+struct NvBoxDescriptor {
+    tier: MemoryTier,
+    base_ptr: *mut byte,
+    capacity: uint,
+    watermark: uint,
+    mutations_count: uint,
+}
+
+fn tspa_alloc_persistent(
+    box_desc: *mut NvBoxDescriptor,
+    size: uint,
+    tier: MemoryTier
+) -> *mut byte {
+    let aligned: uint = ((size + 63) / 64) * 64;
+    if (box_desc.watermark + aligned) > box_desc.capacity {
+        return 0 as *mut byte;
+    }
+
+    let ptr: *mut byte = (box_desc.base_ptr as uint + box_desc.watermark) as *mut byte;
+    box_desc.watermark = box_desc.watermark + aligned;
+    return ptr;
+}
+
+fn tspa_hardware_persist_barrier(ptr: *const byte, len: uint) {
+    let lines: uint = (len + 63) / 64;
+    var i: uint = 0;
+    while i < lines {
+        let cl: *const byte = (ptr as uint + (i * 64)) as *const byte;
+        @silicon.clwb(cl);
+        i = i + 1;
+    }
+    @silicon.sfence();
+}

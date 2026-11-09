@@ -1,0 +1,162 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+include "lib/build/cache.rx";
+include "lib/build/dep_graph.rx";
+include "lib/build/linker_layout.rx";
+
+const TARGET_LINUX_X64: uint   = 0;
+const TARGET_LINUX_ARM64: uint = 1;
+const TARGET_RISCV64: uint     = 2;
+const TARGET_BAREMETAL: uint   = 3;
+const TARGET_UEFI_PE: uint     = 4;
+const TARGET_WIN64_PE: uint    = 6;
+const TARGET_MACOS_X64: uint   = 7;
+const TARGET_MACOS_ARM64: uint = 10;
+const TARGET_WASM64: uint      = 11;
+
+const OPT_DEBUG: uint          = 0;
+const OPT_RELEASE_SAFE: uint   = 1;
+const OPT_RELEASE_FAST: uint   = 2;
+const OPT_RELEASE_SMALL: uint  = 3;
+
+const ARTIFACT_EXE: uint       = 1;
+const ARTIFACT_STATIC_A: uint  = 2;
+const ARTIFACT_SHARED_SO: uint = 3;
+
+struct CompileStep {
+    name: *const byte,
+    root_src: *const byte,
+    kind: uint,
+    target_arch: uint,
+    optimize: uint,
+    c_headers_count: uint,
+    built: bool,
+}
+
+struct BuildGraph {
+    steps: *mut CompileStep,
+    step_count: uint,
+    default_target: uint,
+    default_optimize: uint,
+    executed_steps: uint,
+    deps: DepGraph,
+    cache: BuildCache,
+}
+
+fn build_init(b: *mut BuildGraph, target_arch: uint, optimize: uint) {
+    b.steps = uses_substrate_alloc(32 * 64) as *mut CompileStep;
+    b.step_count = 0;
+    b.default_target = target_arch;
+    b.default_optimize = optimize;
+    b.executed_steps = 0;
+    dep_graph_init(&mut b.deps, 0);
+    cache_init(&mut b.cache);
+}
+
+fn build_add_executable(b: *mut BuildGraph, name: *const byte, root_src: *const byte, target_arch: uint) -> uint {
+    let idx: uint = b.step_count;
+    if idx < 32 {
+        b.steps[idx].name = name;
+        b.steps[idx].root_src = root_src;
+        b.steps[idx].kind = ARTIFACT_EXE;
+        b.steps[idx].target_arch = target_arch;
+        b.steps[idx].optimize = b.default_optimize;
+        b.steps[idx].c_headers_count = 0;
+        b.steps[idx].built = false;
+        b.step_count = idx + 1;
+    }
+    return idx;
+}
+
+fn build_add_static_library(b: *mut BuildGraph, name: *const byte, root_src: *const byte, target_arch: uint) -> uint {
+    let idx: uint = b.step_count;
+    if idx < 32 {
+        b.steps[idx].name = name;
+        b.steps[idx].root_src = root_src;
+        b.steps[idx].kind = ARTIFACT_STATIC_A;
+        b.steps[idx].target_arch = target_arch;
+        b.steps[idx].optimize = b.default_optimize;
+        b.steps[idx].c_headers_count = 0;
+        b.steps[idx].built = false;
+        b.step_count = idx + 1;
+    }
+    return idx;
+}
+
+fn build_add_shared_library(b: *mut BuildGraph, name: *const byte, root_src: *const byte, target_arch: uint) -> uint {
+    let idx: uint = b.step_count;
+    if idx < 32 {
+        b.steps[idx].name = name;
+        b.steps[idx].root_src = root_src;
+        b.steps[idx].kind = ARTIFACT_SHARED_SO;
+        b.steps[idx].target_arch = target_arch;
+        b.steps[idx].optimize = b.default_optimize;
+        b.steps[idx].c_headers_count = 0;
+        b.steps[idx].built = false;
+        b.step_count = idx + 1;
+    }
+    return idx;
+}
+
+fn build_step_add_c_header(b: *mut BuildGraph, step_idx: uint) {
+    if step_idx < b.step_count {
+        b.steps[step_idx].c_headers_count = b.steps[step_idx].c_headers_count + 1;
+    }
+}
+
+fn build_add_dependency(b: *mut BuildGraph, step_idx: uint, dep_idx: uint) {
+    dep_graph_add_edge(&mut b.deps, step_idx, dep_idx);
+}
+
+fn build_target_flag(target_arch: uint) -> *const byte {
+    if target_arch == TARGET_LINUX_ARM64 { return "--target=arm64"; }
+    if target_arch == TARGET_RISCV64 { return "--target=riscv64"; }
+    if target_arch == TARGET_BAREMETAL { return "--target=baremetal"; }
+    if target_arch == TARGET_UEFI_PE { return "--target=uefi"; }
+    if target_arch == TARGET_WIN64_PE { return "--target=win64"; }
+    if target_arch == TARGET_MACOS_X64 { return "--target=macos"; }
+    if target_arch == TARGET_MACOS_ARM64 { return "--target=macos-arm64"; }
+    if target_arch == TARGET_WASM64 { return "--target=wasm"; }
+    return "--target=linux";
+}
+
+fn build_invoke_compiler(src_path: *const byte, out_path: *const byte, target_arch: uint) -> int {
+    var argv: [*const byte; 6];
+    argv[0] = "bin/rux";
+    argv[1 as int] = src_path;
+    argv[2 as int] = build_target_flag(target_arch);
+    argv[3 as int] = "-o";
+    argv[4 as int] = out_path;
+    argv[5 as int] = 0 as *const byte;
+
+    let pid: int = @os.clone(17, 0, 0, 0, 0);
+    if pid == 0 {
+        @os.execve("bin/rux" as *byte, &argv[0], 0);
+        @os.execve("./bin/rux" as *byte, &argv[0], 0);
+        @os.exit(127);
+    }
+    var status: int = 0;
+    @os.wait4(pid, &status, 0, 0);
+    return (status >> 8) & 255;
+}
+
+fn build_execute_all(b: *mut BuildGraph) -> uint {
+    var order: [uint; 32];
+    let sorted: int = dep_graph_topo_sort(&b.deps, b.step_count, &mut order[0]);
+    if sorted < 0 {
+        return 0;
+    }
+    b.executed_steps = 0;
+    var i: uint = 0;
+    while i < b.step_count {
+        let idx: uint = order[i];
+        let fh: uint = cache_hash_file(b.steps[idx].root_src) ^ b.steps[idx].target_arch;
+        let cached: bool = cache_check_and_update(&mut b.cache, b.steps[idx].name, fh);
+        if !cached {
+            b.steps[idx].built = true;
+            b.executed_steps = b.executed_steps + 1;
+        }
+        i = i + 1;
+    }
+    return b.executed_steps;
+}

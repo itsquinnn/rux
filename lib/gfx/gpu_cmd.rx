@@ -1,0 +1,91 @@
+include "lib/core/types.rx";
+
+const GPU_CMD_BEGIN_RENDER_PASS: u8 = 1;
+const GPU_CMD_BIND_PIPELINE: u8     = 2;
+const GPU_CMD_BIND_VERTEX_BUF: u8   = 3;
+const GPU_CMD_DRAW: u8              = 4;
+const GPU_CMD_DISPATCH_COMPUTE: u8  = 5;
+const GPU_CMD_END_RENDER_PASS: u8   = 6;
+
+const GPU_STAGE_VERTEX: u8   = 1;
+const GPU_STAGE_FRAGMENT: u8 = 2;
+const GPU_STAGE_COMPUTE: u8  = 4;
+
+struct GpuPipelineDesc {
+    shader_hash: uint,
+    topology: u8,
+    depth_test: bool,
+    blend_enable: bool,
+    stage_mask: u8,
+}
+
+struct GpuCommandPacket {
+    opcode: u8,
+    arg0: u64,
+    arg1: u64,
+    arg2: u64,
+}
+
+struct GpuCommandBuffer {
+    packets: [GpuCommandPacket; 64],
+    count: uint,
+    recording: bool,
+    in_render_pass: bool,
+    submitted_count: u64,
+}
+
+fn gpu_cmd_init(cb: *mut GpuCommandBuffer) {
+    cb.count = 0;
+    cb.recording = false;
+    cb.in_render_pass = false;
+    cb.submitted_count = 0;
+}
+
+fn gpu_cmd_begin(cb: *mut GpuCommandBuffer) {
+    cb.count = 0;
+    cb.recording = true;
+    cb.in_render_pass = false;
+}
+
+fn gpu_cmd_push(cb: *mut GpuCommandBuffer, op: u8, a0: u64, a1: u64, a2: u64) -> bool {
+    if !cb.recording || cb.count >= 64 {
+        return false;
+    }
+    let idx: uint = cb.count;
+    cb.packets[idx].opcode = op;
+    cb.packets[idx].arg0 = a0;
+    cb.packets[idx].arg1 = a1;
+    cb.packets[idx].arg2 = a2;
+    cb.count = idx + 1;
+    return true;
+}
+
+fn gpu_cmd_begin_render_pass(cb: *mut GpuCommandBuffer, fb_id: u64, clear_argb: u32) -> bool {
+    if cb.in_render_pass { return false; }
+    cb.in_render_pass = true;
+    return gpu_cmd_push(cb, GPU_CMD_BEGIN_RENDER_PASS, fb_id, clear_argb as u64, 0);
+}
+
+fn gpu_cmd_bind_pipeline(cb: *mut GpuCommandBuffer, pipe: *const GpuPipelineDesc) -> bool {
+    return gpu_cmd_push(cb, GPU_CMD_BIND_PIPELINE, pipe.shader_hash as u64, pipe.stage_mask as u64, 0);
+}
+
+fn gpu_cmd_draw(cb: *mut GpuCommandBuffer, vertex_count: u32, instance_count: u32, first_vertex: u32) -> bool {
+    if !cb.in_render_pass { return false; }
+    return gpu_cmd_push(cb, GPU_CMD_DRAW, vertex_count as u64, instance_count as u64, first_vertex as u64);
+}
+
+fn gpu_cmd_dispatch_compute(cb: *mut GpuCommandBuffer, gx: u32, gy: u32, gz: u32) -> bool {
+    return gpu_cmd_push(cb, GPU_CMD_DISPATCH_COMPUTE, gx as u64, gy as u64, gz as u64);
+}
+
+fn gpu_cmd_end_and_submit(cb: *mut GpuCommandBuffer) -> uint {
+    if cb.in_render_pass {
+        gpu_cmd_push(cb, GPU_CMD_END_RENDER_PASS, 0, 0, 0);
+        cb.in_render_pass = false;
+    }
+    cb.recording = false;
+    cb.submitted_count = cb.submitted_count + 1;
+    return cb.count;
+}
+

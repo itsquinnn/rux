@@ -1,0 +1,111 @@
+include "lib/core/types.rx";
+include "lib/core/result.rx";
+
+const AF_INET: int     = 2;
+const SOCK_STREAM: int = 1;
+const IPPROTO_TCP: int = 6;
+
+const SYS_READ: int    = 0;
+const SYS_WRITE: int   = 1;
+const SYS_CLOSE: int   = 3;
+const SYS_SOCKET: int  = 41;
+const SYS_CONNECT: int = 42;
+const SYS_ACCEPT: int  = 43;
+const SYS_BIND: int    = 49;
+const SYS_LISTEN: int  = 50;
+
+struct SockAddrIn {
+    sin_family: u16,
+    sin_port: u16,
+    sin_addr: u32,
+    sin_zero: u64,
+}
+
+fn htons(port: u16) -> u16 {
+    return ((port & 0xFF) << 8) | ((port >> 8) & 0xFF);
+}
+
+fn ip4_addr(b0: u8, b1: u8, b2: u8, b3: u8) -> u32 {
+    let a: u32 = b0 as u32;
+    let b: u32 = b1 as u32;
+    let c: u32 = b2 as u32;
+    let d: u32 = b3 as u32;
+    return a | (b << 8) | (c << 16) | (d << 24);
+}
+
+struct TcpStream {
+    fd: int,
+}
+
+fn tcp_connect(ip: u32, port: u16) -> Result {
+    let fd: int = @os.socket(AF_INET, SOCK_STREAM, 0);
+    if fd < 0 {
+        return result_err(fd);
+    }
+
+    var addr: SockAddrIn;
+    addr.sin_family = AF_INET as u16;
+    addr.sin_port = htons(port);
+    addr.sin_addr = ip;
+    addr.sin_zero = 0;
+
+    let res: int = @os.connect(fd, (&mut addr) as *mut byte, 16);
+    if res < 0 {
+        @os.close(fd);
+        return result_err(res);
+    }
+    return result_ok(fd as uint);
+}
+
+fn tcp_write(fd: int, data: *const byte, len: uint) -> int {
+    return @os.write(fd, data, len);
+}
+
+fn tcp_read(fd: int, dst: *mut byte, max_len: uint) -> int {
+    return @os.read(fd, dst, max_len);
+}
+
+fn tcp_close(fd: int) {
+    @os.close(fd);
+}
+
+struct TcpListener {
+    fd: int,
+}
+
+fn tcp_listen(ip: u32, port: u16, backlog: int) -> Result {
+    let fd: int = @os.socket(AF_INET, SOCK_STREAM, 0);
+    if fd < 0 {
+        return result_err(fd);
+    }
+
+    var addr: SockAddrIn;
+    addr.sin_family = AF_INET as u16;
+    addr.sin_port = htons(port);
+    addr.sin_addr = ip;
+    addr.sin_zero = 0;
+
+    let b_res: int = @os.bind(fd, (&mut addr) as *mut byte, 16);
+    if b_res < 0 {
+        @os.close(fd);
+        return result_err(b_res);
+    }
+
+    let l_res: int = @os.listen(fd, backlog);
+    if l_res < 0 {
+        @os.close(fd);
+        return result_err(l_res);
+    }
+
+    return result_ok(fd as uint);
+}
+
+fn tcp_accept(listener_fd: int) -> Result {
+    var client_addr: SockAddrIn;
+    var addr_len: uint = 16;
+    let client_fd: int = @os.accept(listener_fd, (&mut client_addr) as *mut byte, &mut addr_len);
+    if client_fd < 0 {
+        return result_err(client_fd);
+    }
+    return result_ok(client_fd as uint);
+}

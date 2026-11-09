@@ -1,0 +1,34 @@
+include "lib/core/types.rx";
+include "lib/core/hashmap.rx";
+
+struct HashSet {
+    map: HashMap,
+}
+
+fn hashset_init(s: *mut HashSet, initial_cap: uint) {
+    hashmap_init(&mut s.map, initial_cap);
+}
+
+fn hashset_insert(s: *mut HashSet, item: uint) -> bool {
+    if hashmap_contains(&s.map, item) {
+        return false;
+    }
+    hashmap_insert(&mut s.map, item, 1);
+    return true;
+}
+
+fn hashset_contains(s: *const HashSet, item: uint) -> bool {
+    return hashmap_contains(&s.map, item);
+}
+
+fn hashset_remove(s: *mut HashSet, item: uint) -> bool {
+    return hashmap_remove(&mut s.map, item);
+}
+
+fn hashset_len(s: *const HashSet) -> uint {
+    return hashmap_len(&s.map);
+}
+
+fn hashset_free(s: *mut HashSet) {
+    hashmap_free(&mut s.map);
+}

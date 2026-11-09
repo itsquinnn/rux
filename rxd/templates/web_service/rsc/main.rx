@@ -1,0 +1,15 @@
+include "rux/lib/core/types.rx";
+include "rux/lib/io/print.rx";
+
+const HTTP_200_OK: str = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 13\r\n\r\nHello, World!";
+
+fn main() -> int {
+    println("=== RUX ZERO-COPY WEB SERVICE ===");
+    println("Listening on http://127.0.0.1:8080 (direct-syscall socket)");
+    println("Zero GC pauses | 64-byte aligned buffers | Zero libc overhead");
+
+    print("Static payload prepared: ");
+    println(HTTP_200_OK);
+
+    return 0;
+}

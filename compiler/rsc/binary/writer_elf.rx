@@ -1,0 +1,712 @@
+fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
+    if cg.is_freestanding == 1 && is_upbp == 0 {
+        let fs_text_off: u64 = 120;
+        let fs_rodata_off: u64 = fs_text_off + (cg.text_size as u64);
+        var fs_rodata_len: u64 = 0;
+        if cg.rodata_size > 2048 {
+            fs_rodata_len = cg.rodata_size as u64;
+        }
+        let fs_total: u64 = fs_rodata_off + fs_rodata_len;
+        let fs_memsz: u64 = fs_total + 65536;
+        let fs_buf: *mut u8 = uses_alloc(fs_total + 64);
+        if (fs_buf as i64) <= 0 { return -1; }
+        var fz: u64 = 0;
+        while fz < fs_total { fs_buf[fz] = 0; fz = fz + 1; }
+
+        fs_buf[0] = 127; fs_buf[1] = 69; fs_buf[2] = 76; fs_buf[3] = 70;
+        fs_buf[4] = 2; fs_buf[5] = 1; fs_buf[6] = 1; fs_buf[7] = 0;
+        fs_buf[16] = 2; fs_buf[18] = 62; fs_buf[20] = 1;
+        let fs_entry: u64 = 4194304 + fs_text_off;
+        fs_buf[24] = (fs_entry & 255) as u8;
+        fs_buf[25] = ((fs_entry >> 8) & 255) as u8;
+        fs_buf[26] = ((fs_entry >> 16) & 255) as u8;
+        fs_buf[27] = ((fs_entry >> 24) & 255) as u8;
+        fs_buf[32] = 64; fs_buf[52] = 64; fs_buf[54] = 56; fs_buf[56] = 1; fs_buf[58] = 64;
+
+        fs_buf[64] = 1; fs_buf[68] = 7;
+        fs_buf[80] = 0; fs_buf[81] = 0; fs_buf[82] = 64; fs_buf[83] = 0;
+        fs_buf[88] = 0; fs_buf[89] = 0; fs_buf[90] = 64; fs_buf[91] = 0;
+        fs_buf[96] = (fs_total & 255) as u8;
+        fs_buf[97] = ((fs_total >> 8) & 255) as u8;
+        fs_buf[98] = ((fs_total >> 16) & 255) as u8;
+        fs_buf[99] = ((fs_total >> 24) & 255) as u8;
+        fs_buf[104] = (fs_memsz & 255) as u8;
+        fs_buf[105] = ((fs_memsz >> 8) & 255) as u8;
+        fs_buf[106] = ((fs_memsz >> 16) & 255) as u8;
+        fs_buf[107] = ((fs_memsz >> 24) & 255) as u8;
+        fs_buf[112] = 0; fs_buf[113] = 16;
+
+        var fi: u64 = 0;
+        while fi < (cg.text_size as u64) {
+            fs_buf[fs_text_off + fi] = cg.text_buf[fi];
+            fi = fi + 1;
+        }
+        var frfi: u64 = 0;
+        while frfi < cg.rodata_fixup_count {
+            let frf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (frfi * 16)) as *mut RodataFixup;
+            if (frf.hole_offset + 4) <= (cg.text_size as u64) {
+                let ftpos: i64 = (fs_rodata_off + frf.rodata_off) as i64;
+                let fnip: i64 = (fs_text_off + frf.hole_offset + 4) as i64;
+                let fdsp: u32 = ((ftpos - fnip) as i32) as u32;
+                let fp: u64 = fs_text_off + frf.hole_offset;
+                fs_buf[fp + 0] = (fdsp & 255) as u8;
+                fs_buf[fp + 1] = ((fdsp >> 8) & 255) as u8;
+                fs_buf[fp + 2] = ((fdsp >> 16) & 255) as u8;
+                fs_buf[fp + 3] = ((fdsp >> 24) & 255) as u8;
+            }
+            frfi = frfi + 1;
+        }
+        fi = 0;
+        while fi < fs_rodata_len {
+            fs_buf[fs_rodata_off + fi] = cg.rodata_buf[fi];
+            fi = fi + 1;
+        }
+        let fwr: i64 = acrq_file_write_bytes(out_path, fs_buf, fs_total, 0);
+        if fwr < 0 { return -2; }
+        return 0;
+    }
+
+    var holo_offset: u64 = 1152;
+    var contracts_offset: u64 = 1248;
+    if is_upbp == 0 {
+        holo_offset = 128;
+        contracts_offset = 224;
+    }
+    let contracts_size: u64 = (cg.contract_count as u64) * 48;
+
+    let relocs_offset: u64 = contracts_offset + contracts_size;
+    let relocs_size: u64 = (cg.reloc_count as u64) * 24;
+
+    let tg_offset: u64 = relocs_offset + relocs_size;
+    let tg_size: u64 = (cg.tg_count as u64) * 24;
+
+    var text_offset: u64 = 65536;
+    if (tg_offset + tg_size) > text_offset {
+        text_offset = ((tg_offset + tg_size) + 4095) & (0 - 4096);
+    }
+    var rodata_offset: u64 = text_offset + (((cg.text_size as u64) + 4095) & (0 - 4096));
+    if rodata_offset < 524288 {
+        rodata_offset = 524288;
+    }
+    if cg.target_arch == 3 || cg.target_arch == 8 || cg.target_arch == 9 {
+        text_offset = 4096;
+        rodata_offset = 12288;
+    }
+    if (text_offset + (cg.text_size as u64)) > rodata_offset {
+        rodata_offset = ((text_offset + (cg.text_size as u64)) + 4095) & (0 - 4096);
+    }
+    let total_file_size: u64 = rodata_offset + (((cg.rodata_size as u64) + 4095) & (0 - 4096)) + 65536;
+
+    let file_buf: *mut u8 = mmap_alloc(total_file_size);
+    if (file_buf as i64) < 0 {
+        return -1;
+    }
+
+    var z: u64 = 0;
+    while z < total_file_size {
+        file_buf[z] = 0;
+        z = z + 1;
+    }
+
+    var emach: u8 = 62;
+    if cg.target_arch == 1 {
+        emach = 183;
+    }
+    if cg.target_arch == 2 {
+        emach = 243;
+    }
+
+    var ph_base: u64 = 64;
+    var entry_addr: u64 = 4194304 + text_offset;
+    var memsz: u64 = total_file_size;
+    if cg.target_arch == 0 {
+        memsz = total_file_size + 1048576;
+    }
+
+    if is_upbp == 1 {
+        let tramp1: *u8 = "MZ= tail +129c $0>z;chmod +x z;./z;c=${?#126};exit ${c:-42}\n";
+        var ti: u64 = 0;
+        while ti < 60 {
+            file_buf[ti] = tramp1[ti];
+            ti = ti + 1;
+        }
+
+        file_buf[60] = 64;
+        file_buf[61] = 1;
+        file_buf[62] = 0;
+        file_buf[63] = 0;
+
+        file_buf[64] = 35;
+        file_buf[65] = 33;
+        file_buf[66] = 47;
+        file_buf[67] = 98;
+        file_buf[68] = 105;
+        file_buf[69] = 110;
+        file_buf[70] = 47;
+        file_buf[71] = 115;
+        file_buf[72] = 104;
+        file_buf[73] = 10;
+        file_buf[74] = 32; file_buf[75] = 32; file_buf[76] = 32; file_buf[77] = 32;
+        file_buf[78] = 32; file_buf[79] = 32; file_buf[80] = 32; file_buf[81] = 32;
+        file_buf[82] = 116; file_buf[83] = 97; file_buf[84] = 105; file_buf[85] = 108;
+        file_buf[86] = 32; file_buf[87] = 45; file_buf[88] = 99; file_buf[89] = 43;
+        file_buf[90] = 49; file_buf[91] = 50; file_buf[92] = 57; file_buf[93] = 32;
+        file_buf[94] = 34; file_buf[95] = 36; file_buf[96] = 48; file_buf[97] = 34;
+        file_buf[98] = 62; file_buf[99] = 122; file_buf[100] = 59; file_buf[101] = 99;
+        file_buf[102] = 104; file_buf[103] = 109; file_buf[104] = 111; file_buf[105] = 100;
+        file_buf[106] = 32; file_buf[107] = 43; file_buf[108] = 120; file_buf[109] = 32;
+        file_buf[110] = 122; file_buf[111] = 59;
+        file_buf[112] = 32; file_buf[113] = 32; file_buf[114] = 32;
+        file_buf[115] = 101; file_buf[116] = 120; file_buf[117] = 101; file_buf[118] = 99;
+        file_buf[119] = 32; file_buf[120] = 47; file_buf[121] = 98; file_buf[122] = 105;
+        file_buf[123] = 110; file_buf[124] = 47; file_buf[125] = 115; file_buf[126] = 104;
+        file_buf[127] = 10;
+
+        let elf_base: u64 = 128;
+        file_buf[elf_base + 0] = 127;
+        file_buf[elf_base + 1] = 69;
+        file_buf[elf_base + 2] = 76;
+        file_buf[elf_base + 3] = 70;
+        file_buf[elf_base + 4] = 2;
+        file_buf[elf_base + 5] = 1;
+        file_buf[elf_base + 6] = 1;
+        file_buf[elf_base + 7] = 0;
+
+        file_buf[elf_base + 16] = 2; file_buf[elf_base + 17] = 0;
+        file_buf[elf_base + 18] = emach; file_buf[elf_base + 19] = 0;
+        file_buf[elf_base + 20] = 1;
+        entry_addr = 4194304 + (text_offset - 128);
+        file_buf[elf_base + 24] = (entry_addr & 255) as u8;
+        file_buf[elf_base + 25] = ((entry_addr >> 8) & 255) as u8;
+        file_buf[elf_base + 26] = ((entry_addr >> 16) & 255) as u8;
+        file_buf[elf_base + 27] = ((entry_addr >> 24) & 255) as u8;
+
+        file_buf[elf_base + 32] = 64;
+        file_buf[elf_base + 52] = 64;
+        file_buf[elf_base + 54] = 56;
+        file_buf[elf_base + 56] = 1;
+        file_buf[elf_base + 58] = 64;
+
+        ph_base = elf_base + 64;
+        file_buf[ph_base + 0] = 1;
+        file_buf[ph_base + 4] = 7;
+        file_buf[ph_base + 16] = 0; file_buf[ph_base + 17] = 0; file_buf[ph_base + 18] = 64; file_buf[ph_base + 19] = 0;
+        file_buf[ph_base + 24] = 0; file_buf[ph_base + 25] = 0; file_buf[ph_base + 26] = 64; file_buf[ph_base + 27] = 0;
+        file_buf[ph_base + 32] = (total_file_size & 255) as u8;
+        file_buf[ph_base + 33] = ((total_file_size >> 8) & 255) as u8;
+        file_buf[ph_base + 34] = ((total_file_size >> 16) & 255) as u8;
+        file_buf[ph_base + 35] = ((total_file_size >> 24) & 255) as u8;
+        file_buf[ph_base + 40] = (memsz & 255) as u8;
+        file_buf[ph_base + 41] = ((memsz >> 8) & 255) as u8;
+        file_buf[ph_base + 42] = ((memsz >> 16) & 255) as u8;
+        file_buf[ph_base + 43] = ((memsz >> 24) & 255) as u8;
+        file_buf[ph_base + 48] = 0; file_buf[ph_base + 49] = 16;
+
+        let pe_base: u64 = 320;
+        file_buf[pe_base + 0] = 80; file_buf[pe_base + 1] = 69; file_buf[pe_base + 2] = 0; file_buf[pe_base + 3] = 0;
+        file_buf[pe_base + 4] = 100; file_buf[pe_base + 5] = 134;
+        file_buf[pe_base + 6] = 1;   file_buf[pe_base + 7] = 0;
+        file_buf[pe_base + 20] = 240; file_buf[pe_base + 21] = 0;
+        file_buf[pe_base + 22] = 34;  file_buf[pe_base + 23] = 0;
+
+        let opt_base: u64 = pe_base + 24;
+        file_buf[opt_base + 0] = 11; file_buf[opt_base + 1] = 2;
+        file_buf[opt_base + 2] = 1;  file_buf[opt_base + 3] = 0;
+        file_buf[opt_base + 16] = 0; file_buf[opt_base + 17] = 0; file_buf[opt_base + 18] = 1;
+        file_buf[opt_base + 20] = 0; file_buf[opt_base + 21] = 0; file_buf[opt_base + 22] = 1;
+        file_buf[opt_base + 24] = 0; file_buf[opt_base + 25] = 0; file_buf[opt_base + 26] = 0; file_buf[opt_base + 27] = 64; file_buf[opt_base + 28] = 1;
+        file_buf[opt_base + 32] = 0; file_buf[opt_base + 33] = 16;
+        file_buf[opt_base + 36] = 0; file_buf[opt_base + 37] = 2;
+        file_buf[opt_base + 68] = 3; file_buf[opt_base + 69] = 0;
+
+        let macho_base: u64 = 512;
+        file_buf[macho_base + 0] = 207; file_buf[macho_base + 1] = 250; file_buf[macho_base + 2] = 237; file_buf[macho_base + 3] = 254;
+        file_buf[macho_base + 4] = 7;   file_buf[macho_base + 5] = 0;   file_buf[macho_base + 6] = 0;   file_buf[macho_base + 7] = 1;
+        file_buf[macho_base + 8] = 3;   file_buf[macho_base + 9] = 0;   file_buf[macho_base + 10] = 0;  file_buf[macho_base + 11] = 128;
+        file_buf[macho_base + 12] = 2;  file_buf[macho_base + 13] = 0;
+        file_buf[macho_base + 16] = 1;  file_buf[macho_base + 17] = 0;
+        file_buf[macho_base + 20] = 72; file_buf[macho_base + 21] = 0;
+        file_buf[macho_base + 24] = 133; file_buf[macho_base + 25] = 0; file_buf[macho_base + 26] = 32; file_buf[macho_base + 27] = 0;
+
+        let seg_base: u64 = macho_base + 32;
+        file_buf[seg_base + 0] = 25;
+        file_buf[seg_base + 4] = 72;
+        file_buf[seg_base + 8] = 95; file_buf[seg_base + 9] = 95; file_buf[seg_base + 10] = 84; file_buf[seg_base + 11] = 69; file_buf[seg_base + 12] = 88; file_buf[seg_base + 13] = 84;
+        file_buf[seg_base + 32] = 0; file_buf[seg_base + 33] = 0; file_buf[seg_base + 34] = 0; file_buf[seg_base + 35] = 0; file_buf[seg_base + 36] = 1;
+        file_buf[seg_base + 40] = 0; file_buf[seg_base + 41] = 0; file_buf[seg_base + 42] = 4;
+        file_buf[seg_base + 56] = 7;
+        file_buf[seg_base + 60] = 7;
+    }
+    if is_upbp == 0 {
+        file_buf[0] = 127; file_buf[1] = 69; file_buf[2] = 76; file_buf[3] = 70;
+        file_buf[4] = 2; file_buf[5] = 1; file_buf[6] = 1; file_buf[7] = 0;
+        file_buf[16] = 2; file_buf[18] = emach; file_buf[20] = 1;
+        entry_addr = 4194304 + text_offset;
+        file_buf[24] = (entry_addr & 255) as u8;
+        file_buf[25] = ((entry_addr >> 8) & 255) as u8;
+        file_buf[26] = ((entry_addr >> 16) & 255) as u8;
+        file_buf[27] = ((entry_addr >> 24) & 255) as u8;
+        file_buf[32] = 64;
+        file_buf[52] = 64;
+        file_buf[54] = 56;
+        file_buf[56] = 1;
+        file_buf[58] = 64;
+
+        ph_base = 64;
+        file_buf[ph_base + 0] = 1;
+        file_buf[ph_base + 4] = 7;
+        file_buf[ph_base + 16] = 0; file_buf[ph_base + 17] = 0; file_buf[ph_base + 18] = 64; file_buf[ph_base + 19] = 0;
+        file_buf[ph_base + 24] = 0; file_buf[ph_base + 25] = 0; file_buf[ph_base + 26] = 64; file_buf[ph_base + 27] = 0;
+        file_buf[ph_base + 32] = (total_file_size & 255) as u8;
+        file_buf[ph_base + 33] = ((total_file_size >> 8) & 255) as u8;
+        file_buf[ph_base + 34] = ((total_file_size >> 16) & 255) as u8;
+        file_buf[ph_base + 35] = ((total_file_size >> 24) & 255) as u8;
+        memsz = total_file_size;
+        if cg.target_arch == 0 {
+            memsz = total_file_size + 1048576;
+        }
+        file_buf[ph_base + 40] = (memsz & 255) as u8;
+        file_buf[ph_base + 41] = ((memsz >> 8) & 255) as u8;
+        file_buf[ph_base + 42] = ((memsz >> 16) & 255) as u8;
+        file_buf[ph_base + 43] = ((memsz >> 24) & 255) as u8;
+        file_buf[ph_base + 48] = 0; file_buf[ph_base + 49] = 16;
+    }
+
+    let holo: *mut UniversalHologramHeader = (file_buf + holo_offset) as *mut UniversalHologramHeader;
+    holo.magic = 1145588037;
+    holo.version = 2;
+    holo.abi_epoch = 1;
+    holo.contracts_offset = contracts_offset;
+    holo.contracts_count = cg.contract_count as u64;
+    holo.relocs_offset = relocs_offset;
+    holo.relocs_count = cg.reloc_count as u64;
+    holo.type_graph_offset = tg_offset;
+    holo.type_graph_size = tg_size;
+    holo.flags = 1;
+    if cg.force_bridge == 1 {
+        holo.flags = holo.flags | 4;
+    }
+    let text_vaddr: u64 = 4194304 + text_offset;
+    holo.reserved0 = text_vaddr;
+    holo.reserved1 = 4194304 + rodata_offset;
+
+    var sci_adj: u32 = 0;
+    while sci_adj < (cg.contract_count as u32) {
+        let sc_adj: *mut SymbolContract = ((cg.contracts as *mut u8) + ((sci_adj as u64) * 48)) as *mut SymbolContract;
+        let fn_off: u64 = sc_adj.vaddr - 4259840;
+        sc_adj.vaddr = text_vaddr + fn_off;
+        sci_adj = sci_adj + 1;
+    }
+
+    var i: u64 = 0;
+    let sc_src: *u8 = cg.contracts as *u8;
+    while i < contracts_size {
+        file_buf[contracts_offset + i] = sc_src[i];
+        i = i + 1;
+    }
+
+    i = 0;
+    let rel_src: *u8 = cg.relocs as *u8;
+    while i < relocs_size {
+        file_buf[relocs_offset + i] = rel_src[i];
+        i = i + 1;
+    }
+
+    i = 0;
+    let tg_src: *u8 = cg.type_graph as *u8;
+    while i < tg_size {
+        file_buf[tg_offset + i] = tg_src[i];
+        i = i + 1;
+    }
+
+    let tables_len: u64 = contracts_size + relocs_size + tg_size;
+    holo.blake3_root = blake3_hash64(file_buf + contracts_offset, tables_len);
+
+    i = 0;
+    while i < (cg.text_size as u64) {
+        file_buf[text_offset + i] = cg.text_buf[i];
+        i = i + 1;
+    }
+
+    if cg.target_arch != 1 && cg.target_arch != 2 && cg.target_arch != 8 && cg.target_arch != 9 && cg.target_arch != 10 {
+        var rfi: u64 = 0;
+        while rfi < cg.rodata_fixup_count {
+            let rf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (rfi * 16)) as *mut RodataFixup;
+            if (rf.hole_offset + 4) <= (cg.text_size as u64) {
+                let target_pos: i64 = (rodata_offset + rf.rodata_off) as i64;
+                let next_ip_pos: i64 = (text_offset + rf.hole_offset + 4) as i64;
+                let rdisp: u32 = ((target_pos - next_ip_pos) as i32) as u32;
+                let p_pos: u64 = text_offset + rf.hole_offset;
+                file_buf[p_pos + 0] = (rdisp & 255) as u8;
+                file_buf[p_pos + 1] = ((rdisp >> 8) & 255) as u8;
+                file_buf[p_pos + 2] = ((rdisp >> 16) & 255) as u8;
+                file_buf[p_pos + 3] = ((rdisp >> 24) & 255) as u8;
+            }
+            rfi = rfi + 1;
+        }
+    }
+
+    var ri: u32 = 0;
+    while ri < (cg.reloc_count as u32) {
+        let hole: *mut EiaRelocHole = ((cg.relocs as *mut u8) + ((ri as u64) * 24)) as *mut EiaRelocHole;
+        let h_pk: u64 = hole.patch_kind & 255;
+        let h_off: u64 = hole.insn_offset & 4294967295;
+        if h_pk == 1 && ((h_off + 4) as u64) <= (cg.text_size as u64) {
+            var ti: u32 = 0;
+            var found: u32 = 0;
+            while ti < (cg.tg_count as u32) && found == 0 {
+                let tge: *mut EiaTypeGraphEntry = ((cg.type_graph as *mut u8) + ((ti as u64) * 24)) as *mut EiaTypeGraphEntry;
+                if (hole.type_sig_hash == 0 || tge.type_sig_hash == hole.type_sig_hash) && tge.field_hash == hole.field_or_sym_hash {
+                    let disp: u32 = (tge.byte_offset & 4294967295) as u32;
+                    let p_off: u64 = text_offset + h_off;
+                    if cg.target_arch == 1 {
+                        let movz: u32 = 3531604000 | ((disp & 65535) << 5);
+                        let movk: u32 = 4070621216 | (((disp >> 16) & 65535) << 5);
+                        file_buf[p_off + 0] = (movz & 255) as u8;
+                        file_buf[p_off + 1] = ((movz >> 8) & 255) as u8;
+                        file_buf[p_off + 2] = ((movz >> 16) & 255) as u8;
+                        file_buf[p_off + 3] = ((movz >> 24) & 255) as u8;
+                        file_buf[p_off + 4] = (movk & 255) as u8;
+                        file_buf[p_off + 5] = ((movk >> 8) & 255) as u8;
+                        file_buf[p_off + 6] = ((movk >> 16) & 255) as u8;
+                        file_buf[p_off + 7] = ((movk >> 24) & 255) as u8;
+                    }
+                    if cg.target_arch == 2 {
+                        let hi: u32 = (disp + 2048) >> 12;
+                        let lo: u32 = disp & 4095;
+                        let lui: u32 = 695 | (hi << 12);
+                        let addi: u32 = 164499 | (lo << 20);
+                        file_buf[p_off + 0] = (lui & 255) as u8;
+                        file_buf[p_off + 1] = ((lui >> 8) & 255) as u8;
+                        file_buf[p_off + 2] = ((lui >> 16) & 255) as u8;
+                        file_buf[p_off + 3] = ((lui >> 24) & 255) as u8;
+                        file_buf[p_off + 4] = (addi & 255) as u8;
+                        file_buf[p_off + 5] = ((addi >> 8) & 255) as u8;
+                        file_buf[p_off + 6] = ((addi >> 16) & 255) as u8;
+                        file_buf[p_off + 7] = ((addi >> 24) & 255) as u8;
+                    }
+                    if cg.target_arch != 1 && cg.target_arch != 2 {
+                        file_buf[p_off + 0] = (disp & 255) as u8;
+                        file_buf[p_off + 1] = ((disp >> 8) & 255) as u8;
+                        file_buf[p_off + 2] = ((disp >> 16) & 255) as u8;
+                        file_buf[p_off + 3] = ((disp >> 24) & 255) as u8;
+                    }
+                    found = 1;
+                }
+                ti = ti + 1;
+            }
+        }
+        ri = ri + 1;
+    }
+
+    if cg.force_bridge == 1 {
+        let bt_offset: u64 = cg.text_size as u64;
+        let bt0: u64 = 0x49; let bt1: u64 = 0x89; let bt2: u64 = 0xc9; let bt3: u64 = 0x49;
+        let bt4: u64 = 0x89; let bt5: u64 = 0xd0; let bt6: u64 = 0x48; let bt7: u64 = 0x89;
+        let bt8: u64 = 0xf2; let bt9: u64 = 0x48; let bt10: u64 = 0x89; let bt11: u64 = 0xf9;
+        let bt12: u64 = 0x48; let bt13: u64 = 0x83; let bt14: u64 = 0xec; let bt15: u64 = 0x28;
+        let bt16: u64 = 0xff; let bt17: u64 = 0xd0; let bt18: u64 = 0x48; let bt19: u64 = 0x83;
+        let bt20: u64 = 0xc4; let bt21: u64 = 0x28; let bt22: u64 = 0xc3; let bt23: u64 = 0x90;
+        file_buf[text_offset + bt_offset + 0] = bt0; file_buf[text_offset + bt_offset + 1] = bt1;
+        file_buf[text_offset + bt_offset + 2] = bt2; file_buf[text_offset + bt_offset + 3] = bt3;
+        file_buf[text_offset + bt_offset + 4] = bt4; file_buf[text_offset + bt_offset + 5] = bt5;
+        file_buf[text_offset + bt_offset + 6] = bt6; file_buf[text_offset + bt_offset + 7] = bt7;
+        file_buf[text_offset + bt_offset + 8] = bt8; file_buf[text_offset + bt_offset + 9] = bt9;
+        file_buf[text_offset + bt_offset + 10] = bt10; file_buf[text_offset + bt_offset + 11] = bt11;
+        file_buf[text_offset + bt_offset + 12] = bt12; file_buf[text_offset + bt_offset + 13] = bt13;
+        file_buf[text_offset + bt_offset + 14] = bt14; file_buf[text_offset + bt_offset + 15] = bt15;
+        file_buf[text_offset + bt_offset + 16] = bt16; file_buf[text_offset + bt_offset + 17] = bt17;
+        file_buf[text_offset + bt_offset + 18] = bt18; file_buf[text_offset + bt_offset + 19] = bt19;
+        file_buf[text_offset + bt_offset + 20] = bt20; file_buf[text_offset + bt_offset + 21] = bt21;
+        file_buf[text_offset + bt_offset + 22] = bt22; file_buf[text_offset + bt_offset + 23] = bt23;
+        if cg.contract_count > 0 {
+            let sc0_file_off: u64 = contracts_offset;
+            let bt_vaddr: u64 = 0x410000 + bt_offset;
+            file_buf[sc0_file_off + 16] = (bt_vaddr & 255) as u8;
+            file_buf[sc0_file_off + 17] = ((bt_vaddr >> 8) & 255) as u8;
+            file_buf[sc0_file_off + 18] = ((bt_vaddr >> 16) & 255) as u8;
+            file_buf[sc0_file_off + 19] = ((bt_vaddr >> 24) & 255) as u8;
+            file_buf[sc0_file_off + 20] = ((bt_vaddr >> 32) & 255) as u8;
+            file_buf[sc0_file_off + 21] = ((bt_vaddr >> 40) & 255) as u8;
+            file_buf[sc0_file_off + 22] = ((bt_vaddr >> 48) & 255) as u8;
+            file_buf[sc0_file_off + 23] = ((bt_vaddr >> 56) & 255) as u8;
+            file_buf[sc0_file_off + 24] = 24;
+            file_buf[sc0_file_off + 25] = 0; file_buf[sc0_file_off + 26] = 0; file_buf[sc0_file_off + 27] = 0;
+            file_buf[sc0_file_off + 32] = file_buf[sc0_file_off + 32] | 4;
+        }
+    }
+
+    i = 0;
+    while i < (cg.rodata_size as u64) {
+        file_buf[rodata_offset + i] = cg.rodata_buf[i];
+        i = i + 1;
+    }
+
+    var cur_sec_off: u64 = rodata_offset + (((cg.rodata_size as u64) + 15) & (0 - 16));
+    if cur_sec_off < (rodata_offset + (cg.rodata_size as u64)) {
+        cur_sec_off = rodata_offset + (cg.rodata_size as u64) + 16;
+    }
+
+    let shstrtab_off: u64 = cur_sec_off;
+    let shstr_data: *u8 = "\0.text\0.rodata\0.symtab\0.strtab\0.shstrtab\0.debug_line\0.debug_info\0.debug_abbrev\0";
+    let shstrtab_len: u64 = 79;
+    var shs_i: u64 = 0;
+    while shs_i < shstrtab_len {
+        file_buf[shstrtab_off + shs_i] = shstr_data[shs_i];
+        shs_i = shs_i + 1;
+    }
+    cur_sec_off = (cur_sec_off + shstrtab_len + 15) & (0 - 16);
+
+    let strtab_off: u64 = cur_sec_off;
+    let str_data: *u8 = "\0_start\0main\0rux_fn\0";
+    let strtab_len: u64 = 20;
+    var st_i: u64 = 0;
+    while st_i < strtab_len {
+        file_buf[strtab_off + st_i] = str_data[st_i];
+        st_i = st_i + 1;
+    }
+    cur_sec_off = (cur_sec_off + strtab_len + 15) & (0 - 16);
+
+    let symtab_off: u64 = cur_sec_off;
+    let sym_cnt: u64 = 3;
+    let symtab_size: u64 = sym_cnt * 24;
+    let s1_off: u64 = symtab_off + 24;
+    file_buf[s1_off + 0] = 1;
+    file_buf[s1_off + 4] = 18;
+    file_buf[s1_off + 6] = 1;
+    file_buf[s1_off + 8] = (text_vaddr & 255) as u8;
+    file_buf[s1_off + 9] = ((text_vaddr >> 8) & 255) as u8;
+    file_buf[s1_off + 10] = ((text_vaddr >> 16) & 255) as u8;
+    file_buf[s1_off + 11] = ((text_vaddr >> 24) & 255) as u8;
+    file_buf[s1_off + 16] = 32;
+
+    let s2_off: u64 = symtab_off + 48;
+    file_buf[s2_off + 0] = 8;
+    file_buf[s2_off + 4] = 18;
+    file_buf[s2_off + 6] = 1;
+    let main_vaddr: u64 = text_vaddr + 32;
+    file_buf[s2_off + 8] = (main_vaddr & 255) as u8;
+    file_buf[s2_off + 9] = ((main_vaddr >> 8) & 255) as u8;
+    file_buf[s2_off + 10] = ((main_vaddr >> 16) & 255) as u8;
+    file_buf[s2_off + 11] = ((main_vaddr >> 24) & 255) as u8;
+    file_buf[s2_off + 16] = 64;
+
+    cur_sec_off = (cur_sec_off + symtab_size + 15) & (0 - 16);
+
+    let debug_line_off: u64 = cur_sec_off;
+    let dl_len: u32 = 54;
+    file_buf[debug_line_off + 0] = (dl_len & 255) as u8;
+    file_buf[debug_line_off + 4] = 4;
+    file_buf[debug_line_off + 6] = 26;
+    file_buf[debug_line_off + 10] = 1;
+    file_buf[debug_line_off + 11] = 1;
+    file_buf[debug_line_off + 12] = 1;
+    file_buf[debug_line_off + 13] = 251;
+    file_buf[debug_line_off + 14] = 14;
+    file_buf[debug_line_off + 15] = 13;
+    file_buf[debug_line_off + 16] = 0; file_buf[debug_line_off + 17] = 1; file_buf[debug_line_off + 18] = 1;
+    file_buf[debug_line_off + 19] = 1; file_buf[debug_line_off + 20] = 1; file_buf[debug_line_off + 21] = 0;
+    file_buf[debug_line_off + 22] = 0; file_buf[debug_line_off + 23] = 0; file_buf[debug_line_off + 24] = 1;
+    file_buf[debug_line_off + 25] = 0; file_buf[debug_line_off + 26] = 0; file_buf[debug_line_off + 27] = 1;
+    file_buf[debug_line_off + 28] = 0;
+    let fn_data: *u8 = "main.rx\0";
+    var fni: u64 = 0;
+    while fni < 8 { file_buf[debug_line_off + 29 + fni] = fn_data[fni]; fni = fni + 1; }
+    file_buf[debug_line_off + 37] = 0; file_buf[debug_line_off + 38] = 0; file_buf[debug_line_off + 39] = 0;
+    file_buf[debug_line_off + 40] = 0;
+    file_buf[debug_line_off + 41] = 0; file_buf[debug_line_off + 42] = 9; file_buf[debug_line_off + 43] = 2;
+    file_buf[debug_line_off + 44] = (text_vaddr & 255) as u8;
+    file_buf[debug_line_off + 45] = ((text_vaddr >> 8) & 255) as u8;
+    file_buf[debug_line_off + 46] = ((text_vaddr >> 16) & 255) as u8;
+    file_buf[debug_line_off + 47] = ((text_vaddr >> 24) & 255) as u8;
+    file_buf[debug_line_off + 52] = 3; file_buf[debug_line_off + 53] = 1;
+    file_buf[debug_line_off + 54] = 1;
+    file_buf[debug_line_off + 55] = 0; file_buf[debug_line_off + 56] = 1; file_buf[debug_line_off + 57] = 1;
+    let debug_line_size: u64 = 58;
+    cur_sec_off = (cur_sec_off + debug_line_size + 15) & (0 - 16);
+
+    let debug_abbrev_off: u64 = cur_sec_off;
+    file_buf[debug_abbrev_off + 0] = 1;
+    file_buf[debug_abbrev_off + 1] = 17;
+    file_buf[debug_abbrev_off + 2] = 0;
+    file_buf[debug_abbrev_off + 3] = 3;  file_buf[debug_abbrev_off + 4] = 8;
+    file_buf[debug_abbrev_off + 5] = 17; file_buf[debug_abbrev_off + 6] = 1;
+    file_buf[debug_abbrev_off + 7] = 18; file_buf[debug_abbrev_off + 8] = 1;
+    file_buf[debug_abbrev_off + 9] = 0;  file_buf[debug_abbrev_off + 10] = 0;
+    file_buf[debug_abbrev_off + 11] = 0;
+    let debug_abbrev_size: u64 = 12;
+    cur_sec_off = (cur_sec_off + debug_abbrev_size + 15) & (0 - 16);
+
+    let debug_info_off: u64 = cur_sec_off;
+    let cu_len: u32 = 38;
+    file_buf[debug_info_off + 0] = (cu_len & 255) as u8;
+    file_buf[debug_info_off + 4] = 4;
+    file_buf[debug_info_off + 6] = 0;
+    file_buf[debug_info_off + 10] = 8;
+    file_buf[debug_info_off + 11] = 1;
+    let di_name: *u8 = "main.rx\0";
+    var dini: u64 = 0;
+    while dini < 8 { file_buf[debug_info_off + 12 + dini] = di_name[dini]; dini = dini + 1; }
+    file_buf[debug_info_off + 20] = (text_vaddr & 255) as u8;
+    file_buf[debug_info_off + 21] = ((text_vaddr >> 8) & 255) as u8;
+    file_buf[debug_info_off + 22] = ((text_vaddr >> 16) & 255) as u8;
+    file_buf[debug_info_off + 23] = ((text_vaddr >> 24) & 255) as u8;
+    let text_end_vaddr: u64 = text_vaddr + (cg.text_size as u64);
+    file_buf[debug_info_off + 28] = (text_end_vaddr & 255) as u8;
+    file_buf[debug_info_off + 29] = ((text_end_vaddr >> 8) & 255) as u8;
+    file_buf[debug_info_off + 30] = ((text_end_vaddr >> 16) & 255) as u8;
+    file_buf[debug_info_off + 31] = ((text_end_vaddr >> 24) & 255) as u8;
+    file_buf[debug_info_off + 36] = 0;
+    let debug_info_size: u64 = 42;
+    cur_sec_off = (cur_sec_off + debug_info_size + 15) & (0 - 16);
+
+    let sh_tbl_off: u64 = cur_sec_off;
+    let s_text: u64 = sh_tbl_off + 64;
+    file_buf[s_text + 0] = 1;
+    file_buf[s_text + 4] = 1;
+    file_buf[s_text + 8] = 6;
+    file_buf[s_text + 16] = (text_vaddr & 255) as u8; file_buf[s_text + 17] = ((text_vaddr >> 8) & 255) as u8;
+    file_buf[s_text + 18] = ((text_vaddr >> 16) & 255) as u8; file_buf[s_text + 19] = ((text_vaddr >> 24) & 255) as u8;
+    file_buf[s_text + 24] = (text_offset & 255) as u8; file_buf[s_text + 25] = ((text_offset >> 8) & 255) as u8;
+    file_buf[s_text + 26] = ((text_offset >> 16) & 255) as u8; file_buf[s_text + 27] = ((text_offset >> 24) & 255) as u8;
+    let tsz: u64 = cg.text_size as u64;
+    file_buf[s_text + 32] = (tsz & 255) as u8; file_buf[s_text + 33] = ((tsz >> 8) & 255) as u8;
+    file_buf[s_text + 34] = ((tsz >> 16) & 255) as u8; file_buf[s_text + 35] = ((tsz >> 24) & 255) as u8;
+    file_buf[s_text + 48] = 16;
+
+    let s_rodata: u64 = sh_tbl_off + 128;
+    file_buf[s_rodata + 0] = 7;
+    file_buf[s_rodata + 4] = 1;
+    file_buf[s_rodata + 8] = 2;
+    let ro_vaddr: u64 = 4194304 + rodata_offset;
+    file_buf[s_rodata + 16] = (ro_vaddr & 255) as u8; file_buf[s_rodata + 17] = ((ro_vaddr >> 8) & 255) as u8;
+    file_buf[s_rodata + 18] = ((ro_vaddr >> 16) & 255) as u8; file_buf[s_rodata + 19] = ((ro_vaddr >> 24) & 255) as u8;
+    file_buf[s_rodata + 24] = (rodata_offset & 255) as u8; file_buf[s_rodata + 25] = ((rodata_offset >> 8) & 255) as u8;
+    file_buf[s_rodata + 26] = ((rodata_offset >> 16) & 255) as u8; file_buf[s_rodata + 27] = ((rodata_offset >> 24) & 255) as u8;
+    let rsz: u64 = cg.rodata_size as u64;
+    file_buf[s_rodata + 32] = (rsz & 255) as u8; file_buf[s_rodata + 33] = ((rsz >> 8) & 255) as u8;
+    file_buf[s_rodata + 34] = ((rsz >> 16) & 255) as u8; file_buf[s_rodata + 35] = ((rsz >> 24) & 255) as u8;
+    file_buf[s_rodata + 48] = 8;
+
+    let s_symtab: u64 = sh_tbl_off + 192;
+    file_buf[s_symtab + 0] = 15; file_buf[s_symtab + 4] = 2;
+    file_buf[s_symtab + 24] = (symtab_off & 255) as u8; file_buf[s_symtab + 25] = ((symtab_off >> 8) & 255) as u8;
+    file_buf[s_symtab + 26] = ((symtab_off >> 16) & 255) as u8; file_buf[s_symtab + 27] = ((symtab_off >> 24) & 255) as u8;
+    file_buf[s_symtab + 32] = (symtab_size & 255) as u8; file_buf[s_symtab + 33] = ((symtab_size >> 8) & 255) as u8;
+    file_buf[s_symtab + 40] = 4; file_buf[s_symtab + 44] = 1; file_buf[s_symtab + 48] = 8; file_buf[s_symtab + 56] = 24;
+
+    let s_strtab: u64 = sh_tbl_off + 256;
+    file_buf[s_strtab + 0] = 23; file_buf[s_strtab + 4] = 3;
+    file_buf[s_strtab + 24] = (strtab_off & 255) as u8; file_buf[s_strtab + 25] = ((strtab_off >> 8) & 255) as u8;
+    file_buf[s_strtab + 26] = ((strtab_off >> 16) & 255) as u8; file_buf[s_strtab + 27] = ((strtab_off >> 24) & 255) as u8;
+    file_buf[s_strtab + 32] = (strtab_len & 255) as u8; file_buf[s_strtab + 48] = 1;
+
+    let s_shstrtab: u64 = sh_tbl_off + 320;
+    file_buf[s_shstrtab + 0] = 31; file_buf[s_shstrtab + 4] = 3;
+    file_buf[s_shstrtab + 24] = (shstrtab_off & 255) as u8; file_buf[s_shstrtab + 25] = ((shstrtab_off >> 8) & 255) as u8;
+    file_buf[s_shstrtab + 26] = ((shstrtab_off >> 16) & 255) as u8; file_buf[s_shstrtab + 27] = ((shstrtab_off >> 24) & 255) as u8;
+    file_buf[s_shstrtab + 32] = (shstrtab_len & 255) as u8; file_buf[s_shstrtab + 48] = 1;
+
+    let s_dbg_line: u64 = sh_tbl_off + 384;
+    file_buf[s_dbg_line + 0] = 41; file_buf[s_dbg_line + 4] = 1;
+    file_buf[s_dbg_line + 24] = (debug_line_off & 255) as u8; file_buf[s_dbg_line + 25] = ((debug_line_off >> 8) & 255) as u8;
+    file_buf[s_dbg_line + 26] = ((debug_line_off >> 16) & 255) as u8; file_buf[s_dbg_line + 27] = ((debug_line_off >> 24) & 255) as u8;
+    file_buf[s_dbg_line + 32] = (debug_line_size & 255) as u8; file_buf[s_dbg_line + 48] = 1;
+
+    let s_dbg_info: u64 = sh_tbl_off + 448;
+    file_buf[s_dbg_info + 0] = 53; file_buf[s_dbg_info + 4] = 1;
+    file_buf[s_dbg_info + 24] = (debug_info_off & 255) as u8; file_buf[s_dbg_info + 25] = ((debug_info_off >> 8) & 255) as u8;
+    file_buf[s_dbg_info + 26] = ((debug_info_off >> 16) & 255) as u8; file_buf[s_dbg_info + 27] = ((debug_info_off >> 24) & 255) as u8;
+    file_buf[s_dbg_info + 32] = (debug_info_size & 255) as u8; file_buf[s_dbg_info + 48] = 1;
+
+    let s_dbg_abbrev: u64 = sh_tbl_off + 512;
+    file_buf[s_dbg_abbrev + 0] = 65; file_buf[s_dbg_abbrev + 4] = 1;
+    file_buf[s_dbg_abbrev + 24] = (debug_abbrev_off & 255) as u8; file_buf[s_dbg_abbrev + 25] = ((debug_abbrev_off >> 8) & 255) as u8;
+    file_buf[s_dbg_abbrev + 26] = ((debug_abbrev_off >> 16) & 255) as u8; file_buf[s_dbg_abbrev + 27] = ((debug_abbrev_off >> 24) & 255) as u8;
+    file_buf[s_dbg_abbrev + 32] = (debug_abbrev_size & 255) as u8; file_buf[s_dbg_abbrev + 48] = 1;
+
+    let final_file_size: u64 = sh_tbl_off + 576;
+
+    var ehdr_base: u64 = 0;
+    if is_upbp == 1 { ehdr_base = 128; }
+    file_buf[ehdr_base + 40] = (sh_tbl_off & 255) as u8;
+    file_buf[ehdr_base + 41] = ((sh_tbl_off >> 8) & 255) as u8;
+    file_buf[ehdr_base + 42] = ((sh_tbl_off >> 16) & 255) as u8;
+    file_buf[ehdr_base + 43] = ((sh_tbl_off >> 24) & 255) as u8;
+    file_buf[ehdr_base + 58] = 64;
+    file_buf[ehdr_base + 60] = 9;
+    file_buf[ehdr_base + 62] = 5;
+
+    let is_obj: u32 = str_ends_with(out_path, ".o");
+    let is_ar: u32 = str_ends_with(out_path, ".a");
+    let is_so: u32 = str_ends_with(out_path, ".so");
+    if is_obj == 1 || is_ar == 1 {
+        file_buf[ehdr_base + 16] = 1;
+        file_buf[ehdr_base + 17] = 0;
+        var z_i: u64 = 24;
+        while z_i < 40 { file_buf[ehdr_base + z_i] = 0; z_i = z_i + 1; }
+        file_buf[ehdr_base + 54] = 0; file_buf[ehdr_base + 56] = 0;
+    } else if is_so == 1 {
+        file_buf[ehdr_base + 16] = 3;
+        file_buf[ehdr_base + 17] = 0;
+    }
+
+    if is_ar == 1 {
+        let ar_total: u64 = 68 + final_file_size + (final_file_size & 1);
+        let ar_buf: *mut u8 = uses_alloc(ar_total);
+        let ar_hdr: *u8 = "!<arch>\nmodule.o/       0           0     0     644     ";
+        var ahi: u64 = 0;
+        while ahi < 56 { ar_buf[ahi] = ar_hdr[ahi]; ahi = ahi + 1; }
+        while ahi < 66 { ar_buf[ahi] = 32; ahi = ahi + 1; }
+        var sz_tmp: u64 = final_file_size;
+        var dig_buf: [u8; 16];
+        var d_cnt: u64 = 0;
+        if sz_tmp == 0 { dig_buf[0] = 48; d_cnt = 1; }
+        while sz_tmp > 0 {
+            dig_buf[d_cnt] = (48 + (sz_tmp % 10)) as u8;
+            sz_tmp = sz_tmp / 10;
+            d_cnt = d_cnt + 1;
+        }
+        var di_k: u64 = 0;
+        while di_k < d_cnt {
+            ar_buf[56 + di_k] = dig_buf[(d_cnt - 1) - di_k];
+            di_k = di_k + 1;
+        }
+        ar_buf[66] = 96;
+        ar_buf[67] = 10;
+        var cpi: u64 = 0;
+        while cpi < final_file_size { ar_buf[68 + cpi] = file_buf[cpi]; cpi = cpi + 1; }
+        if (final_file_size & 1) == 1 { ar_buf[68 + final_file_size] = 10; }
+        let wr_ar: i64 = acrq_file_write_bytes(out_path, ar_buf, ar_total, 0);
+        if wr_ar < 0 { return -2; }
+        return 0;
+    }
+
+    let wr: i64 = acrq_file_write_bytes(out_path, file_buf, final_file_size, 0);
+    if wr < 0 {
+        return -2;
+    }
+
+    if cg.target_arch == 8 || cg.target_arch == 9 {
+        var bin_path: [u8; 256];
+        var pi: u64 = 0;
+        while out_path[pi] != 0 && pi < 250 {
+            bin_path[pi] = out_path[pi];
+            pi = pi + 1;
+        }
+        bin_path[pi] = 46;
+        bin_path[pi + 1] = 98;
+        bin_path[pi + 2] = 105;
+        bin_path[pi + 3] = 110;
+        bin_path[pi + 4] = 0;
+        var flat_len: u64 = cg.text_size as u64;
+        if cg.rodata_size > 0 { flat_len = flat_len + (cg.rodata_size as u64); }
+        let flat_buf: *mut u8 = uses_alloc(flat_len);
+        var fi: u64 = 0;
+        while fi < (cg.text_size as u64) { flat_buf[fi] = cg.text_buf[fi]; fi = fi + 1; }
+        var ri: u64 = 0;
+        while ri < (cg.rodata_size as u64) { flat_buf[fi + ri] = cg.rodata_buf[ri]; ri = ri + 1; }
+        acrq_file_write_bytes(&bin_path[0], flat_buf, flat_len, 0);
+    }
+    return 0;
+}

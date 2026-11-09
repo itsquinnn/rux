@@ -1,0 +1,26 @@
+include "lib/core/types.rx";
+include "lib/crypto/blake3.rx";
+
+fn merkle_combine_pair(left: uint, right: uint) -> uint {
+    var buf: [byte; 16];
+    var i: uint = 0;
+    while i < 8 {
+        buf[i] = ((left >> (i * 8)) & 0xFF) as byte;
+        buf[8 + i] = ((right >> (i * 8)) & 0xFF) as byte;
+        i = i + 1;
+    }
+    return blake3_64(&buf[0], 16);
+}
+
+fn merkle_compute_root(leaves: *const uint, count: uint) -> uint {
+    if count == 0 { return 0; }
+    if count == 1 { return leaves[0]; }
+
+    var current_root: uint = leaves[0];
+    var i: uint = 1;
+    while i < count {
+        current_root = merkle_combine_pair(current_root, leaves[i]);
+        i = i + 1;
+    }
+    return current_root;
+}

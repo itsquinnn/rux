@@ -1,0 +1,33 @@
+include "lib/core/types.rx";
+include "lib/core/memory.rx";
+
+struct BufferedWriter {
+    buffer: *mut byte,
+    capacity: uint,
+    head: uint,
+    fd: int,
+}
+
+fn buf_writer_init(bw: *mut BufferedWriter, mem: *mut byte, cap: uint, fd: int) {
+    bw.buffer = mem;
+    bw.capacity = cap;
+    bw.head = 0;
+    bw.fd = fd;
+}
+
+fn buf_writer_flush(bw: *mut BufferedWriter) -> int {
+    if bw.head == 0 {
+        return 0;
+    }
+    let res: int = @os.write(bw.fd, bw.buffer, bw.head);
+    bw.head = 0;
+    return res;
+}
+
+fn buf_writer_put_byte(bw: *mut BufferedWriter, b: byte) {
+    if bw.head >= bw.capacity {
+        buf_writer_flush(bw);
+    }
+    bw.buffer[bw.head] = b;
+    bw.head = bw.head + 1;
+}

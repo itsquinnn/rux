@@ -1,0 +1,36 @@
+include "lib/core/types.rx";
+include "lib/core/vec_u8.rx";
+
+struct StringBuffer {
+    vec: ByteVec,
+}
+
+fn string_buffer_new(initial_cap: uint) -> StringBuffer {
+    var sb: StringBuffer;
+    byte_vec_init(&mut sb.vec, initial_cap);
+    return sb;
+}
+
+fn string_buffer_append(sb: *mut StringBuffer, s: str) {
+    byte_vec_append_str(&mut sb.vec, s);
+}
+
+fn string_buffer_append_byte(sb: *mut StringBuffer, b: byte) {
+    byte_vec_push(&mut sb.vec, b);
+}
+
+fn string_buffer_len(sb: *const StringBuffer) -> uint {
+    return sb.vec.len;
+}
+
+fn string_buffer_to_string(sb: *mut StringBuffer) -> str {
+    byte_vec_push(&mut sb.vec, 0 as byte);
+    let s: str = sb.vec.data as str;
+    sb.vec.len = sb.vec.len - 1;
+    return s;
+}
+
+fn string_buffer_free(sb: *mut StringBuffer) {
+    byte_vec_free(&mut sb.vec);
+}
+

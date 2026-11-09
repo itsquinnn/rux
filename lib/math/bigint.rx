@@ -1,0 +1,151 @@
+include "lib/core/types.rx";
+include "lib/math/checked.rx";
+
+const BIGINT_MAX_LIMBS: u32 = 16;
+
+struct BigInt {
+    limbs: [u64; 16],
+    len: u32,
+    sign: i32,
+}
+
+fn bigint_zero() -> BigInt {
+    var b: BigInt;
+    b.len = 1;
+    b.sign = 0;
+    var i: u32 = 0;
+    while i < BIGINT_MAX_LIMBS {
+        b.limbs[i as u64] = 0;
+        i = i + 1;
+    }
+    return b;
+}
+
+fn bigint_from_i64(val: int) -> BigInt {
+    var b: BigInt = bigint_zero();
+    if val == 0 {
+        return b;
+    }
+    if val < 0 {
+        b.sign = -1;
+        b.limbs[0] = (-val) as u64;
+    } else {
+        b.sign = 1;
+        b.limbs[0] = val as u64;
+    }
+    b.len = 1;
+    return b;
+}
+
+fn bigint_from_u64(val: uint) -> BigInt {
+    var b: BigInt = bigint_zero();
+    if val == 0 {
+        return b;
+    }
+    b.sign = 1;
+    b.limbs[0] = val;
+    b.len = 1;
+    return b;
+}
+
+fn bigint_cmp_abs(a: *const BigInt, b: *const BigInt) -> int {
+    if a.len > b.len { return 1; }
+    if a.len < b.len { return -1; }
+    var i: u32 = a.len;
+    while i > 0 {
+        i = i - 1;
+        let la: u64 = a.limbs[i as u64];
+        let lb: u64 = b.limbs[i as u64];
+        if la > lb { return 1; }
+        if la < lb { return -1; }
+    }
+    return 0;
+}
+
+fn bigint_add_abs(a: *const BigInt, b: *const BigInt) -> BigInt {
+    var res: BigInt = bigint_zero();
+    var carry: u64 = 0;
+    var max_len: u32 = a.len;
+    if b.len > max_len {
+        max_len = b.len;
+    }
+    var i: u32 = 0;
+    while i < max_len || carry > 0 {
+        if i >= BIGINT_MAX_LIMBS { break; }
+        var sum: u64 = carry;
+        if i < a.len { sum = sum + a.limbs[i as u64]; }
+        if i < b.len { sum = sum + b.limbs[i as u64]; }
+        if sum < carry || (i < a.len && sum < a.limbs[i as u64]) {
+            carry = 1;
+        } else {
+            carry = 0;
+        }
+        res.limbs[i as u64] = sum;
+        i = i + 1;
+    }
+    res.len = i;
+    res.sign = 1;
+    return res;
+}
+
+fn bigint_sub_abs(a: *const BigInt, b: *const BigInt) -> BigInt {
+    var res: BigInt = bigint_zero();
+    var borrow: u64 = 0;
+    var i: u32 = 0;
+    while i < a.len {
+        let la: u64 = a.limbs[i as u64];
+        var lb: u64 = 0;
+        if i < b.len {
+            lb = b.limbs[i as u64];
+        }
+        var diff: u64 = la - lb - borrow;
+        if la < (lb + borrow) {
+            borrow = 1;
+        } else {
+            borrow = 0;
+        }
+        res.limbs[i as u64] = diff;
+        i = i + 1;
+    }
+    while i > 1 && res.limbs[(i - 1) as u64] == 0 {
+        i = i - 1;
+    }
+    res.len = i;
+    res.sign = 1;
+    return res;
+}
+
+fn bigint_add(a: *const BigInt, b: *const BigInt) -> BigInt {
+    if a.sign == 0 { return *b; }
+    if b.sign == 0 { return *a; }
+    if a.sign == b.sign {
+        var res: BigInt = bigint_add_abs(a, b);
+        res.sign = a.sign;
+        return res;
+    }
+    let cmp: int = bigint_cmp_abs(a, b);
+    if cmp == 0 {
+        return bigint_zero();
+    }
+    if cmp > 0 {
+        var res: BigInt = bigint_sub_abs(a, b);
+        res.sign = a.sign;
+        return res;
+    }
+    var res2: BigInt = bigint_sub_abs(b, a);
+    res2.sign = b.sign;
+    return res2;
+}
+
+fn bigint_sub(a: *const BigInt, b: *const BigInt) -> BigInt {
+    var neg_b: BigInt = *b;
+    neg_b.sign = -neg_b.sign;
+    return bigint_add(a, &neg_b);
+}
+
+fn bigint_to_i64(a: *const BigInt) -> int {
+    if a.sign == 0 { return 0; }
+    let raw: int = a.limbs[0] as int;
+    if a.sign < 0 { return -raw; }
+    return raw;
+}

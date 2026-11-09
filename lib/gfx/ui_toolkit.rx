@@ -1,0 +1,142 @@
+include "lib/core/types.rx";
+
+const UI_WIDGET_CONTAINER: u8 = 1;
+const UI_WIDGET_LABEL: u8     = 2;
+const UI_WIDGET_BUTTON: u8    = 3;
+const UI_WIDGET_INPUT: u8     = 4;
+
+const UI_FLEX_ROW: u8    = 0;
+const UI_FLEX_COLUMN: u8 = 1;
+
+const GESTURE_NONE: u8        = 0;
+const GESTURE_TAP: u8         = 1;
+const GESTURE_SWIPE_LEFT: u8  = 2;
+const GESTURE_SWIPE_RIGHT: u8 = 3;
+const GESTURE_SWIPE_UP: u8    = 4;
+const GESTURE_SWIPE_DOWN: u8  = 5;
+
+struct UiWidget {
+    id: uint,
+    parent_id: int,
+    kind: u8,
+    flex_dir: u8,
+    padding: int,
+    gap: int,
+    pref_w: int,
+    pref_h: int,
+    layout_x: int,
+    layout_y: int,
+    layout_w: int,
+    layout_h: int,
+    clicked_count: u32,
+}
+
+struct UiTree {
+    widgets: [UiWidget; 32],
+    count: uint,
+    focused_id: int,
+}
+
+fn ui_tree_init(t: *mut UiTree) {
+    t.count = 0;
+    t.focused_id = -1;
+}
+
+fn ui_add_widget(t: *mut UiTree, parent_id: int, kind: u8, pref_w: int, pref_h: int, flex_dir: u8) -> int {
+    if t.count >= 32 { return -1; }
+    let idx: uint = t.count;
+    t.widgets[idx].id = idx;
+    t.widgets[idx].parent_id = parent_id;
+    t.widgets[idx].kind = kind;
+    t.widgets[idx].flex_dir = flex_dir;
+    t.widgets[idx].padding = 8;
+    t.widgets[idx].gap = 0;
+    t.widgets[idx].pref_w = pref_w;
+    t.widgets[idx].pref_h = pref_h;
+    t.widgets[idx].layout_x = 0;
+    t.widgets[idx].layout_y = 0;
+    t.widgets[idx].layout_w = pref_w;
+    t.widgets[idx].layout_h = pref_h;
+    t.widgets[idx].clicked_count = 0;
+    t.count = idx + 1;
+    return idx as int;
+}
+
+fn ui_widget_set_gap(t: *mut UiTree, id: uint, gap: int) {
+    if id < t.count {
+        t.widgets[id].gap = gap;
+    }
+}
+
+fn ui_compute_layout(t: *mut UiTree, root_w: int, root_h: int) {
+    if t.count == 0 { return; }
+    t.widgets[0].layout_x = 0;
+    t.widgets[0].layout_y = 0;
+    t.widgets[0].layout_w = root_w;
+    t.widgets[0].layout_h = root_h;
+
+    var p: uint = 0;
+    while p < t.count {
+        var cur_x: int = t.widgets[p].layout_x + t.widgets[p].padding;
+        var cur_y: int = t.widgets[p].layout_y + t.widgets[p].padding;
+        let dir: u8 = t.widgets[p].flex_dir;
+        let gap: int = t.widgets[p].gap;
+
+        var c: uint = 0;
+        while c < t.count {
+            if t.widgets[c].parent_id == (p as int) {
+                t.widgets[c].layout_x = cur_x;
+                t.widgets[c].layout_y = cur_y;
+                t.widgets[c].layout_w = t.widgets[c].pref_w;
+                t.widgets[c].layout_h = t.widgets[c].pref_h;
+                if dir == UI_FLEX_ROW {
+                    cur_x = cur_x + t.widgets[c].pref_w + gap;
+                } else {
+                    cur_y = cur_y + t.widgets[c].pref_h + gap;
+                }
+            }
+            c = c + 1;
+        }
+        p = p + 1;
+    }
+}
+
+fn ui_dispatch_pointer_click(t: *mut UiTree, px: int, py: int) -> int {
+    var hit: int = -1;
+    var i: uint = 0;
+    while i < t.count {
+        let x: int = t.widgets[i].layout_x;
+        let y: int = t.widgets[i].layout_y;
+        let w: int = t.widgets[i].layout_w;
+        let h: int = t.widgets[i].layout_h;
+        if px >= x && px < (x + w) && py >= y && py < (y + h) {
+            hit = i as int;
+        }
+        i = i + 1;
+    }
+    if hit >= 0 {
+        let u: uint = hit as uint;
+        t.widgets[u].clicked_count = t.widgets[u].clicked_count + 1;
+        t.focused_id = hit;
+    }
+    return hit;
+}
+
+fn ui_recognize_touch_gesture(start_x: int, start_y: int, end_x: int, end_y: int) -> u8 {
+    let dx: int = end_x - start_x;
+    let dy: int = end_y - start_y;
+    var adx: int = dx;
+    if adx < 0 { adx = 0 - adx; }
+    var ady: int = dy;
+    if ady < 0 { ady = 0 - ady; }
+
+    if adx < 12 && ady < 12 {
+        return GESTURE_TAP;
+    }
+    if adx >= ady {
+        if dx > 0 { return GESTURE_SWIPE_RIGHT; }
+        return GESTURE_SWIPE_LEFT;
+    }
+    if dy > 0 { return GESTURE_SWIPE_DOWN; }
+    return GESTURE_SWIPE_UP;
+}

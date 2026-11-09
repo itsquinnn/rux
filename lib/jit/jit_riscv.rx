@@ -1,0 +1,42 @@
+include "lib/core/types.rx";
+
+fn jit_riscv_put32(buf: *mut byte, len_ptr: *mut uint, cap: uint, insn: u32) {
+    let off: uint = len_ptr[0];
+    if (off + 4) <= cap {
+        buf[off + 0] = (insn & 255) as byte;
+        buf[off + 1] = ((insn >> 8) & 255) as byte;
+        buf[off + 2] = ((insn >> 16) & 255) as byte;
+        buf[off + 3] = ((insn >> 24) & 255) as byte;
+        len_ptr[0] = off + 4;
+    }
+}
+
+fn jit_riscv_mov_imm(buf: *mut byte, len_ptr: *mut uint, cap: uint, reg: u32, imm: u64) {
+    let v32: u32 = imm as u32;
+    if v32 <= 2047 {
+        jit_riscv_put32(buf, len_ptr, cap, 19 | ((v32 & 4095) << 20) | (reg << 7));
+    } else {
+        let hi: u32 = (v32 + 2048) >> 12;
+        let lo: u32 = v32 - (hi << 12);
+        jit_riscv_put32(buf, len_ptr, cap, 55 | ((hi & 1048575) << 12) | (reg << 7));
+        jit_riscv_put32(buf, len_ptr, cap, 19 | ((lo & 4095) << 20) | (reg << 15) | (reg << 7));
+    }
+}
+
+fn jit_riscv_emit_op_imm(buf: *mut byte, len_ptr: *mut uint, cap: uint, op: uint, imm: uint) {
+    jit_riscv_mov_imm(buf, len_ptr, cap, 6, imm as u64);
+    if op == 1 {
+        jit_riscv_put32(buf, len_ptr, cap, 6619699);
+    } else if op == 2 {
+        jit_riscv_put32(buf, len_ptr, cap, 1080361523);
+    } else if op == 3 {
+        jit_riscv_put32(buf, len_ptr, cap, 40174131);
+    } else if op == 4 {
+        jit_riscv_put32(buf, len_ptr, cap, 6623795);
+    }
+}
+
+fn jit_riscv_emit_ret(buf: *mut byte, len_ptr: *mut uint, cap: uint) {
+    jit_riscv_put32(buf, len_ptr, cap, 32871);
+}
+

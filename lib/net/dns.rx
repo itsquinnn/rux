@@ -1,0 +1,58 @@
+include "lib/core/types.rx";
+
+const DNS_TYPE_A: u16    = 1;
+const DNS_TYPE_AAAA: u16 = 28;
+const DNS_CLASS_IN: u16  = 1;
+
+fn dns_encode_qname(domain: *const byte, dst: *mut byte) -> uint {
+    var src_i: uint = 0;
+    var dst_i: uint = 0;
+    while domain[src_i] != 0 {
+        let label_len_pos: uint = dst_i;
+        dst_i = dst_i + 1;
+        var lbl_len: uint = 0;
+        while domain[src_i] != 0 && domain[src_i] != 46 {
+            dst[dst_i] = domain[src_i];
+            dst_i = dst_i + 1;
+            src_i = src_i + 1;
+            lbl_len = lbl_len + 1;
+        }
+        dst[label_len_pos] = lbl_len as byte;
+        if domain[src_i] == 46 {
+            src_i = src_i + 1;
+        }
+    }
+    dst[dst_i] = 0;
+    return dst_i + 1;
+}
+
+fn dns_build_query(pkt: *mut byte, tx_id: u16, domain: *const byte, qtype: u16) -> uint {
+    pkt[0] = ((tx_id >> 8) & 255) as byte;
+    pkt[1] = (tx_id & 255) as byte;
+    pkt[2] = 1; pkt[3] = 0;
+    pkt[4] = 0; pkt[5] = 1;
+    pkt[6] = 0; pkt[7] = 0;
+    pkt[8] = 0; pkt[9] = 0;
+    pkt[10] = 0; pkt[11] = 0;
+
+    let qlen: uint = dns_encode_qname(domain, &mut pkt[12]);
+    var off: uint = 12 + qlen;
+    pkt[off] = ((qtype >> 8) & 255) as byte;
+    pkt[off + 1] = (qtype & 255) as byte;
+    pkt[off + 2] = 0;
+    pkt[off + 3] = 1;
+    return off + 4;
+}
+
+fn dns_parse_a_record_tail(pkt: *const byte, pkt_len: uint, out_ipv4_be: *mut u32) -> bool {
+    if pkt_len < 16 { return false; }
+    let ancount: u16 = ((pkt[6] as u16) << 8) | (pkt[7] as u16);
+    if ancount == 0 { return false; }
+    let base: uint = pkt_len - 4;
+    out_ipv4_be[0] = ((pkt[base] as u32) << 24) |
+                     ((pkt[base + 1] as u32) << 16) |
+                     ((pkt[base + 2] as u32) << 8) |
+                     (pkt[base + 3] as u32);
+    return true;
+}
+

@@ -1,0 +1,136 @@
+include "lib/core/types.rx";
+
+const X86_SEL_KERNEL_CODE: u16 = 8;
+const X86_SEL_KERNEL_DATA: u16 = 16;
+const X86_SEL_USER_DATA: u16   = 27;
+const X86_SEL_USER_CODE: u16   = 35;
+const X86_SEL_TSS: u16         = 40;
+
+const IDT_ATTR_INT_GATE_RING0: u8  = 142;
+const IDT_ATTR_TRAP_GATE_RING0: u8 = 143;
+const IDT_ATTR_SYSCALL_RING3: u8   = 238;
+
+struct GdtDescriptorPtr {
+    limit: u16,
+    base: u64,
+}
+
+struct TaskStateSegment64 {
+    reserved0: u32,
+    rsp0: u64,
+    rsp1: u64,
+    rsp2: u64,
+    reserved1: u64,
+    ist1: u64,
+    ist2: u64,
+    ist3: u64,
+    ist4: u64,
+    ist5: u64,
+    ist6: u64,
+    ist7: u64,
+    reserved2: u64,
+    reserved3: u16,
+    iomap_base: u16,
+}
+
+struct GdtState64 {
+    entries: [u64; 7],
+    tss: TaskStateSegment64,
+    gdtr: GdtDescriptorPtr,
+}
+
+struct IdtGate64 {
+    offset_low: u16,
+    selector: u16,
+    ist: u8,
+    type_attr: u8,
+    offset_mid: u16,
+    offset_high: u32,
+    reserved: u32,
+}
+
+struct IdtState64 {
+    gates: [IdtGate64; 256],
+    idtr: GdtDescriptorPtr,
+}
+
+struct TrapFrame64 {
+    r15: u64,
+    r14: u64,
+    r13: u64,
+    r12: u64,
+    r11: u64,
+    r10: u64,
+    r9: u64,
+    r8: u64,
+    rbp: u64,
+    rdi: u64,
+    rsi: u64,
+    rdx: u64,
+    rcx: u64,
+    rbx: u64,
+    rax: u64,
+    vector: u64,
+    error_code: u64,
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
+fn x86_encode_gdt_seg(access: u64, flags: u64) -> u64 {
+    var desc: u64 = 65535;
+    desc = desc | ((access & 255) << 40);
+    desc = desc | (15 << 48);
+    desc = desc | ((flags & 15) << 52);
+    return desc;
+}
+
+fn x86_gdt_init(g: *mut GdtState64, kernel_rsp0: u64, double_fault_ist1: u64) {
+    g.entries[0] = 0;
+    g.entries[1] = x86_encode_gdt_seg(154, 10);
+    g.entries[2] = x86_encode_gdt_seg(146, 12);
+    g.entries[3] = x86_encode_gdt_seg(242, 12);
+    g.entries[4] = x86_encode_gdt_seg(250, 10);
+
+    g.tss.reserved0 = 0;
+    g.tss.rsp0 = kernel_rsp0;
+    g.tss.ist1 = double_fault_ist1;
+    g.tss.iomap_base = 104;
+
+    let tss_base: u64 = (&g.tss) as u64;
+    let tss_limit: u64 = 103;
+    let low_desc: u64 = (tss_limit & 65535) |
+                        ((tss_base & 16777215) << 16) |
+                        (137 << 40) |
+                        (((tss_base >> 24) & 255) << 56);
+    let high_desc: u64 = (tss_base >> 32) & 4294967295;
+    g.entries[5] = low_desc;
+    g.entries[6] = high_desc;
+
+    g.gdtr.limit = 55;
+    g.gdtr.base = (&g.entries[0]) as u64;
+}
+
+fn x86_idt_set_gate(idt: *mut IdtState64, vec: uint, handler_vaddr: u64, ist: u8, attr: u8) {
+    if vec >= 256 { return; }
+    idt.gates[vec].offset_low = (handler_vaddr & 65535) as u16;
+    idt.gates[vec].selector = X86_SEL_KERNEL_CODE;
+    idt.gates[vec].ist = ist & 7;
+    idt.gates[vec].type_attr = attr;
+    idt.gates[vec].offset_mid = ((handler_vaddr >> 16) & 65535) as u16;
+    idt.gates[vec].offset_high = ((handler_vaddr >> 32) & 4294967295) as u32;
+    idt.gates[vec].reserved = 0;
+}
+
+fn x86_idt_init(idt: *mut IdtState64, default_isr: u64) {
+    var i: uint = 0;
+    while i < 256 {
+        x86_idt_set_gate(idt, i, default_isr, 0, IDT_ATTR_INT_GATE_RING0);
+        i = i + 1;
+    }
+    idt.idtr.limit = 4095;
+    idt.idtr.base = (&idt.gates[0]) as u64;
+}
+

@@ -1,0 +1,13 @@
+include "lib/core/types.rx";
+
+fn shape_bind_int(instance_ptr: *mut byte, offset: uint, val: int) {
+    let field: *mut int = (instance_ptr as uint + offset) as *mut int;
+    *field = val;
+}
+
+fn shape_bind_str(instance_ptr: *mut byte, offset: uint, str_ptr: *const byte, len: uint) {
+    let field: *mut *const byte = (instance_ptr as uint + offset) as *mut *const byte;
+    let len_field: *mut uint = (instance_ptr as uint + offset + 8) as *mut uint;
+    *field = str_ptr;
+    *len_field = len;
+}

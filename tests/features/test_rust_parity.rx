@@ -1,0 +1,535 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "lib/core/option.rx";
+include "lib/core/result.rx";
+include "lib/core/adt.rx";
+include "lib/core/iter.rx";
+include "lib/core/raii.rx";
+include "lib/core/alor.rx";
+include "lib/core/vec.rx";
+include "lib/core/vec_u8.rx";
+include "lib/core/hashmap.rx";
+include "lib/net/tcp.rx";
+
+fn double_val(x: uint) -> uint {
+    return x * 2;
+}
+
+fn chain_even(x: uint) -> Option {
+    if (x % 2) == 0 {
+        return option_some(x + 100);
+    }
+    return option_none();
+}
+
+fn test_option_suite() -> int {
+    let some_val: Option = option_some(42);
+    let none_val: Option = option_none();
+
+    if !option_is_some(some_val) || option_is_none(some_val) || option_unwrap(some_val) != 42 {
+        println("[FAIL] Option: Some(42) handling failed");
+        return 1;
+    }
+
+    if !option_is_none(none_val) || option_is_some(none_val) || option_unwrap_or(none_val, 99) != 99 {
+        println("[FAIL] Option: None fallback failed");
+        return 2;
+    }
+
+    let mapped: Option = option_map(some_val, double_val);
+    if !option_is_some(mapped) || option_unwrap(mapped) != 84 {
+        println("[FAIL] Option: map transformation failed");
+        return 3;
+    }
+
+    let chained_ok: Option = option_and_then(some_val, chain_even);
+    if !option_is_some(chained_ok) || option_unwrap(chained_ok) != 142 {
+        println("[FAIL] Option: and_then chain failed");
+        return 4;
+    }
+
+    println("[PASS] 1. Algebraic Option[T] with safe unwrap, map, and_then verified");
+    return 0;
+}
+
+fn fallible_inc(x: uint) -> Result {
+    if x < 100 {
+        return result_ok(x + 1);
+    }
+    return result_err(-99);
+}
+
+fn test_result_suite() -> int {
+    let r_ok: Result = result_ok(50);
+    let r_mapped: Result = result_map(r_ok, double_val);
+    if !result_is_ok(r_mapped) || result_unwrap(r_mapped) != 100 {
+        println("[FAIL] Result: map failed");
+        return 1;
+    }
+
+    let r_chained: Result = result_and_then(r_ok, fallible_inc);
+    if !result_is_ok(r_chained) || result_unwrap(r_chained) != 51 {
+        println("[FAIL] Result: and_then failed");
+        return 2;
+    }
+
+    let r_overflow: Result = result_and_then(result_ok(200), fallible_inc);
+    if !result_is_err(r_overflow) || result_error(r_overflow) != -99 {
+        println("[FAIL] Result: error propagation failed");
+        return 3;
+    }
+
+    println("[PASS] 2. Result[T, E] monadic chaining and error propagation verified");
+    return 0;
+}
+
+const VARIANT_QUIT: uint      = 1;
+const VARIANT_WRITE: uint     = 2;
+const VARIANT_MOVE: uint      = 3;
+
+fn test_adt_match_suite() -> int {
+    let msg_move: TaggedUnion = adt_payload2(VARIANT_MOVE, 100, 200);
+    let msg_quit: TaggedUnion = adt_unit(VARIANT_QUIT);
+
+    if !adt_is(msg_move, VARIANT_MOVE) || adt_is(msg_move, VARIANT_QUIT) {
+        println("[FAIL] ADT: discriminant check failed");
+        return 1;
+    }
+
+    let x: uint = adt_get_payload0(msg_move, VARIANT_MOVE);
+    let y: uint = adt_get_payload1(msg_move, VARIANT_MOVE);
+    if x != 100 || y != 200 {
+        println("[FAIL] ADT: payload extraction failed");
+        return 2;
+    }
+
+    var matched_kind: uint = 0;
+    match adt_tag(msg_move) {
+        VARIANT_QUIT => {
+            matched_kind = 1;
+        },
+        VARIANT_MOVE => {
+            matched_kind = 3;
+        },
+        _ => {
+            matched_kind = 99;
+        }
+    }
+
+    if matched_kind != 3 {
+        println("[FAIL] ADT: match on variant tag failed");
+        return 3;
+    }
+
+    println("[PASS] 3. Algebraic TaggedUnion ADTs and native pattern matching verified");
+    return 0;
+}
+
+fn add_folder(acc: uint, x: uint) -> uint {
+    return acc + x;
+}
+
+fn test_iter_suite() -> int {
+    var rit: RangeIterator;
+    range_iter_init(&mut rit, 1, 6);
+    let sum_range: uint = range_iter_fold(&mut rit, 0, add_folder);
+    if sum_range != 15 {
+        println("[FAIL] Iter: range_iter_fold failed");
+        return 1;
+    }
+
+    var data: [uint; 4];
+    data[0] = 10;
+    data[1] = 20;
+    data[2] = 30;
+    data[3] = 40;
+
+    var sit: SliceIterator;
+    slice_iter_init(&mut sit, &data[0], 4);
+    let sum_slice: uint = slice_iter_sum(&mut sit);
+    if sum_slice != 100 {
+        println("[FAIL] Iter: slice_iter_sum failed");
+        return 2;
+    }
+
+    var for_sum: uint = 0;
+    for i in 10..15 {
+        for_sum = for_sum + (i as uint);
+    }
+    if for_sum != 60 {
+        println("[FAIL] Iter: native for..in loop failed");
+        return 3;
+    }
+
+    println("[PASS] 4. Iterator protocol and native `for .. in` syntax verified");
+    return 0;
+}
+
+struct MockDtorTracker {
+    drop_count: uint,
+    last_dropped_id: uint,
+}
+
+fn mock_destructor(res: uint) {
+    let tracker: *mut MockDtorTracker = res as *mut MockDtorTracker;
+    tracker.drop_count = tracker.drop_count + 1;
+    tracker.last_dropped_id = 777;
+}
+
+fn test_raii_suite() -> int {
+    var tracker: MockDtorTracker;
+    tracker.drop_count = 0;
+    tracker.last_dropped_id = 0;
+    let t_ptr: uint = (&mut tracker) as uint;
+
+    var g1: ResourceGuard;
+    guard_init(&mut g1, t_ptr, mock_destructor);
+
+    if !guard_is_active(&g1) {
+        println("[FAIL] RAII: guard did not arm");
+        return 1;
+    }
+
+    guard_drop(&mut g1);
+    if guard_is_active(&g1) || tracker.drop_count != 1 || tracker.last_dropped_id != 777 {
+        println("[FAIL] RAII: guard_drop failed");
+        return 2;
+    }
+
+    guard_drop(&mut g1);
+    if tracker.drop_count != 1 {
+        println("[FAIL] RAII: idempotency failed");
+        return 3;
+    }
+
+    var g2: ResourceGuard;
+    guard_init(&mut g2, t_ptr, mock_destructor);
+    let res: uint = guard_dismiss(&mut g2);
+    guard_drop(&mut g2);
+    if res != t_ptr || tracker.drop_count != 1 {
+        println("[FAIL] RAII: guard_dismiss failed");
+        return 4;
+    }
+
+    println("[PASS] 5. Deterministic RAII ResourceGuards and ownership dismissal verified");
+    return 0;
+}
+
+fn test_alor_suite() -> int {
+    var ctx: AlorContext;
+    alor_init(&mut ctx);
+
+    let ref_root: uint = alor_register_ref(&mut ctx, 0x1000);
+
+    let d1: uint = alor_scope_enter(&mut ctx);
+    if d1 != 1 {
+        println("[FAIL] ALOR: scope enter failed");
+        return 1;
+    }
+
+    let ref_inner: uint = alor_register_ref(&mut ctx, 0x2000);
+
+    if !alor_validate_assignment(&ctx, 1, ref_inner) {
+        println("[FAIL] ALOR: intra-scope assignment rejected");
+        return 2;
+    }
+
+    if alor_validate_assignment(&ctx, 0, ref_inner) {
+        println("[FAIL] ALOR: unsafe escape was improperly permitted");
+        return 3;
+    }
+
+    if !alor_subduct(&mut ctx, ref_inner, 0) {
+        println("[FAIL] ALOR: region subduction promotion failed");
+        return 4;
+    }
+
+    if !alor_validate_assignment(&ctx, 0, ref_inner) {
+        println("[FAIL] ALOR: assignment after subduction rejected");
+        return 5;
+    }
+
+    let ref_temp: uint = alor_register_ref(&mut ctx, 0x3000);
+
+    alor_scope_exit(&mut ctx);
+    if ctx.current_depth != 0 {
+        println("[FAIL] ALOR: scope exit depth incorrect");
+        return 6;
+    }
+
+    if alor_is_valid(&ctx, ref_temp) {
+        println("[FAIL] ALOR: exited reference was not invalidated");
+        return 7;
+    }
+
+    if !alor_is_valid(&ctx, ref_inner) {
+        println("[FAIL] ALOR: subducted reference was erroneously invalidated");
+        return 8;
+    }
+
+    alor_set_unsafe_mode(&mut ctx, true);
+    if !alor_validate_assignment(&ctx, 0, ref_temp) {
+        println("[FAIL] ALOR: manual unsafe mode failed to bypass strict checks");
+        return 9;
+    }
+
+    println("[PASS] 6. ALOR Lexical Region memory safety & dual-mode manual configuration verified");
+    return 0;
+}
+
+fn test_vec_suite() -> int {
+    var v: Vec;
+    vec_init(&mut v, 2);
+    vec_push(&mut v, 100);
+    vec_push(&mut v, 200);
+    vec_push(&mut v, 300);
+    if vec_len(&v) != 3 {
+        println("[FAIL] Vec: length mismatch");
+        return 1;
+    }
+    let opt0: Option = vec_get(&v, 0);
+    let opt9: Option = vec_get(&v, 9);
+    if !option_is_some(opt0) || option_unwrap(opt0) != 100 || !option_is_none(opt9) {
+        println("[FAIL] Vec: indexing failed");
+        return 2;
+    }
+    let popped: Option = vec_pop(&mut v);
+    if !option_is_some(popped) || option_unwrap(popped) != 300 || vec_len(&v) != 2 {
+        println("[FAIL] Vec: pop failed");
+        return 3;
+    }
+    vec_free(&mut v);
+    println("[PASS] 7. Dynamic Vec container verified");
+    return 0;
+}
+
+fn test_hashmap_suite() -> int {
+    var map: HashMap;
+    hashmap_init(&mut map, 16);
+    hashmap_insert(&mut map, 42, 840);
+    hashmap_insert(&mut map, 100, 2000);
+    hashmap_insert(&mut map, 777, 9999);
+
+    if hashmap_len(&map) != 3 {
+        println("[FAIL] HashMap: length mismatch");
+        return 1;
+    }
+    let h_opt: Option = hashmap_get(&map, 42);
+    let h_none: Option = hashmap_get(&map, 999);
+    if !option_is_some(h_opt) || option_unwrap(h_opt) != 840 || !option_is_none(h_none) {
+        println("[FAIL] HashMap: lookup failed");
+        return 2;
+    }
+    if !hashmap_remove(&mut map, 100) || hashmap_contains(&map, 100) || hashmap_len(&map) != 2 {
+        println("[FAIL] HashMap: remove failed");
+        return 3;
+    }
+    hashmap_free(&mut map);
+    println("[PASS] 8. Open-addressing HashMap verified");
+    return 0;
+}
+
+fn test_tcp_suite() -> int {
+    let localhost: u32 = ip4_addr(127, 0, 0, 1);
+    let s_res: Result = tcp_listen(localhost, 19877, 5);
+    if !result_is_ok(s_res) {
+        println("[FAIL] TCP: listen failed");
+        return 1;
+    }
+    let listener_fd: int = result_unwrap(s_res) as int;
+    tcp_close(listener_fd);
+    println("[PASS] 9. Direct Linux syscall TCP socket listener verified");
+    return 0;
+}
+
+fn test_unsafe_suite() -> int {
+    var val: uint = 10;
+    unsafe {
+        let p: *mut uint = &mut val;
+        p[0] = 77;
+    }
+    if val != 77 {
+        println("[FAIL] Unsafe block mutation failed");
+        return 1;
+    }
+    println("[PASS] 10. Native `unsafe { }` syntax block verified");
+    return 0;
+}
+
+fn try_step(step: int) -> int {
+    if step == 1 { return 100; }
+    if step == 2 { return 200; }
+    return -404;
+}
+
+fn try_pipeline(should_fail: bool) -> int {
+    let a: int = try_step(1)?;
+    if should_fail {
+        let err: int = try_step(99)?;
+    }
+    let b: int = try_step(2)?;
+    return a + b;
+}
+
+fn test_try_operator_suite() -> int {
+    let res_ok: int = try_pipeline(false);
+    if res_ok != 300 {
+        println("[FAIL] ? operator success path failed");
+        return 1;
+    }
+    let res_err: int = try_pipeline(true);
+    if res_err != -404 {
+        println("[FAIL] ? operator error propagation failed");
+        return 2;
+    }
+    println("[PASS] 11. Rust-style `?` error propagation operator verified");
+    return 0;
+}
+
+fn test_byte_vec_suite() -> int {
+    var bv: ByteVec;
+    byte_vec_init(&mut bv, 4);
+    byte_vec_append_str(&mut bv, "RuxSovereign");
+    if byte_vec_len(&bv) != 12 {
+        println("[FAIL] ByteVec len failed");
+        return 1;
+    }
+    if byte_vec_get(&bv, 0) != 82 || byte_vec_get(&bv, 3) != 83 {
+        println("[FAIL] ByteVec get failed");
+        return 2;
+    }
+    let slice: ByteSlice = byte_vec_as_slice(&bv);
+    if slice.len != 12 {
+        println("[FAIL] ByteVec slice conversion failed");
+        return 3;
+    }
+    byte_vec_free(&mut bv);
+    println("[PASS] 12. Dynamic ByteVec (Vec<u8>) and slice conversion verified");
+    return 0;
+}
+
+struct GPair<T, U> {
+    first: T,
+    second: U,
+}
+
+struct GOpt<T> {
+    has_val: bool,
+    val: T,
+}
+
+struct GRes<T, E> {
+    is_ok: bool,
+    val: T,
+    err: E,
+}
+
+struct GVec<T> {
+    data: *mut T,
+    len: u64,
+    cap: u64,
+}
+
+fn g_make_pair<T, U>(a: T, b: U) -> GPair<T, U> {
+    var p: GPair<T, U>;
+    p.first = a;
+    p.second = b;
+    return p;
+}
+
+fn g_make_some<T>(v: T) -> GOpt<T> {
+    var o: GOpt<T>;
+    o.has_val = true;
+    o.val = v;
+    return o;
+}
+
+fn g_res_ok<T, E>(v: T) -> GRes<T, E> {
+    var r: GRes<T, E>;
+    r.is_ok = true;
+    r.val = v;
+    return r;
+}
+
+fn g_res_err<T, E>(e: E) -> GRes<T, E> {
+    var r: GRes<T, E>;
+    r.is_ok = false;
+    r.err = e;
+    return r;
+}
+
+fn g_vec_new<T>() -> GVec<T> {
+    var v: GVec<T>;
+    v.data = 0 as *mut T;
+    v.len = 0;
+    v.cap = 0;
+    return v;
+}
+
+fn test_first_class_generics_suite() -> int {
+    var p1: GPair<u64, u64>;
+    p1.first = 42;
+    p1.second = 99;
+    if p1.first != 42 || p1.second != 99 { return 1; }
+
+    let p2: GPair<u64, u64> = g_make_pair<u64, u64>(1234, 5678);
+    if p2.first != 1234 || p2.second != 5678 { return 2; }
+
+    let o1: GOpt<u64> = g_make_some<u64>(8888);
+    if !o1.has_val || o1.val != 8888 { return 3; }
+
+    var p3: GPair<u8, u8>;
+    p3.first = 7;
+    p3.second = 9;
+    if p3.first != 7 || p3.second != 9 { return 4; }
+
+    if sizeof(GPair<u64, u64>) != 16 { return 5; }
+    if sizeof(GPair<u8, u8>) != 2 { return 6; }
+
+    let ro: GRes<u64, int> = g_res_ok<u64, int>(4242);
+    if !ro.is_ok || ro.val != 4242 { return 7; }
+
+    let re: GRes<u64, int> = g_res_err<u64, int>(-404);
+    if re.is_ok || re.err != -404 { return 8; }
+
+    let v_u64: GVec<u64> = g_vec_new<u64>();
+    let v_u8: GVec<u8> = g_vec_new<u8>();
+    if sizeof(GVec<u64>) != 24 || sizeof(GVec<u8>) != 24 { return 9; }
+    if v_u64.len != 0 || v_u8.len != 0 { return 10; }
+
+    println("[PASS] 13. First-class monomorphized generics (Pair<T,U>, Option<T>, Result<T,E>, Vec<T>) verified");
+    return 0;
+}
+
+fn main() -> int {
+    println("=================================================================");
+    println("        RUX MEMORY SAFETY & ADVANCED LANGUAGE PARITY SUITE       ");
+    println("=================================================================");
+
+    var failures: int = 0;
+
+    failures = failures + test_option_suite();
+    failures = failures + test_result_suite();
+    failures = failures + test_adt_match_suite();
+    failures = failures + test_iter_suite();
+    failures = failures + test_raii_suite();
+    failures = failures + test_alor_suite();
+    failures = failures + test_vec_suite();
+    failures = failures + test_hashmap_suite();
+    failures = failures + test_tcp_suite();
+    failures = failures + test_unsafe_suite();
+    failures = failures + test_try_operator_suite();
+    failures = failures + test_byte_vec_suite();
+    failures = failures + test_first_class_generics_suite();
+
+    println("=================================================================");
+    if failures == 0 {
+        println(">>> ALL 13 ADVANCED PARITY & MEMORY SAFETY SUITES PASSED (100% OK) <<<");
+        println("=================================================================");
+        return 0;
+    } else {
+        println(">>> FAILURES DETECTED IN ADVANCED PARITY SUITES <<<");
+        println("=================================================================");
+        return 1;
+    }
+}

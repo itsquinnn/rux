@@ -1,0 +1,60 @@
+enum Severity {
+    NOTE = 0,
+    WARNING = 1,
+    ERROR = 2,
+    FATAL = 3,
+}
+
+struct PipelineTelemetry {
+    total_tokens: uint,
+    ast_nodes_created: uint,
+    stencils_spliced: uint,
+    bytes_emitted: uint,
+    elapsed_nanoseconds: uint,
+    error_count: uint,
+    warning_count: uint,
+}
+
+fn telemetry_init() -> PipelineTelemetry {
+    return PipelineTelemetry {
+        total_tokens: 0,
+        ast_nodes_created: 0,
+        stencils_spliced: 0,
+        bytes_emitted: 0,
+        elapsed_nanoseconds: 0,
+        error_count: 0,
+        warning_count: 0,
+    };
+}
+
+fn report_diagnostic(
+    sev: Severity,
+    filename: str,
+    line: uint,
+    column: uint,
+    message: str
+) {
+    if sev == Severity.ERROR || sev == Severity.FATAL {
+        @terminal.print_error("[ERROR] ");
+    } else if sev == Severity.WARNING {
+        @terminal.print_warning("[WARN]  ");
+    } else {
+        @terminal.print_info("[NOTE]  ");
+    }
+
+    @terminal.print(filename);
+    @terminal.print(":");
+    @terminal.print_uint(line);
+    @terminal.print(":");
+    @terminal.print_uint(column);
+    @terminal.print(" - ");
+    @terminal.print_line(message);
+}
+
+fn report_summary(t: *const PipelineTelemetry) {
+    @terminal.print("Synthesis complete: ");
+    @terminal.print_uint(t.bytes_emitted);
+    @terminal.print(" bytes generated in ");
+    @terminal.print_uint(t.elapsed_nanoseconds / 1000);
+    @terminal.print_line(" µs.");
+}

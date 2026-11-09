@@ -1,0 +1,5 @@
+include "tools/rxd/rxd.rx";
+
+fn main(argc: int, argv: **byte) -> int {
+    return rxd_dispatch_command(argc, argv, 1);
+}

@@ -1,0 +1,96 @@
+include "bootstrap/syntax/shapes.rx";
+
+fn parse_function_declaration(p: *mut ParserState) -> *mut AstNode {
+    expect_token(p, TOKEN_FN);
+
+    let fn_node: *mut AstNode = create_node(p, NODE_FN);
+    fn_node.name_hash = p.current_token.name_hash;
+    expect_token(p, TOKEN_IDENT);
+    expect_token(p, TOKEN_LPAREN);
+
+    var last_param: *mut AstNode = 0 as *mut AstNode;
+    while p.current_token.kind != TOKEN_RPAREN && p.current_token.kind != TOKEN_EOF {
+        let param_node: *mut AstNode = create_node(p, NODE_LET);
+        param_node.name_hash = p.current_token.name_hash;
+        expect_token(p, TOKEN_IDENT);
+        if p.current_token.kind == TOKEN_COLON {
+            scan_next_token(p.reader, &mut p.current_token);
+            skip_type(p);
+        }
+        if last_param == (0 as *mut AstNode) {
+            fn_node.child2 = param_node;
+        } else {
+            last_param.next = param_node;
+        }
+        last_param = param_node;
+        if p.current_token.kind == TOKEN_COMMA {
+            scan_next_token(p.reader, &mut p.current_token);
+        }
+    }
+
+    expect_token(p, TOKEN_RPAREN);
+
+    if p.current_token.kind == TOKEN_ARROW {
+        scan_next_token(p.reader, &mut p.current_token);
+        skip_type(p);
+    }
+
+    if p.current_token.kind == TOKEN_FAT_ARROW {
+        scan_next_token(p.reader, &mut p.current_token);
+        fn_node.child1 = parse_expression(p);
+        if p.current_token.kind == TOKEN_SEMICOLON {
+            scan_next_token(p.reader, &mut p.current_token);
+        }
+        return fn_node;
+    }
+
+    expect_token(p, TOKEN_LBRACE);
+    var last_statement: *mut AstNode = 0 as *mut AstNode;
+
+    while p.current_token.kind != TOKEN_RBRACE && p.current_token.kind != TOKEN_EOF {
+        let stmt: *mut AstNode = parse_statement(p);
+        if last_statement == (0 as *mut AstNode) {
+            fn_node.child1 = stmt;
+        } else {
+            last_statement.next = stmt;
+        }
+        last_statement = stmt;
+    }
+
+    expect_token(p, TOKEN_RBRACE);
+    return fn_node;
+}
+
+fn parse_program(p: *mut ParserState, shapes_out: *mut ShapeContract, max_shapes: uint) -> *mut AstNode {
+    let program_root: *mut AstNode = create_node(p, NODE_PROGRAM);
+    var last_item: *mut AstNode = 0 as *mut AstNode;
+    var shape_count: uint = 0;
+
+    while p.current_token.kind != TOKEN_EOF {
+    var item: *mut AstNode = 0 as *mut AstNode;
+
+        if p.current_token.kind == TOKEN_SHAPE {
+            if shape_count < max_shapes {
+                item = parse_shape_declaration(p, shapes_out + shape_count);
+                shape_count = shape_count + 1;
+            } else {
+                scan_next_token(p.reader, &mut p.current_token);
+            }
+        } else if p.current_token.kind == TOKEN_FN {
+            item = parse_function_declaration(p);
+        } else {
+            scan_next_token(p.reader, &mut p.current_token);
+        }
+
+        if item != (0 as *mut AstNode) {
+            if last_item == (0 as *mut AstNode) {
+                program_root.child1 = item;
+            } else {
+                last_item.next = item;
+            }
+            last_item = item;
+        }
+    }
+
+    return program_root;
+}

@@ -1,0 +1,311 @@
+fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
+    let align: u64 = 4096;
+    var text_aligned: u64 = ((cg.text_size as u64) + align - 1) & (0 - align);
+    if text_aligned == 0 { text_aligned = 4096; }
+    var rodata_aligned: u64 = ((cg.rodata_size as u64) + align - 1) & (0 - align);
+    if rodata_aligned == 0 { rodata_aligned = 4096; }
+    let idata_aligned: u64 = 4096;
+
+    let headers_size: u64 = 4096;
+    let text_offset: u64 = headers_size;
+    let rodata_offset: u64 = text_offset + text_aligned;
+    let idata_offset: u64 = rodata_offset + rodata_aligned;
+
+    var num_sections: u32 = 2;
+    var total_file_size: u64 = rodata_offset + rodata_aligned;
+    if is_uefi == 0 {
+        num_sections = 3;
+        total_file_size = idata_offset + idata_aligned;
+    }
+
+    let file_buf: *mut u8 = uses_alloc(total_file_size);
+    if (file_buf as i64) <= 0 {
+        return -1;
+    }
+    var z: u64 = 0;
+    while z < total_file_size {
+        file_buf[z] = 0;
+        z = z + 1;
+    }
+
+    file_buf[0] = 77; file_buf[1] = 90;
+    file_buf[2] = 144; file_buf[3] = 0;
+    file_buf[4] = 3; file_buf[5] = 0;
+    file_buf[8] = 4; file_buf[9] = 0;
+    file_buf[12] = 255; file_buf[13] = 255;
+    file_buf[16] = 184; file_buf[17] = 0;
+    file_buf[24] = 64; file_buf[25] = 0;
+    file_buf[60] = 128; file_buf[61] = 0; file_buf[62] = 0; file_buf[63] = 0;
+
+    let pe_base: u64 = 128;
+    file_buf[pe_base + 0] = 80; file_buf[pe_base + 1] = 69; file_buf[pe_base + 2] = 0; file_buf[pe_base + 3] = 0;
+
+    let coff_base: u64 = pe_base + 4;
+    file_buf[coff_base + 0] = 100; file_buf[coff_base + 1] = 134;
+    file_buf[coff_base + 2] = (num_sections & 255) as u8; file_buf[coff_base + 3] = 0;
+    file_buf[coff_base + 16] = 240; file_buf[coff_base + 17] = 0;
+
+    var pe_char: u32 = 35;
+    if is_uefi == 1 {
+        pe_char = 8238;
+    }
+    file_buf[coff_base + 18] = (pe_char & 255) as u8;
+    file_buf[coff_base + 19] = ((pe_char >> 8) & 255) as u8;
+
+    let opt_base: u64 = coff_base + 20;
+    file_buf[opt_base + 0] = 11; file_buf[opt_base + 1] = 2;
+    file_buf[opt_base + 2] = 1; file_buf[opt_base + 3] = 0;
+
+    file_buf[opt_base + 4] = (text_aligned & 255) as u8;
+    file_buf[opt_base + 5] = ((text_aligned >> 8) & 255) as u8;
+    file_buf[opt_base + 6] = ((text_aligned >> 16) & 255) as u8;
+    file_buf[opt_base + 7] = ((text_aligned >> 24) & 255) as u8;
+
+    var init_data_sz: u64 = rodata_aligned;
+    if is_uefi == 0 { init_data_sz = init_data_sz + idata_aligned; }
+    file_buf[opt_base + 8] = (init_data_sz & 255) as u8;
+    file_buf[opt_base + 9] = ((init_data_sz >> 8) & 255) as u8;
+    file_buf[opt_base + 10] = ((init_data_sz >> 16) & 255) as u8;
+    file_buf[opt_base + 11] = ((init_data_sz >> 24) & 255) as u8;
+
+    file_buf[opt_base + 16] = (text_offset & 255) as u8;
+    file_buf[opt_base + 17] = ((text_offset >> 8) & 255) as u8;
+    file_buf[opt_base + 18] = ((text_offset >> 16) & 255) as u8;
+    file_buf[opt_base + 19] = ((text_offset >> 24) & 255) as u8;
+    file_buf[opt_base + 20] = (text_offset & 255) as u8;
+    file_buf[opt_base + 21] = ((text_offset >> 8) & 255) as u8;
+    file_buf[opt_base + 22] = ((text_offset >> 16) & 255) as u8;
+    file_buf[opt_base + 23] = ((text_offset >> 24) & 255) as u8;
+
+    if is_uefi == 1 {
+        file_buf[opt_base + 24] = 0; file_buf[opt_base + 25] = 0; file_buf[opt_base + 26] = 64; file_buf[opt_base + 27] = 0;
+    }
+    if is_uefi == 0 {
+        file_buf[opt_base + 24] = 0; file_buf[opt_base + 25] = 0; file_buf[opt_base + 26] = 0; file_buf[opt_base + 27] = 64;
+        file_buf[opt_base + 28] = 1;
+    }
+
+    file_buf[opt_base + 32] = 0; file_buf[opt_base + 33] = 16;
+    file_buf[opt_base + 36] = 0; file_buf[opt_base + 37] = 16;
+    file_buf[opt_base + 40] = 6; file_buf[opt_base + 48] = 6;
+
+    file_buf[opt_base + 56] = (total_file_size & 255) as u8;
+    file_buf[opt_base + 57] = ((total_file_size >> 8) & 255) as u8;
+    file_buf[opt_base + 58] = ((total_file_size >> 16) & 255) as u8;
+    file_buf[opt_base + 59] = ((total_file_size >> 24) & 255) as u8;
+
+    file_buf[opt_base + 60] = 0; file_buf[opt_base + 61] = 16;
+
+    if is_uefi == 1 { file_buf[opt_base + 68] = 10; }
+    if is_uefi == 0 { file_buf[opt_base + 68] = 3; }
+    file_buf[opt_base + 70] = 0; file_buf[opt_base + 71] = 129;
+
+    file_buf[opt_base + 72] = 0; file_buf[opt_base + 73] = 0; file_buf[opt_base + 74] = 128; file_buf[opt_base + 75] = 0;
+    file_buf[opt_base + 80] = 0; file_buf[opt_base + 81] = 0; file_buf[opt_base + 82] = 32; file_buf[opt_base + 83] = 0;
+    file_buf[opt_base + 88] = 0; file_buf[opt_base + 89] = 0; file_buf[opt_base + 90] = 16; file_buf[opt_base + 91] = 0;
+    file_buf[opt_base + 96] = 0; file_buf[opt_base + 97] = 0; file_buf[opt_base + 98] = 1; file_buf[opt_base + 99] = 0;
+    file_buf[opt_base + 108] = 16;
+
+    if is_uefi == 0 {
+        file_buf[opt_base + 120] = (idata_offset & 255) as u8;
+        file_buf[opt_base + 121] = ((idata_offset >> 8) & 255) as u8;
+        file_buf[opt_base + 122] = ((idata_offset >> 16) & 255) as u8;
+        file_buf[opt_base + 123] = ((idata_offset >> 24) & 255) as u8;
+        file_buf[opt_base + 124] = 40;
+        let iat_dir_rva: u64 = idata_offset + 80;
+        file_buf[opt_base + 208] = (iat_dir_rva & 255) as u8;
+        file_buf[opt_base + 209] = ((iat_dir_rva >> 8) & 255) as u8;
+        file_buf[opt_base + 210] = ((iat_dir_rva >> 16) & 255) as u8;
+        file_buf[opt_base + 211] = ((iat_dir_rva >> 24) & 255) as u8;
+        file_buf[opt_base + 212] = 40;
+    }
+
+    let sec_base: u64 = opt_base + 240;
+
+    file_buf[sec_base + 0] = 46; file_buf[sec_base + 1] = 116; file_buf[sec_base + 2] = 101; file_buf[sec_base + 3] = 120;
+    file_buf[sec_base + 4] = 116;
+    file_buf[sec_base + 8] = (cg.text_size & 255) as u8;
+    file_buf[sec_base + 9] = ((cg.text_size >> 8) & 255) as u8;
+    file_buf[sec_base + 10] = ((cg.text_size >> 16) & 255) as u8;
+    file_buf[sec_base + 11] = ((cg.text_size >> 24) & 255) as u8;
+    file_buf[sec_base + 12] = (text_offset & 255) as u8;
+    file_buf[sec_base + 13] = ((text_offset >> 8) & 255) as u8;
+    file_buf[sec_base + 14] = ((text_offset >> 16) & 255) as u8;
+    file_buf[sec_base + 15] = ((text_offset >> 24) & 255) as u8;
+    file_buf[sec_base + 16] = (text_aligned & 255) as u8;
+    file_buf[sec_base + 17] = ((text_aligned >> 8) & 255) as u8;
+    file_buf[sec_base + 18] = ((text_aligned >> 16) & 255) as u8;
+    file_buf[sec_base + 19] = ((text_aligned >> 24) & 255) as u8;
+    file_buf[sec_base + 20] = (text_offset & 255) as u8;
+    file_buf[sec_base + 21] = ((text_offset >> 8) & 255) as u8;
+    file_buf[sec_base + 22] = ((text_offset >> 16) & 255) as u8;
+    file_buf[sec_base + 23] = ((text_offset >> 24) & 255) as u8;
+    file_buf[sec_base + 36] = 32; file_buf[sec_base + 39] = 96;
+
+    let rdata_sec: u64 = sec_base + 40;
+    file_buf[rdata_sec + 0] = 46; file_buf[rdata_sec + 1] = 100; file_buf[rdata_sec + 2] = 97; file_buf[rdata_sec + 3] = 116;
+    file_buf[rdata_sec + 4] = 97;
+    var rdata_vsz: u64 = cg.rodata_size as u64;
+    if rdata_vsz < 2048 { rdata_vsz = 2048; }
+    file_buf[rdata_sec + 8] = (rdata_vsz & 255) as u8;
+    file_buf[rdata_sec + 9] = ((rdata_vsz >> 8) & 255) as u8;
+    file_buf[rdata_sec + 10] = ((rdata_vsz >> 16) & 255) as u8;
+    file_buf[rdata_sec + 11] = ((rdata_vsz >> 24) & 255) as u8;
+    file_buf[rdata_sec + 12] = (rodata_offset & 255) as u8;
+    file_buf[rdata_sec + 13] = ((rodata_offset >> 8) & 255) as u8;
+    file_buf[rdata_sec + 14] = ((rodata_offset >> 16) & 255) as u8;
+    file_buf[rdata_sec + 15] = ((rodata_offset >> 24) & 255) as u8;
+    file_buf[rdata_sec + 16] = (rodata_aligned & 255) as u8;
+    file_buf[rdata_sec + 17] = ((rodata_aligned >> 8) & 255) as u8;
+    file_buf[rdata_sec + 18] = ((rodata_aligned >> 16) & 255) as u8;
+    file_buf[rdata_sec + 19] = ((rodata_aligned >> 24) & 255) as u8;
+    file_buf[rdata_sec + 20] = (rodata_offset & 255) as u8;
+    file_buf[rdata_sec + 21] = ((rodata_offset >> 8) & 255) as u8;
+    file_buf[rdata_sec + 22] = ((rodata_offset >> 16) & 255) as u8;
+    file_buf[rdata_sec + 23] = ((rodata_offset >> 24) & 255) as u8;
+    file_buf[rdata_sec + 36] = 64; file_buf[rdata_sec + 39] = 192;
+
+    if is_uefi == 0 {
+        let idata_sec: u64 = sec_base + 80;
+        file_buf[idata_sec + 0] = 46; file_buf[idata_sec + 1] = 105; file_buf[idata_sec + 2] = 100; file_buf[idata_sec + 3] = 97;
+        file_buf[idata_sec + 4] = 116; file_buf[idata_sec + 5] = 97;
+        file_buf[idata_sec + 8] = 256; file_buf[idata_sec + 9] = 0;
+        file_buf[idata_sec + 12] = (idata_offset & 255) as u8;
+        file_buf[idata_sec + 13] = ((idata_offset >> 8) & 255) as u8;
+        file_buf[idata_sec + 14] = ((idata_offset >> 16) & 255) as u8;
+        file_buf[idata_sec + 15] = ((idata_offset >> 24) & 255) as u8;
+        file_buf[idata_sec + 16] = (idata_aligned & 255) as u8;
+        file_buf[idata_sec + 17] = ((idata_aligned >> 8) & 255) as u8;
+        file_buf[idata_sec + 18] = ((idata_aligned >> 16) & 255) as u8;
+        file_buf[idata_sec + 19] = ((idata_aligned >> 24) & 255) as u8;
+        file_buf[idata_sec + 20] = (idata_offset & 255) as u8;
+        file_buf[idata_sec + 21] = ((idata_offset >> 8) & 255) as u8;
+        file_buf[idata_sec + 22] = ((idata_offset >> 16) & 255) as u8;
+        file_buf[idata_sec + 23] = ((idata_offset >> 24) & 255) as u8;
+        file_buf[idata_sec + 36] = 64; file_buf[idata_sec + 39] = 192;
+
+        let ilt_rva: u64 = idata_offset + 40;
+        let iat_rva: u64 = idata_offset + 80;
+        let dll_rva: u64 = idata_offset + 120;
+        let hn_exit: u64 = idata_offset + 136;
+        let hn_gstd: u64 = idata_offset + 150;
+        let hn_wrfl: u64 = idata_offset + 166;
+        let hn_valc: u64 = idata_offset + 178;
+
+        set_u32(file_buf + idata_offset, 0, ilt_rva as u32);
+        set_u32(file_buf + idata_offset, 3, dll_rva as u32);
+        set_u32(file_buf + idata_offset, 4, iat_rva as u32);
+
+        set_u32(file_buf + ilt_rva, 0, hn_exit as u32);
+        set_u32(file_buf + ilt_rva, 2, hn_gstd as u32);
+        set_u32(file_buf + ilt_rva, 4, hn_wrfl as u32);
+        set_u32(file_buf + ilt_rva, 6, hn_valc as u32);
+
+        set_u32(file_buf + iat_rva, 0, hn_exit as u32);
+        set_u32(file_buf + iat_rva, 2, hn_gstd as u32);
+        set_u32(file_buf + iat_rva, 4, hn_wrfl as u32);
+        set_u32(file_buf + iat_rva, 6, hn_valc as u32);
+
+        let kdll: *u8 = "KERNEL32.dll";
+        var ki: u64 = 0;
+        while ki < 12 { file_buf[dll_rva + ki] = kdll[ki]; ki = ki + 1; }
+        let s_exit: *u8 = "ExitProcess";
+        ki = 0;
+        while ki < 11 { file_buf[hn_exit + 2 + ki] = s_exit[ki]; ki = ki + 1; }
+        let s_gstd: *u8 = "GetStdHandle";
+        ki = 0;
+        while ki < 12 { file_buf[hn_gstd + 2 + ki] = s_gstd[ki]; ki = ki + 1; }
+        let s_wrfl: *u8 = "WriteFile";
+        ki = 0;
+        while ki < 9 { file_buf[hn_wrfl + 2 + ki] = s_wrfl[ki]; ki = ki + 1; }
+        let s_valc: *u8 = "VirtualAlloc";
+        ki = 0;
+        while ki < 12 { file_buf[hn_valc + 2 + ki] = s_valc[ki]; ki = ki + 1; }
+    }
+
+    var i: u64 = 0;
+    while i < (cg.text_size as u64) {
+        file_buf[text_offset + i] = cg.text_buf[i];
+        i = i + 1;
+    }
+
+    var rfi: u64 = 0;
+    while rfi < cg.rodata_fixup_count {
+        let rf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (rfi * 16)) as *mut RodataFixup;
+        if (rf.hole_offset + 4) <= (cg.text_size as u64) {
+            let tpos: i64 = (rodata_offset + rf.rodata_off) as i64;
+            let nip: i64 = (text_offset + rf.hole_offset + 4) as i64;
+            let rdsp: u32 = ((tpos - nip) as i32) as u32;
+            let ppos: u64 = text_offset + rf.hole_offset;
+            file_buf[ppos + 0] = (rdsp & 255) as u8;
+            file_buf[ppos + 1] = ((rdsp >> 8) & 255) as u8;
+            file_buf[ppos + 2] = ((rdsp >> 16) & 255) as u8;
+            file_buf[ppos + 3] = ((rdsp >> 24) & 255) as u8;
+        }
+        rfi = rfi + 1;
+    }
+
+    var pri: u32 = 0;
+    while pri < (cg.reloc_count as u32) {
+        let phole: *mut EiaRelocHole = ((cg.relocs as *mut u8) + ((pri as u64) * 24)) as *mut EiaRelocHole;
+        let ph_pk: u64 = phole.patch_kind & 255;
+        let ph_off: u64 = phole.insn_offset & 4294967295;
+        if ph_pk == 1 && (ph_off + 4) <= (cg.text_size as u64) {
+            var pti: u32 = 0;
+            var pfound: u32 = 0;
+            while pti < (cg.tg_count as u32) && pfound == 0 {
+                let ptge: *mut EiaTypeGraphEntry = ((cg.type_graph as *mut u8) + ((pti as u64) * 24)) as *mut EiaTypeGraphEntry;
+                if ptge.type_sig_hash == phole.type_sig_hash && ptge.field_hash == phole.field_or_sym_hash {
+                    let pdisp: u32 = (ptge.byte_offset & 4294967295) as u32;
+                    let pp: u64 = text_offset + ph_off;
+                    file_buf[pp + 0] = (pdisp & 255) as u8;
+                    file_buf[pp + 1] = ((pdisp >> 8) & 255) as u8;
+                    file_buf[pp + 2] = ((pdisp >> 16) & 255) as u8;
+                    file_buf[pp + 3] = ((pdisp >> 24) & 255) as u8;
+                    pfound = 1;
+                }
+                pti = pti + 1;
+            }
+        }
+        pri = pri + 1;
+    }
+
+    if is_uefi == 0 {
+        if cg.pe_exit_iat_hole != 0 {
+            let d0: u32 = (((idata_offset + 80) as i64) - ((text_offset + cg.pe_exit_iat_hole + 4) as i64)) as u32;
+            let p0: u64 = text_offset + cg.pe_exit_iat_hole;
+            file_buf[p0] = (d0 & 255) as u8; file_buf[p0 + 1] = ((d0 >> 8) & 255) as u8;
+            file_buf[p0 + 2] = ((d0 >> 16) & 255) as u8; file_buf[p0 + 3] = ((d0 >> 24) & 255) as u8;
+        }
+        if cg.pe_getstd_iat_hole != 0 {
+            let d1: u32 = (((idata_offset + 88) as i64) - ((text_offset + cg.pe_getstd_iat_hole + 4) as i64)) as u32;
+            let p1: u64 = text_offset + cg.pe_getstd_iat_hole;
+            file_buf[p1] = (d1 & 255) as u8; file_buf[p1 + 1] = ((d1 >> 8) & 255) as u8;
+            file_buf[p1 + 2] = ((d1 >> 16) & 255) as u8; file_buf[p1 + 3] = ((d1 >> 24) & 255) as u8;
+        }
+        if cg.pe_writefile_iat_hole != 0 {
+            let d2: u32 = (((idata_offset + 96) as i64) - ((text_offset + cg.pe_writefile_iat_hole + 4) as i64)) as u32;
+            let p2: u64 = text_offset + cg.pe_writefile_iat_hole;
+            file_buf[p2] = (d2 & 255) as u8; file_buf[p2 + 1] = ((d2 >> 8) & 255) as u8;
+            file_buf[p2 + 2] = ((d2 >> 16) & 255) as u8; file_buf[p2 + 3] = ((d2 >> 24) & 255) as u8;
+        }
+        if cg.pe_valloc_iat_hole != 0 {
+            let d3: u32 = (((idata_offset + 104) as i64) - ((text_offset + cg.pe_valloc_iat_hole + 4) as i64)) as u32;
+            let p3: u64 = text_offset + cg.pe_valloc_iat_hole;
+            file_buf[p3] = (d3 & 255) as u8; file_buf[p3 + 1] = ((d3 >> 8) & 255) as u8;
+            file_buf[p3 + 2] = ((d3 >> 16) & 255) as u8; file_buf[p3 + 3] = ((d3 >> 24) & 255) as u8;
+        }
+    }
+
+    i = 0;
+    while i < (cg.rodata_size as u64) {
+        file_buf[rodata_offset + i] = cg.rodata_buf[i];
+        i = i + 1;
+    }
+
+    let wr: i64 = acrq_file_write_bytes(out_path, file_buf, total_file_size, 0);
+    if wr < 0 {
+        return -2;
+    }
+    return 0;
+}

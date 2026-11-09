@@ -1,0 +1,44 @@
+const EIA_MAGIC: u32 = 0x4849457F;
+
+struct UniversalHologramHeader {
+    magic: u32,
+    version: u32,
+    abi_epoch: uint,
+    contracts_offset: uint,
+    contracts_count: uint,
+    relocs_offset: uint,
+    relocs_count: uint,
+    type_graph_offset: uint,
+    type_graph_size: uint,
+    blake3_root: uint,
+    flags: uint,
+    reserved0: uint,
+    reserved1: uint,
+}
+
+fn eia_hologram_init(hdr: *mut UniversalHologramHeader, epoch: uint) {
+    hdr.magic = EIA_MAGIC;
+    hdr.version = 0x00010001;
+    hdr.abi_epoch = epoch;
+    hdr.contracts_offset = 0;
+    hdr.contracts_count = 0;
+    hdr.relocs_offset = 0;
+    hdr.relocs_count = 0;
+    hdr.type_graph_offset = 0;
+    hdr.type_graph_size = 0;
+    hdr.blake3_root = 0;
+    hdr.flags = 0;
+    hdr.reserved0 = 0;
+    hdr.reserved1 = 0;
+}
+
+fn eia_hologram_validate(hdr: *const UniversalHologramHeader) -> bool {
+    if hdr.magic != EIA_MAGIC {
+        return false;
+    }
+    let expected_sz: uint = 4 + 4 + (11 * 8);
+    if expected_sz != 96 {
+        return false;
+    }
+    return true;
+}

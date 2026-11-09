@@ -1,0 +1,14 @@
+include "lib/core/types.rx";
+
+fn panic(msg: str) {
+    @terminal.print_error("\n[RUX PANIC] Fatal unrecoverable runtime error:\n  ");
+    @terminal.print_error(msg);
+    @terminal.print_error("\n\nStack trace: Silicon core halted.\n");
+    @os.exit(101);
+}
+
+fn assert(condition: bool, msg: str) {
+    if !condition {
+        panic(msg);
+    }
+}

@@ -1,0 +1,40 @@
+struct VitrificationEngine {
+    arena_base: *mut byte,
+    total_vitrifications: uint,
+    total_thaws: uint,
+    last_freeze_cycles: uint,
+}
+
+fn lcvs_vitrify_init(engine: *mut VitrificationEngine, base: *mut byte) {
+    engine.arena_base = base;
+    engine.total_vitrifications = 0;
+    engine.total_thaws = 0;
+    engine.last_freeze_cycles = 0;
+}
+
+fn lcvs_vitrify_arena(
+    engine: *mut VitrificationEngine,
+    arena_base: *mut byte,
+    dirty_bytes: uint
+) -> uint {
+    let t0: uint = @silicon.rdtsc();
+
+    let lines: uint = (dirty_bytes + 63) / 64;
+    var i: uint = 0;
+    while i < lines {
+        let cl_addr: *const byte = (arena_base as uint + (i * 64)) as *const byte;
+        @silicon.clwb(cl_addr);
+        i = i + 1;
+    }
+    @silicon.sfence();
+
+    let t1: uint = @silicon.rdtsc();
+    engine.last_freeze_cycles = t1 - t0;
+    engine.total_vitrifications = engine.total_vitrifications + 1;
+    return engine.last_freeze_cycles;
+}
+
+fn lcvs_thaw_arena(engine: *mut VitrificationEngine, arena_base: *mut byte) -> bool {
+    engine.total_thaws = engine.total_thaws + 1;
+    return true;
+}

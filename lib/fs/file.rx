@@ -1,0 +1,42 @@
+include "lib/core/types.rx";
+
+enum OpenMode {
+    READ_ONLY = 0,
+    WRITE_ONLY = 1,
+    READ_WRITE = 2,
+    CREATE = 64,
+    TRUNCATE = 512,
+}
+
+struct File {
+    fd: int,
+    is_open: bool,
+}
+
+fn file_open(path: str, mode: OpenMode) -> File {
+    let raw_path: *const byte = path as *const byte;
+    let flags: int = mode as int;
+    let fd: int = @os.open(raw_path, flags, 0o644);
+    if fd < 0 {
+        return File { fd: fd, is_open: false };
+    }
+    return File { fd: fd, is_open: true };
+}
+
+fn file_read(f: *mut File, dst: *mut byte, max_len: uint) -> int {
+    if !f.is_open { return -1; }
+    return @os.read(f.fd, dst, max_len);
+}
+
+fn file_write(f: *mut File, src: *const byte, len: uint) -> int {
+    if !f.is_open { return -1; }
+    return @os.write(f.fd, src, len);
+}
+
+fn file_close(f: *mut File) {
+    if f.is_open && f.fd >= 0 {
+        @os.close(f.fd);
+        f.is_open = false;
+        f.fd = -1;
+    }
+}

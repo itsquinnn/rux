@@ -1,0 +1,78 @@
+include "lib/core/types.rx";
+
+const EXT4_SUPER_MAGIC: u16  = 0xEF53;
+const EXT4_EXTENT_MAGIC: u16 = 0xF30A;
+const FAT_BOOT_SIG: u16      = 0xAA55;
+
+struct Ext4SuperInfo {
+    inodes_count: u32,
+    blocks_count: u64,
+    block_size_bytes: u32,
+    inodes_per_group: u32,
+    blocks_per_group: u32,
+    valid: bool,
+}
+
+struct Fat32BpbInfo {
+    bytes_per_sector: u16,
+    sectors_per_cluster: u8,
+    reserved_sectors: u16,
+    num_fats: u8,
+    sectors_per_fat: u32,
+    root_cluster: u32,
+    first_data_lba: u64,
+    valid: bool,
+}
+
+fn fs_read_le16(buf: *const byte, off: uint) -> u16 {
+    return (buf[off] as u16) | ((buf[off + 1] as u16) << 8);
+}
+
+fn fs_read_le32(buf: *const byte, off: uint) -> u32 {
+    return (buf[off] as u32) |
+           ((buf[off + 1] as u32) << 8) |
+           ((buf[off + 2] as u32) << 16) |
+           ((buf[off + 3] as u32) << 24);
+}
+
+fn ext4_parse_superblock(sb_bytes: *const byte, out: *mut Ext4SuperInfo) -> bool {
+    let magic: u16 = fs_read_le16(sb_bytes, 56);
+    if magic != EXT4_SUPER_MAGIC {
+        out.valid = false;
+        return false;
+    }
+    out.inodes_count = fs_read_le32(sb_bytes, 0);
+    let blk_lo: u64 = fs_read_le32(sb_bytes, 4) as u64;
+    let log_blk: u32 = fs_read_le32(sb_bytes, 24);
+    out.blocks_count = blk_lo;
+    out.block_size_bytes = 1024 << log_blk;
+    out.blocks_per_group = fs_read_le32(sb_bytes, 32);
+    out.inodes_per_group = fs_read_le32(sb_bytes, 40);
+    out.valid = true;
+    return true;
+}
+
+fn fat32_parse_bpb(boot_sec: *const byte, out: *mut Fat32BpbInfo) -> bool {
+    let sig: u16 = fs_read_le16(boot_sec, 510);
+    if sig != FAT_BOOT_SIG {
+        out.valid = false;
+        return false;
+    }
+    out.bytes_per_sector = fs_read_le16(boot_sec, 11);
+    out.sectors_per_cluster = boot_sec[13];
+    out.reserved_sectors = fs_read_le16(boot_sec, 14);
+    out.num_fats = boot_sec[16];
+    out.sectors_per_fat = fs_read_le32(boot_sec, 36);
+    out.root_cluster = fs_read_le32(boot_sec, 44);
+    out.first_data_lba = (out.reserved_sectors as u64) + ((out.num_fats as u64) * (out.sectors_per_fat as u64));
+    out.valid = true;
+    return true;
+}
+
+fn fat32_cluster_to_lba(bpb: *const Fat32BpbInfo, cluster: u32) -> u64 {
+    if cluster < 2 {
+        return bpb.first_data_lba;
+    }
+    return bpb.first_data_lba + (((cluster - 2) as u64) * (bpb.sectors_per_cluster as u64));
+}
+

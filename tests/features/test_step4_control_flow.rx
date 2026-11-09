@@ -1,0 +1,218 @@
+include "lib/core/types.rx";
+
+struct Point {
+    x: int,
+    y: int,
+}
+
+fn test_decision_191_if_expressions() -> bool {
+    let score: uint = 82;
+    let category: uint = if score >= 90 {
+        1
+    } else if score >= 75 {
+        2
+    } else if score >= 50 {
+        3
+    } else {
+        4
+    };
+    if category != 2 { return false; }
+
+    let flag: bool = true;
+    let status: str = if flag { "active" } else { "inactive" };
+    if status[0] != 97 as byte { return false; }
+    return true;
+}
+
+fn test_decision_192_loop_system() -> bool {
+    var count: uint = 0;
+    let res: uint = loop {
+        count = count + 1;
+        if count == 7 {
+            break count;
+        }
+    };
+    if res != 7 { return false; }
+
+    var w_val: uint = 0;
+    while w_val < 5 {
+        w_val = w_val + 1;
+    }
+    if w_val != 5 { return false; }
+
+    var f_sum: uint = 0;
+    for var i in 1..=5 {
+        f_sum = f_sum + i;
+    }
+    if f_sum != 15 { return false; }
+
+    return true;
+}
+
+fn test_decision_193_labeled_loops() -> bool {
+    var hits: uint = 0;
+    outer_loop: for row in 0..5 {
+        for col in 0..5 {
+            if row == 2 && col == 3 {
+                break outer_loop;
+            }
+            hits = hits + 1;
+        }
+    }
+    if hits != 13 { return false; }
+
+    var c_hits: uint = 0;
+    c_outer: for r in 0..3 {
+        for c in 0..3 {
+            if c == 1 {
+                continue c_outer;
+            }
+            c_hits = c_hits + 1;
+        }
+    }
+    if c_hits != 3 { return false; }
+
+    return true;
+}
+
+fn test_decision_194_match_expressions() -> bool {
+    let mode: uint = 2;
+    let name: str = match mode {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "unknown"
+    };
+    if name[0] != 116 as byte { return false; }
+
+    var stmt_res: uint = 0;
+    match mode {
+        1 => { stmt_res = 10; },
+        2 => { stmt_res = 20; },
+        _ => { stmt_res = 99; }
+    }
+    if stmt_res != 20 { return false; }
+
+    return true;
+}
+
+fn test_decision_195_pattern_language() -> bool {
+    let code: uint = 2;
+    let group: uint = match code {
+        1 | 2 | 3 => 100,
+        4 | 5 | 6 => 200,
+        _ => 300
+    };
+    if group != 100 { return false; }
+
+    let mark: uint = 85;
+    let grade: str = match mark {
+        90..=100 => "A",
+        75..=89 => "B",
+        50..=74 => "C",
+        _ => "F"
+    };
+    if grade[0] != 66 as byte { return false; }
+
+    let pt: Point = Point { x: 10, y: 20 };
+    var matched_pt: uint = 0;
+    match pt {
+        Point { x, y } => {
+            matched_pt = (x as uint) + (y as uint);
+        },
+        _ => { matched_pt = 0; }
+    }
+    if matched_pt != 30 { return false; }
+
+    return true;
+}
+
+fn test_decision_196_match_guards() -> bool {
+    let val: uint = 15;
+    let classified: uint = match val {
+        x if x < 10 => 1,
+        x if x >= 10 && x <= 20 => 2,
+        _ => 3
+    };
+    if classified != 2 { return false; }
+
+    let val2: uint = 5;
+    let classified2: uint = match val2 {
+        x if x < 10 => 1,
+        _ => 2
+    };
+    if classified2 != 1 { return false; }
+
+    return true;
+}
+
+fn test_decision_197_conditional_patterns() -> bool {
+    var opt_val: uint = 42;
+    var if_let_hit: uint = 0;
+    if let 42 = opt_val {
+        if_let_hit = 1;
+    } else {
+        if_let_hit = 0;
+    }
+    if if_let_hit != 1 { return false; }
+
+    var queue_val: uint = 3;
+    var while_let_sum: uint = 0;
+    while let 3 = queue_val {
+        while_let_sum = while_let_sum + queue_val;
+        queue_val = 0;
+    }
+    if while_let_sum != 3 { return false; }
+
+    return true;
+}
+
+fn test_decision_198_variable_bindings() -> bool {
+    let immutable_val: uint = 100;
+    var mutable_val: uint = 200;
+    mutable_val = mutable_val + 50;
+    if immutable_val != 100 { return false; }
+    if mutable_val != 250 { return false; }
+    return true;
+}
+
+fn test_decision_199_early_exit() -> bool {
+    var reached_end: bool = false;
+    for i in 0..10 {
+        if i == 5 {
+            reached_end = true;
+            return reached_end;
+        }
+    }
+    return false;
+}
+
+const CONST_COMPILED_VAL: uint = comptime {
+    var c_acc: uint = 0;
+    for v in 1..=5 {
+        c_acc = c_acc + v;
+    }
+    c_acc
+};
+
+fn test_decision_200_comptime() -> bool {
+    if CONST_COMPILED_VAL != 15 { return false; }
+    return true;
+}
+
+fn main() -> int {
+    if !test_decision_191_if_expressions() { print("Decision 191 failed\n"); return 1; }
+    if !test_decision_192_loop_system() { print("Decision 192 failed\n"); return 2; }
+    if !test_decision_193_labeled_loops() { print("Decision 193 failed\n"); return 3; }
+    if !test_decision_194_match_expressions() { print("Decision 194 failed\n"); return 4; }
+    if !test_decision_195_pattern_language() { print("Decision 195 failed\n"); return 5; }
+    if !test_decision_196_match_guards() { print("Decision 196 failed\n"); return 6; }
+    if !test_decision_197_conditional_patterns() { print("Decision 197 failed\n"); return 7; }
+    if !test_decision_198_variable_bindings() { print("Decision 198 failed\n"); return 8; }
+    if !test_decision_199_early_exit() { print("Decision 199 failed\n"); return 9; }
+    if !test_decision_200_comptime() { print("Decision 200 failed\n"); return 10; }
+
+    print("Rux Step 4 Control Flow & Pattern Matching (Decisions 191-200) Master Specification 100% Verified!\n");
+    return 0;
+}
+

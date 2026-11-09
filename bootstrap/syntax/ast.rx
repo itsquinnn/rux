@@ -1,0 +1,28 @@
+const NODE_PROGRAM: uint      = 100;
+const NODE_SHAPE: uint        = 101;
+const NODE_FN: uint           = 102;
+
+const NODE_LET: uint          = 105;
+const NODE_MUT: uint          = 106;
+const NODE_IF: uint           = 107;
+const NODE_WHILE: uint        = 108;
+const NODE_RETURN: uint       = 109;
+const NODE_PRINTLN: uint      = 110;
+
+const NODE_PIPE: uint         = 112;
+const NODE_BINARY: uint       = 115;
+const NODE_LIT_INT: uint      = 116;
+const NODE_LIT_IDENT: uint    = 117;
+const NODE_LIT_STR: uint      = 118;
+
+struct AstNode {
+    kind: uint,
+    is_mut: uint,
+    id: uint,
+    name_hash: uint,
+    value: uint,
+    child1: *mut AstNode,
+    child2: *mut AstNode,
+    child3: *mut AstNode,
+    next: *mut AstNode,
+}

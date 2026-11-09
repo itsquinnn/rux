@@ -1,0 +1,124 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+
+struct BootstrapRxdHeader {
+    magic: u32,
+    format_version: u16,
+    flags: u16,
+    total_byte_size: u64,
+    root_kind: u16,
+    slot_count: u16,
+    reserved_pad: u32,
+    shape_schema_hash: u64,
+    blake3_content_hash: u64,
+    arena_offset: u64,
+    reserved0: u64,
+}
+
+struct BootstrapRxdSlot {
+    kind: u8,
+    flags: u8,
+    name_offset: u16,
+    name_len: u16,
+    arena_offset: u16,
+    val_or_len: u64,
+}
+
+struct BootstrapRxdPlate {
+    raw_ptr: *mut u8,
+    byte_length: u64,
+    slot_count: u64,
+    arena_offset: u64,
+}
+
+fn bootstrap_rxd_from_bytes(data: *mut u8, len: u64) -> BootstrapRxdPlate {
+    var plate: BootstrapRxdPlate;
+    plate.raw_ptr = data;
+    plate.byte_length = len;
+    plate.slot_count = 0;
+    plate.arena_offset = 64;
+
+    if len < 64 {
+        return plate;
+    }
+
+    let hdr: *const BootstrapRxdHeader = data as *const BootstrapRxdHeader;
+    if hdr.magic != 4479058 {
+        return plate;
+    }
+
+    plate.slot_count = hdr.slot_count as u64;
+    plate.arena_offset = hdr.arena_offset;
+    return plate;
+}
+
+fn bootstrap_rxd_get_slot(plate: *const BootstrapRxdPlate, index: u64) -> *mut BootstrapRxdSlot {
+    if index >= plate.slot_count {
+        return 0 as *mut BootstrapRxdSlot;
+    }
+    let slots_base: *mut u8 = plate.raw_ptr + 64;
+    return (slots_base + (index * 16)) as *mut BootstrapRxdSlot;
+}
+
+fn bootstrap_rxd_find_slot(plate: *const BootstrapRxdPlate, name: *const byte) -> int {
+    var name_len: u64 = 0;
+    while name[name_len] != 0 {
+        name_len = name_len + 1;
+    }
+
+    let arena_base: *const u8 = plate.raw_ptr + plate.arena_offset;
+    let slots_base: *const u8 = plate.raw_ptr + 64;
+
+    var i: u64 = 0;
+    while i < plate.slot_count {
+        let slot_ptr: *const BootstrapRxdSlot = (slots_base + (i * 16)) as *const BootstrapRxdSlot;
+        let k_ptr: *const u8 = arena_base + (slot_ptr.name_offset as u64);
+        let k_len: u64 = slot_ptr.name_len as u64;
+
+        if k_len == name_len {
+            var match_ok: bool = true;
+            var j: u64 = 0;
+            while j < k_len {
+                if k_ptr[j] != (name[j] as u8) {
+                    match_ok = false;
+                    break;
+                }
+                j = j + 1;
+            }
+            if match_ok {
+                return i as int;
+            }
+        }
+        i = i + 1;
+    }
+    return 0 - 1;
+}
+
+fn bootstrap_rxd_get_uint(plate: *const BootstrapRxdPlate, name: *const byte, default_val: u64) -> u64 {
+    let idx: int = bootstrap_rxd_find_slot(plate, name);
+    if idx < 0 {
+        return default_val;
+    }
+    let slot: *mut BootstrapRxdSlot = bootstrap_rxd_get_slot(plate, idx as u64);
+    return slot.val_or_len;
+}
+
+fn bootstrap_rxd_get_bool(plate: *const BootstrapRxdPlate, name: *const byte, default_val: bool) -> bool {
+    let idx: int = bootstrap_rxd_find_slot(plate, name);
+    if idx < 0 {
+        return default_val;
+    }
+    let slot: *mut BootstrapRxdSlot = bootstrap_rxd_get_slot(plate, idx as u64);
+    return (slot.val_or_len != 0);
+}
+
+fn bootstrap_rxd_get_str(plate: *const BootstrapRxdPlate, name: *const byte) -> *const byte {
+    let idx: int = bootstrap_rxd_find_slot(plate, name);
+    if idx < 0 {
+        return "" as *const byte;
+    }
+    let slot: *mut BootstrapRxdSlot = bootstrap_rxd_get_slot(plate, idx as u64);
+    let arena_base: *const u8 = plate.raw_ptr + plate.arena_offset;
+    return (arena_base + (slot.arena_offset as u64)) as *const byte;
+}
+

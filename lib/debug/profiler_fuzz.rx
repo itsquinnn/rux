@@ -1,0 +1,112 @@
+include "lib/core/types.rx";
+
+struct ProfilerEntry {
+    fn_hash: uint,
+    sample_hits: u64,
+    inclusive_ns: u64,
+    used: bool,
+}
+
+struct SamplingProfiler {
+    entries: [ProfilerEntry; 64],
+    total_samples: u64,
+}
+
+struct FuzzEngine {
+    rng_state: u64,
+    edge_cov: [u8; 256],
+    unique_edges: uint,
+    exec_count: u64,
+}
+
+fn profiler_init(p: *mut SamplingProfiler) {
+    p.total_samples = 0;
+    var i: uint = 0;
+    while i < 64 {
+        p.entries[i].used = false;
+        p.entries[i].sample_hits = 0;
+        p.entries[i].inclusive_ns = 0;
+        i = i + 1;
+    }
+}
+
+fn profiler_record_sample(p: *mut SamplingProfiler, fn_hash: uint, delta_ns: u64) {
+    p.total_samples = p.total_samples + 1;
+    var i: uint = 0;
+    while i < 64 {
+        if p.entries[i].used && p.entries[i].fn_hash == fn_hash {
+            p.entries[i].sample_hits = p.entries[i].sample_hits + 1;
+            p.entries[i].inclusive_ns = p.entries[i].inclusive_ns + delta_ns;
+            return;
+        }
+        i = i + 1;
+    }
+    var j: uint = 0;
+    while j < 64 {
+        if !p.entries[j].used {
+            p.entries[j].used = true;
+            p.entries[j].fn_hash = fn_hash;
+            p.entries[j].sample_hits = 1;
+            p.entries[j].inclusive_ns = delta_ns;
+            return;
+        }
+        j = j + 1;
+    }
+}
+
+fn fuzz_init(fz: *mut FuzzEngine, seed: u64) {
+    if seed == 0 {
+        fz.rng_state = 0x9E3779B97F4A7C15;
+    } else {
+        fz.rng_state = seed;
+    }
+    fz.unique_edges = 0;
+    fz.exec_count = 0;
+    var i: uint = 0;
+    while i < 256 {
+        fz.edge_cov[i] = 0;
+        i = i + 1;
+    }
+}
+
+fn fuzz_next_u64(fz: *mut FuzzEngine) -> u64 {
+    var x: u64 = fz.rng_state;
+    x = x ^ (x >> 12);
+    x = x ^ (x << 25);
+    x = x ^ (x >> 27);
+    fz.rng_state = x;
+    return x * 2685821657736338717;
+}
+
+fn fuzz_mutate_buffer(fz: *mut FuzzEngine, buf: *mut byte, len: uint) {
+    if len == 0 { return; }
+    let r: u64 = fuzz_next_u64(fz);
+    let pos: uint = (r as uint) % len;
+    let mode: u64 = (r >> 16) & 3;
+    if mode == 0 {
+        let bit: u8 = (1 << ((r >> 24) & 7)) as u8;
+        buf[pos] = buf[pos] ^ bit;
+    } else if mode == 1 {
+        buf[pos] = buf[pos] ^ 255;
+    } else if mode == 2 {
+        let delta: u8 = (((r >> 32) & 31) + 1) as u8;
+        buf[pos] = (buf[pos] + delta) & 255;
+    } else {
+        buf[pos] = ((r >> 40) & 255) as byte;
+    }
+    fz.exec_count = fz.exec_count + 1;
+}
+
+fn fuzz_record_edge(fz: *mut FuzzEngine, prev_loc: uint, cur_loc: uint) -> bool {
+    let bucket: uint = ((prev_loc >> 1) ^ cur_loc) & 255;
+    let old: u8 = fz.edge_cov[bucket];
+    if old < 255 {
+        fz.edge_cov[bucket] = old + 1;
+    }
+    if old == 0 {
+        fz.unique_edges = fz.unique_edges + 1;
+        return true;
+    }
+    return false;
+}
+

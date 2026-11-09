@@ -1,0 +1,139 @@
+include "lib/core/types.rx";
+include "lib/core/io.rx";
+
+struct Pair<T, U> {
+    first: T,
+    second: U,
+}
+
+struct Opt<T> {
+    has_val: bool,
+    val: T,
+}
+
+struct Res<T, E> {
+    is_ok: bool,
+    val: T,
+    err: E,
+}
+
+struct VecG<T> {
+    data: *mut T,
+    len: u64,
+    cap: u64,
+}
+
+fn make_pair<T, U>(a: T, b: U) -> Pair<T, U> {
+    var p: Pair<T, U>;
+    p.first = a;
+    p.second = b;
+    return p;
+}
+
+fn make_some<T>(v: T) -> Opt<T> {
+    var o: Opt<T>;
+    o.has_val = true;
+    o.val = v;
+    return o;
+}
+
+fn res_ok<T, E>(v: T) -> Res<T, E> {
+    var r: Res<T, E>;
+    r.is_ok = true;
+    r.val = v;
+    return r;
+}
+
+fn res_err<T, E>(e: E) -> Res<T, E> {
+    var r: Res<T, E>;
+    r.is_ok = false;
+    r.err = e;
+    return r;
+}
+
+fn vec_g_new<T>() -> VecG<T> {
+    var v: VecG<T>;
+    v.data = 0 as *mut T;
+    v.len = 0;
+    v.cap = 0;
+    return v;
+}
+
+fn main() -> int {
+    println("Testing First-Class Monomorphized Generics in Rux...");
+
+    var p1: Pair<u64, u64>;
+    p1.first = 42;
+    p1.second = 99;
+    if p1.first != 42 || p1.second != 99 {
+        println("FAILED: Pair<u64, u64> fields mismatch");
+        return 1;
+    }
+    println("[PASS] 1. Direct Generic Struct instantiation: Pair<u64, u64>");
+
+    let p2: Pair<u64, u64> = make_pair<u64, u64>(1234, 5678);
+    if p2.first != 1234 || p2.second != 5678 {
+        println("FAILED: make_pair<u64, u64> returned invalid values");
+        return 2;
+    }
+    println("[PASS] 2. Generic Function instantiation: make_pair<u64, u64>");
+
+    let o1: Opt<u64> = make_some<u64>(8888);
+    if !o1.has_val || o1.val != 8888 {
+        println("FAILED: Opt<u64> mismatch");
+        return 3;
+    }
+    println("[PASS] 3. Generic Option<u64> container and unwrap");
+
+    var p3: Pair<u8, u8>;
+    p3.first = 7;
+    p3.second = 9;
+    if p3.first != 7 || p3.second != 9 {
+        println("FAILED: Pair<u8, u8> mismatch");
+        return 4;
+    }
+    println("[PASS] 4. Multi-type monomorphization: Pair<u8, u8>");
+
+    let sz_pair_u64: u64 = sizeof(Pair<u64, u64>);
+    let sz_pair_u8: u64 = sizeof(Pair<u8, u8>);
+    if sz_pair_u64 != 16 {
+        println("FAILED: sizeof(Pair<u64, u64>) expected 16");
+        return 5;
+    }
+    if sz_pair_u8 != 2 {
+        println("FAILED: sizeof(Pair<u8, u8>) expected 2");
+        return 6;
+    }
+    println("[PASS] 5. Accurate compile-time sizeof for specialized templates");
+
+    let ro: Res<u64, int> = res_ok<u64, int>(4242);
+    if !ro.is_ok || ro.val != 4242 {
+        println("FAILED: Res<u64, int> Ok mismatch");
+        return 7;
+    }
+    println("[PASS] 6. Generic Result<T, E> Ok branch monomorphization");
+
+    let re: Res<u64, int> = res_err<u64, int>(-404);
+    if re.is_ok || re.err != -404 {
+        println("FAILED: Res<u64, int> Err mismatch");
+        return 8;
+    }
+    println("[PASS] 7. Generic Result<T, E> Err branch monomorphization");
+
+    let v_u64: VecG<u64> = vec_g_new<u64>();
+    let v_u8: VecG<u8> = vec_g_new<u8>();
+    if sizeof(VecG<u64>) != 24 || sizeof(VecG<u8>) != 24 {
+        println("FAILED: sizeof(VecG<T>) expected 24");
+        return 9;
+    }
+    if v_u64.len != 0 || v_u8.len != 0 {
+        println("FAILED: VecG len initialized incorrectly");
+        return 10;
+    }
+    println("[PASS] 8. Generic Vec<T> specialization on silicon");
+
+    println("=================================================================");
+    println(">>> ALL 8 FIRST-CLASS GENERICS SUITES PASSED (100% OK) <<<");
+    println("=================================================================");
+    return 0;
+}

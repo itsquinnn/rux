@@ -1,0 +1,36 @@
+cluster_id: "ap-south-sovereign-01"
+active: true
+heartbeat_interval: 250ms
+
+network {
+    bind_address: "0.0.0.0"
+    listen_port: 8443_u16
+    read_timeout: 2s
+    write_buffer: 64KB
+
+    hardware_mac_mask: 0xDEAD_BEEF_CAFE_0001_u64
+}
+
+nodes: [
+    {
+        id: 101
+        hostname: "node-alpha"
+        tier: "mantle"
+        allocated_ram: 128GB
+        weight: 1.5_f64
+        capabilities: ["compute", "nvme-direct", "acrq"]
+    },
+    {
+        id: 102
+        hostname: "node-beta"
+        tier: "core"
+        allocated_ram: 64GB
+        weight: 2.0_f64
+        capabilities: ["storage", "cxl-coherent"]
+    },
+]
+
+init_command: ```
+    echo "Initializing sovereign node..."
+    rux run --freestanding node.rx
+```

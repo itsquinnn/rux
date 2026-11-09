@@ -1,0 +1,46 @@
+include "lib/core/types.rx";
+include "lib/core/io.rx";
+
+fn main() -> int {
+    var status: int = 42;
+    var matched: bool = false;
+
+    if let 42 = status {
+        matched = true;
+    } else {
+        matched = false;
+    }
+
+    if !matched {
+        println("FAILED: if let 42 = status didn't match");
+        return 1;
+    }
+    println("[PASS] 1. `if let` positive arm match verified");
+
+    var else_hit: bool = false;
+    if let 999 = status {
+        else_hit = false;
+    } else {
+        else_hit = true;
+    }
+    if !else_hit {
+        println("FAILED: if let else didn't hit");
+        return 2;
+    }
+    println("[PASS] 2. `if let ... else` fallback arm verified");
+
+    var counter: int = 3;
+    var iterations: int = 0;
+    while let 3 = counter {
+        iterations = iterations + 1;
+        counter = 0;
+    }
+    if iterations != 1 {
+        println("FAILED: while let iterations mismatch");
+        return 3;
+    }
+    println("[PASS] 3. `while let` loop and pattern termination verified");
+
+    println(">>> IF LET / WHILE LET VERIFIED ON SILICON (100% OK) <<<");
+    return 0;
+}

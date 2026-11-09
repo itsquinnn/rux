@@ -1,0 +1,73 @@
+include "lib/core/types.rx";
+
+fn arch_fence_full() {
+    asm { "mfence" }
+}
+
+fn arch_fence_load() {
+    asm { "lfence" }
+}
+
+fn arch_fence_store() {
+    asm { "sfence" }
+}
+
+fn arch_spin_hint() {
+    asm { "pause" }
+}
+
+fn mmio_read8(addr: uint) -> u8 {
+    arch_fence_load();
+    let p: *const u8 = addr as *const u8;
+    let v: u8 = p[0];
+    arch_fence_load();
+    return v;
+}
+
+fn mmio_write8(addr: uint, val: u8) {
+    arch_fence_store();
+    let p: *mut u8 = addr as *mut u8;
+    p[0] = val;
+    arch_fence_store();
+}
+
+fn mmio_read32(addr: uint) -> u32 {
+    arch_fence_load();
+    let p: *const u32 = addr as *const u32;
+    let v: u32 = p[0];
+    arch_fence_load();
+    return v;
+}
+
+fn mmio_write32(addr: uint, val: u32) {
+    arch_fence_store();
+    let p: *mut u32 = addr as *mut u32;
+    p[0] = val;
+    arch_fence_store();
+}
+
+fn mmio_read64(addr: uint) -> u64 {
+    arch_fence_load();
+    let p: *const u64 = addr as *const u64;
+    let v: u64 = p[0];
+    arch_fence_load();
+    return v;
+}
+
+fn mmio_write64(addr: uint, val: u64) {
+    arch_fence_store();
+    let p: *mut u64 = addr as *mut u64;
+    p[0] = val;
+    arch_fence_store();
+}
+
+fn mmio_set_bits32(addr: uint, mask: u32) {
+    let cur: u32 = mmio_read32(addr);
+    mmio_write32(addr, cur | mask);
+}
+
+fn mmio_clear_bits32(addr: uint, mask: u32) {
+    let cur: u32 = mmio_read32(addr);
+    mmio_write32(addr, cur & (4294967295 ^ mask));
+}
+

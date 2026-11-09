@@ -1,0 +1,51 @@
+include "lib/core/types.rx";
+
+const HTTP_METHOD_GET: uint    = 1;
+const HTTP_METHOD_POST: uint   = 2;
+const HTTP_METHOD_PUT: uint    = 3;
+const HTTP_METHOD_DELETE: uint = 4;
+
+struct WebFetchRequest {
+    method: uint,
+    url: *const byte,
+    header_count: uint,
+    header_keys: [*const byte; 16],
+    header_vals: [*const byte; 16],
+    body: *const byte,
+    body_len: uint,
+}
+
+struct WebFetchResponse {
+    status: uint,
+    ok: bool,
+    content_type: *const byte,
+    body: *const byte,
+    body_len: uint,
+}
+
+fn web_fetch_request_init(req: *mut WebFetchRequest, method: uint, url: *const byte) {
+    req.method = method;
+    req.url = url;
+    req.header_count = 0;
+    req.body = "";
+    req.body_len = 0;
+}
+
+fn web_fetch_add_header(req: *mut WebFetchRequest, k: *const byte, v: *const byte) {
+    if req.header_count < 16 {
+        req.header_keys[req.header_count] = k;
+        req.header_vals[req.header_count] = v;
+        req.header_count = req.header_count + 1;
+    }
+}
+
+fn web_fetch_mock_respond(status: uint, ctype: *const byte, payload: *const byte, payload_len: uint) -> WebFetchResponse {
+    var r: WebFetchResponse;
+    r.status = status;
+    r.ok = status >= 200 && status < 300;
+    r.content_type = ctype;
+    r.body = payload;
+    r.body_len = payload_len;
+    return r;
+}
+

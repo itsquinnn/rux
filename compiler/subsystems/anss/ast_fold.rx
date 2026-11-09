@@ -1,0 +1,20 @@
+fn anss_resolve_unit_multiplier(suffix: str) -> uint {
+    let p: *const byte = suffix as *const byte;
+    if p[0] == 75 as byte && p[1] == 66 as byte { return 1024; }
+    if p[0] == 77 as byte && p[1] == 66 as byte { return 1048576; }
+    if p[0] == 71 as byte && p[1] == 66 as byte { return 1073741824; }
+    if p[0] == 110 as byte && p[1] == 115 as byte { return 1; }
+    if p[0] == 117 as byte && p[1] == 115 as byte { return 1000; }
+    if p[0] == 109 as byte && p[1] == 115 as byte { return 1000000; }
+    if p[0] == 115 as byte && p[1] == 0 as byte { return 1000000000; }
+    return 1;
+}
+
+fn anss_fold_binary_constant(op: u32, left: int, right: int) -> int {
+    if op == 1 { return left + right; }
+    if op == 2 { return left - right; }
+    if op == 3 { return left * right; }
+    if op == 4 && right != 0 { return left / right; }
+    if op == 5 && right != 0 { return left % right; }
+    return 0;
+}

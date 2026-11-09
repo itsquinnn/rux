@@ -1,0 +1,39 @@
+include "lib/core/types.rx";
+
+fn jit_arm64_put32(buf: *mut byte, len_ptr: *mut uint, cap: uint, insn: u32) {
+    let off: uint = len_ptr[0];
+    if (off + 4) <= cap {
+        buf[off + 0] = (insn & 255) as byte;
+        buf[off + 1] = ((insn >> 8) & 255) as byte;
+        buf[off + 2] = ((insn >> 16) & 255) as byte;
+        buf[off + 3] = ((insn >> 24) & 255) as byte;
+        len_ptr[0] = off + 4;
+    }
+}
+
+fn jit_arm64_mov_imm(buf: *mut byte, len_ptr: *mut uint, cap: uint, reg: u32, imm: u64) {
+    let w0: u32 = (imm & 65535) as u32;
+    let w1: u32 = ((imm >> 16) & 65535) as u32;
+    jit_arm64_put32(buf, len_ptr, cap, 3531669504 | (w0 << 5) | reg);
+    if w1 != 0 {
+        jit_arm64_put32(buf, len_ptr, cap, 4070572032 | (w1 << 5) | reg);
+    }
+}
+
+fn jit_arm64_emit_op_imm(buf: *mut byte, len_ptr: *mut uint, cap: uint, op: uint, imm: uint) {
+    jit_arm64_mov_imm(buf, len_ptr, cap, 9, imm as u64);
+    if op == 1 {
+        jit_arm64_put32(buf, len_ptr, cap, 2332688384);
+    } else if op == 2 {
+        jit_arm64_put32(buf, len_ptr, cap, 3406430208);
+    } else if op == 3 {
+        jit_arm64_put32(buf, len_ptr, cap, 2601090048);
+    } else if op == 4 {
+        jit_arm64_put32(buf, len_ptr, cap, 2596872192);
+    }
+}
+
+fn jit_arm64_emit_ret(buf: *mut byte, len_ptr: *mut uint, cap: uint) {
+    jit_arm64_put32(buf, len_ptr, cap, 3596551104);
+}
+

@@ -1,0 +1,21 @@
+include "rux/lib/core/types.rx";
+include "rux/lib/io/print.rx";
+
+fn main() -> int {
+    println("Hello from sovereign Rux!");
+
+    let count: int = 5;
+    var total: int = 0;
+
+    var i: int = 1;
+    while i <= count {
+        total = total + i;
+        i = i + 1;
+    }
+
+    print("Computed triangular sum: ");
+    print_int(total);
+    println("");
+
+    return 0;
+}

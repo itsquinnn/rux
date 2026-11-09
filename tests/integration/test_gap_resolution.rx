@@ -1,0 +1,406 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "lib/core/utf8.rx";
+include "lib/core/result.rx";
+include "lib/core/allocator.rx";
+include "lib/core/heap.rx";
+include "lib/core/closure.rx";
+include "lib/math/checked.rx";
+include "lib/core/tuple.rx";
+include "lib/core/debug.rx";
+include "lib/format/json.rx";
+include "lib/net/http.rx";
+include "lib/sync/fiber.rx";
+include "lib/os/uses_substrate.rx";
+
+fn test_utf8_suite() -> int {
+    let ascii: str = "Hello Rux";
+    if !utf8_is_valid(ascii) || utf8_char_count(ascii) != 9 {
+        println("[FAIL] UTF-8: ASCII validation or count failed");
+        return 1;
+    }
+
+    var encoded: [byte; 4];
+    let written: uint = utf8_encode_rune(0x20AC, &mut encoded[0]);
+    if written != 3 {
+        println("[FAIL] UTF-8: 3-byte Euro symbol encoding failed");
+        return 2;
+    }
+
+    var decoded_cp: [uint; 1];
+    let consumed: uint = utf8_decode_rune(&encoded[0], 3, 0, &mut decoded_cp[0]);
+    if consumed != 3 || decoded_cp[0] != 0x20AC {
+        println("[FAIL] UTF-8: 3-byte Euro symbol decoding failed");
+        return 3;
+    }
+
+    println("[PASS] Gap 1: Full UTF-8 Unicode decoding, counting, and encoding verified");
+    return 0;
+}
+
+fn test_result_suite() -> int {
+    let r_ok: Result = result_ok(42);
+    if !result_is_ok(r_ok) || result_is_err(r_ok) || result_unwrap(r_ok) != 42 {
+        println("[FAIL] Result: result_ok handling failed");
+        return 1;
+    }
+
+    let r_err: Result = result_err(-404);
+    if !result_is_err(r_err) || result_is_ok(r_err) || result_error(r_err) != -404 {
+        println("[FAIL] Result: result_err handling failed");
+        return 2;
+    }
+
+    if result_unwrap_or(r_err, 999) != 999 {
+        println("[FAIL] Result: result_unwrap_or fallback failed");
+        return 3;
+    }
+
+    println("[PASS] Gap 2: Functional Result[T, E] typed error handling verified");
+    return 0;
+}
+
+fn test_allocator_suite() -> int {
+    var arena_buf: [byte; 1024];
+    var arena: BumpArena;
+    arena_init(&mut arena, &mut arena_buf[0], 1024);
+
+    var alloc_vt: Allocator;
+    allocator_from_arena(&mut arena, &mut alloc_vt);
+
+    let mem1: *mut byte = allocator_alloc(&mut alloc_vt, 64);
+    let mem2: *mut byte = allocator_alloc(&mut alloc_vt, 128);
+
+    if (mem1 as uint) == 0 || (mem2 as uint) == 0 || (mem2 as uint) <= (mem1 as uint) {
+        println("[FAIL] Allocator: vtable allocation failed");
+        return 1;
+    }
+
+    allocator_free(&mut alloc_vt, mem1, 64);
+    if alloc_vt.total_allocated != 192 {
+        println("[FAIL] Allocator: metric tracking failed");
+        return 2;
+    }
+
+    println("[PASS] Gap 3: Polymorphic abstract allocator vtable interface verified");
+    return 0;
+}
+
+fn test_heap_suite() -> int {
+    let raw_buf: *mut byte = uses_substrate_alloc(8192);
+    var heap: HeapAllocator;
+    heap_init(&mut heap, raw_buf, 8192);
+
+    let p1: *mut byte = heap_alloc(&mut heap, 128);
+    let p2: *mut byte = heap_alloc(&mut heap, 256);
+    let p3: *mut byte = heap_alloc(&mut heap, 512);
+
+    if (p1 as uint) == 0 || (p2 as uint) == 0 || (p3 as uint) == 0 {
+        println("[FAIL] Heap: Initial allocation failed");
+        uses_substrate_free(raw_buf, 8192);
+        return 1;
+    }
+
+    heap_free(&mut heap, p2);
+
+    let p2_reused: *mut byte = heap_alloc(&mut heap, 128);
+    if (p2_reused as uint) != (p2 as uint) {
+        println("[FAIL] Heap: Free-list did not recycle freed chunk");
+        uses_substrate_free(raw_buf, 8192);
+        return 2;
+    }
+
+    heap_free(&mut heap, p1);
+    heap_free(&mut heap, p2_reused);
+    heap_free(&mut heap, p3);
+
+    let p_big: *mut byte = heap_alloc(&mut heap, 7000);
+    if (p_big as uint) == 0 {
+        println("[FAIL] Heap: Bidirectional coalescing failed to merge free chunks");
+        uses_substrate_free(raw_buf, 8192);
+        return 3;
+    }
+
+    heap_free(&mut heap, p_big);
+    uses_substrate_free(raw_buf, 8192);
+    println("[PASS] Gap 4: Dynamic free-list heap allocator with real free() and coalescing verified");
+    return 0;
+}
+
+fn test_closure_suite() -> int {
+    var env: UpvalueEnv4;
+    env.val0 = 100;
+    env.val1 = 0;
+    env.val2 = 0;
+    env.val3 = 0;
+
+    var counter_closure: Closure;
+    closure_init(&mut counter_closure, closure_counter_trampoline, (&mut env) as *mut byte, 32);
+
+    let c1: uint = closure_call(&counter_closure, 5);
+    let c2: uint = closure_call(&counter_closure, 10);
+    let c3: uint = closure_call(&counter_closure, 1);
+
+    if c1 != 105 || c2 != 115 || c3 != 116 || env.val0 != 116 {
+        println("[FAIL] Closure: Upvalue capture state mutation failed");
+        return 1;
+    }
+
+    println("[PASS] Gap 5: First-class closures with stateful environment capture verified");
+    return 0;
+}
+
+fn test_checked_math_suite() -> int {
+    var out: uint = 0;
+
+    if checked_add_u64(50, 70, &mut out) || out != 120 {
+        println("[FAIL] CheckedMath: normal addition failed");
+        return 1;
+    }
+
+    if !checked_add_u64(UINT_MAX, 1, &mut out) {
+        println("[FAIL] CheckedMath: overflow addition did not trigger true");
+        return 2;
+    }
+
+    if !checked_sub_u64(10, 20, &mut out) {
+        println("[FAIL] CheckedMath: underflow subtraction did not trigger true");
+        return 3;
+    }
+
+    if !checked_mul_u64(UINT_MAX / 2 + 1, 2, &mut out) {
+        println("[FAIL] CheckedMath: multiplication overflow did not trigger true");
+        return 4;
+    }
+
+    if saturating_add_u64(UINT_MAX - 5, 100) != UINT_MAX {
+        println("[FAIL] CheckedMath: saturating_add did not clamp to UINT_MAX");
+        return 5;
+    }
+
+    if saturating_sub_u64(10, 50) != 0 {
+        println("[FAIL] CheckedMath: saturating_sub did not clamp to 0");
+        return 6;
+    }
+
+    println("[PASS] Gap 6: Overflow-checked and saturating arithmetic verified");
+    return 0;
+}
+
+fn divide_checked(a: uint, b: uint) -> ValueErr {
+    if b == 0 {
+        return make_err(-1);
+    }
+    return make_ok(a / b);
+}
+
+fn test_tuple_suite() -> int {
+    let res_ok: ValueErr = divide_checked(100, 4);
+    if res_ok.has_err || res_ok.val != 25 {
+        println("[FAIL] Tuple: Successful multi-return failed");
+        return 1;
+    }
+
+    let res_err: ValueErr = divide_checked(100, 0);
+    if !res_err.has_err || res_err.err != -1 {
+        println("[FAIL] Tuple: Error multi-return failed");
+        return 2;
+    }
+
+    let pair: Pair = make_pair(42, 84);
+    if pair.first != 42 || pair.second != 84 {
+        println("[FAIL] Tuple: Pair fields failed");
+        return 3;
+    }
+
+    println("[PASS] Gap 7: Multiple return values and ValueErr tuples verified");
+    return 0;
+}
+
+fn test_str_len(s: str) -> uint {
+    let p: *const byte = s as *const byte;
+    var i: uint = 0;
+    while p[i] != 0 as byte { i = i + 1; }
+    return i;
+}
+
+fn test_json_suite() -> int {
+    let j_str: str = "{\"service\":\"rux_node\",\"port\":9090,\"active\":true}";
+    let j_ptr: *const byte = j_str as *const byte;
+    let j_len: uint = test_str_len(j_str);
+
+    var s_off: [uint; 1];
+    var s_len: [uint; 1];
+    let found_s: bool = json_find_key(j_ptr, j_len, "service", &mut s_off[0], &mut s_len[0]);
+    if !found_s || s_len[0] != 10 {
+        println("[FAIL] JSON: service key not parsed");
+        return 1;
+    }
+
+    var port_off: [uint; 1];
+    var port_len: [uint; 1];
+    let found_p: bool = json_find_key(j_ptr, j_len, "port", &mut port_off[0], &mut port_len[0]);
+    if !found_p {
+        println("[FAIL] JSON: port key not found");
+        return 2;
+    }
+
+    let port_val: uint = json_parse_uint(j_ptr + port_off[0], port_len[0]);
+    if port_val != 9090 {
+        println("[FAIL] JSON: Parsed integer value mismatch");
+        return 3;
+    }
+
+    var out_buf: [byte; 256];
+    var writer: JsonWriter;
+    json_writer_init(&mut writer, &mut out_buf[0], 256);
+    json_writer_append_str(&mut writer, "status", "ok");
+    json_writer_append_int(&mut writer, "code", 200);
+    let total_len: uint = json_writer_finish(&mut writer);
+
+    if total_len == 0 {
+        println("[FAIL] JSON: Serializer produced empty document");
+        return 4;
+    }
+
+    println("[PASS] Gap 8: Zero-allocation JSON key search, parsing, and serialization verified");
+    return 0;
+}
+
+fn test_http_suite() -> int {
+    let raw_req: str = "POST /api/v1/cluster/deploy HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nContent-Type: application/json\r\n\r\n{\"nodes\":4}";
+    let req_ptr: *const byte = raw_req as *const byte;
+    let req_len: uint = test_str_len(raw_req);
+
+    var req: HttpRequest;
+    if !http_parse_full_request(req_ptr, req_len, &mut req) {
+        println("[FAIL] HTTP: Full request parsing failed");
+        return 1;
+    }
+
+    if req.method != HTTP_METHOD_POST || req.path_len != 22 || req.header_count != 2 {
+        println("[FAIL] HTTP: Request method, path or header count mismatch");
+        return 2;
+    }
+
+    var val_off: [uint; 1];
+    var val_len: [uint; 1];
+    if !http_find_header(&req, req_ptr, "Host", &mut val_off[0], &mut val_len[0]) {
+        println("[FAIL] HTTP: Host header not found");
+        return 3;
+    }
+
+    if req.body_len != 11 {
+        println("[FAIL] HTTP: Body payload length mismatch");
+        return 4;
+    }
+
+    var resp_buf: [byte; 512];
+    let resp_len: uint = http_build_response_json("{\"status\":\"deployed\"}", &mut resp_buf[0], 512);
+    if resp_len == 0 {
+        println("[FAIL] HTTP: Response serialization failed");
+        return 5;
+    }
+
+    println("[PASS] Gap 9: Comprehensive HTTP/1.1 engine (Method, Path, Headers, Body) verified");
+    return 0;
+}
+
+fn test_traceback_leaf(out_frames: *mut StackFrame, max_f: uint) -> uint {
+    return debug_unwind_stack(out_frames, max_f);
+}
+
+fn test_debug_suite() -> int {
+    var frames: [StackFrame; 8];
+    let frame_count: uint = test_traceback_leaf(&mut frames[0], 8);
+
+    if frame_count < 2 {
+        println("[FAIL] Debug: Call stack unwinding captured fewer than 2 frames");
+        return 1;
+    }
+
+    if frames[0].return_rip < 0x400000 || frames[1].return_rip < 0x400000 {
+        println("[FAIL] Debug: Frame return RIP address out of bounds");
+        return 2;
+    }
+
+    println("[PASS] Gap 10: Stack traceback frame pointer unwinder verified");
+    return 0;
+}
+
+struct FiberContext {
+    counter: uint,
+    sched: *mut FiberScheduler,
+}
+
+fn fiber_task_a(arg: uint) {
+    let ctx: *mut FiberContext = arg as *mut FiberContext;
+    ctx.counter = ctx.counter + 10;
+    fiber_yield(ctx.sched);
+    ctx.counter = ctx.counter + 5;
+}
+
+fn fiber_task_b(arg: uint) {
+    let ctx: *mut FiberContext = arg as *mut FiberContext;
+    ctx.counter = ctx.counter * 2;
+}
+
+fn test_fiber_suite() -> int {
+    var sched: FiberScheduler;
+    fiber_sched_init(&mut sched);
+
+    let stack_a: *mut byte = uses_substrate_alloc(65536);
+    let stack_b: *mut byte = uses_substrate_alloc(65536);
+
+    var ctx: FiberContext;
+    ctx.counter = 0;
+    ctx.sched = &mut sched;
+
+    let ctx_ptr: uint = (&mut ctx) as uint;
+
+    fiber_sched_spawn(&mut sched, stack_a, 65536, fiber_task_a, ctx_ptr);
+    fiber_sched_spawn(&mut sched, stack_b, 65536, fiber_task_b, ctx_ptr);
+
+    let completed: uint = fiber_sched_run(&mut sched);
+    uses_substrate_free(stack_a, 65536);
+    uses_substrate_free(stack_b, 65536);
+
+    if completed != 2 || ctx.counter != 25 {
+        println("[FAIL] Fiber: Cooperative micro-fiber scheduler execution failed");
+        return 1;
+    }
+
+    println("[PASS] Gap 11: Real x86-64 hardware stackful coroutines with fiber_yield verified");
+    return 0;
+}
+
+fn main() -> int {
+    println("=================================================================");
+    println("      RUX ALL REFERENCE LANGUAGE GAPS RESOLUTION MASTER SUITE     ");
+    println("=================================================================");
+
+    var failures: int = 0;
+
+    failures = failures + test_utf8_suite();
+    failures = failures + test_result_suite();
+    failures = failures + test_allocator_suite();
+    failures = failures + test_heap_suite();
+    failures = failures + test_closure_suite();
+    failures = failures + test_checked_math_suite();
+    failures = failures + test_tuple_suite();
+    failures = failures + test_json_suite();
+    failures = failures + test_http_suite();
+    failures = failures + test_debug_suite();
+    failures = failures + test_fiber_suite();
+
+    println("=================================================================");
+    if failures == 0 {
+        println(">>> ALL 11 REFERENCE LANGUAGE GAP SUITES PASSED (100% OK) <<<");
+        println("=================================================================");
+        return 0;
+    } else {
+        println(">>> GAP VERIFICATION FAILURES DETECTED <<<");
+        println("=================================================================");
+        return 1;
+    }
+}

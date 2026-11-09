@@ -1,0 +1,5 @@
+include "rux/lib/core/types.rx";
+
+export fn rux_add(a: int, b: int) -> int => a + b;
+
+export fn rux_str_len(s: str) -> uint => @str.len(s);

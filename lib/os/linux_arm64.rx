@@ -1,0 +1,31 @@
+include "lib/core/types.rx";
+
+const SYS_IOCTL: uint         = 29;
+const SYS_FTRUNCATE: uint     = 46;
+const SYS_OPENAT: uint        = 56;
+const SYS_CLOSE: uint         = 57;
+const SYS_GETDENTS64: uint    = 61;
+const SYS_READ: uint          = 63;
+const SYS_WRITE: uint         = 64;
+const SYS_FSTAT: uint         = 80;
+const SYS_EXIT: uint          = 93;
+const SYS_EXIT_GROUP: uint    = 94;
+const SYS_NANOSLEEP: uint     = 101;
+const SYS_CLOCK_GETTIME: uint = 113;
+const SYS_GETPID: uint        = 172;
+const SYS_SOCKET: uint        = 198;
+const SYS_ACCEPT: uint        = 202;
+const SYS_CONNECT: uint       = 203;
+const SYS_BRK: uint           = 214;
+const SYS_MUNMAP: uint        = 215;
+const SYS_CLONE: uint         = 220;
+const SYS_EXECVE: uint        = 221;
+const SYS_MMAP: uint          = 222;
+const SYS_MPROTECT: uint      = 226;
+const SYS_FCNTL: uint         = 25;
+const SYS_WAIT4: uint         = 260;
+const SYS_MEMFD_CREATE: uint  = 279;
+
+fn syscall3(num: uint, arg1: uint, arg2: uint, arg3: uint) -> int {
+    return @os.raw_syscall3(num, arg1, arg2, arg3);
+}

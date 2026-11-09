@@ -1,0 +1,26 @@
+const ELF_MACHINE_X86_64: uint  = 62;
+const ELF_MACHINE_AARCH64: uint = 183;
+const ELF_MACHINE_RISCV: uint   = 243;
+
+const PT_LOAD: uint             = 1;
+
+const PF_X: uint                = 1;
+const PF_W: uint                = 2;
+const PF_R: uint                = 4;
+const PF_RX: uint               = 5;
+
+struct Elf64Header {
+    magic: uint,
+    class_id: byte,
+    data_encoding: byte,
+    version: byte,
+    os_abi: byte,
+    file_type: uint,
+    machine: uint,
+    entry_point_vaddr: uint,
+    ph_offset: uint,
+    sh_offset: uint,
+    header_size: uint,
+    ph_entry_size: uint,
+    ph_count: uint,
+}

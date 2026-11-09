@@ -1,0 +1,131 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+include "lib/core/option.rx";
+include "lib/core/result.rx";
+include "lib/core/string_buffer.rx";
+
+struct Marker;
+
+struct Pair(i64, i64);
+
+struct Point {
+    x: i64,
+    y: i64,
+}
+
+const CONST_FACTOR: i64 = 42;
+
+fn test_unit_return() -> () {
+    var z: i64 = 10;
+    z = z + 5;
+}
+
+fn square(x: i64) -> i64 => x * x;
+
+fn test_auto_return(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+fn main() -> int {
+    let immutable_x: i64 = 100;
+    var mutable_y: i64 = 50;
+    mutable_y += 25;
+    mutable_y -= 5;
+    mutable_y *= 2;
+    mutable_y /= 7;
+
+    if mutable_y != 20 {
+        panic("Compound assignment failed");
+    }
+
+    let delayed_val: i64;
+    delayed_val = 999;
+    if delayed_val != 999 {
+        panic("Delayed init failed");
+    }
+
+    if CONST_FACTOR != 42 {
+        panic("Const failed");
+    }
+
+    let sq_res: i64 = square(5);
+    if sq_res != 25 {
+        panic("Arrow function failed");
+    }
+
+    let auto_res: i64 = test_auto_return(12, 18);
+    if auto_res != 30 {
+        panic("Auto return failed");
+    }
+
+    test_unit_return();
+
+    let m: Marker;
+
+    var p: Point = Point { x: 0, y: 0 };
+    p.x = 10;
+    p.y = 20;
+    if (p.x + p.y) != 30 {
+        panic("Point struct failed");
+    }
+
+    let (t_x, t_y) = (100, 200);
+    if (t_x + t_y) != 300 {
+        panic("Tuple destructuring failed");
+    }
+
+    let [a_x, a_y, a_z] = [10, 20, 30];
+    if (a_x + a_y + a_z) != 60 {
+        panic("Array destructuring failed");
+    }
+
+    var bit_val: i64 = 6;
+    bit_val &= 3;
+    bit_val |= 8;
+    bit_val ^= 1;
+    bit_val <<= 2;
+    bit_val >>= 1;
+    if bit_val != 22 {
+        panic("Bitwise compound ops failed");
+    }
+
+    let opt_s: Option<i64> = Some<i64>(123);
+    if !opt_s.has_val || opt_s.value != 123 {
+        panic("Option Some failed");
+    }
+
+    let opt_n: Option<i64> = None<i64>();
+    if opt_n.has_val {
+        panic("Option None failed");
+    }
+
+    let res_o: Result<i64, i64> = Ok<i64, i64>(456);
+    if !res_o.is_ok || res_o.value != 456 {
+        panic("Result Ok failed");
+    }
+
+    let res_e: Result<i64, i64> = Err<i64, i64>(-99);
+    if res_e.is_ok || res_e.err_code != -99 {
+        panic("Result Err failed");
+    }
+
+    var sb: StringBuffer = string_buffer_new(32);
+    string_buffer_append(&mut sb, "Hello ");
+    string_buffer_append(&mut sb, "Master Spec!");
+    let rendered: str = string_buffer_to_string(&mut sb);
+    if string_buffer_len(&sb) != 18 {
+        panic("StringBuffer len failed");
+    }
+
+    let sz_test: isize = 1000;
+    let usz_test: usize = 2000;
+    let ch: char = 65;
+    let b: byte = 255;
+    if (sz_test + (usz_test as isize) + (ch as isize) + (b as isize)) != 3320 {
+        panic("Primitive aliases failed");
+    }
+
+    println("Master Spec Step 1 & Step 2 Verified Successfully!");
+    return 0;
+}
+

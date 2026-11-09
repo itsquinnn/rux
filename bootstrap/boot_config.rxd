@@ -1,0 +1,21 @@
+bootstrap {
+    stage: 0
+    default_arch: "x86_64"
+    code_capacity: 16MB
+    stack_capacity: 4MB
+    spacetime_plate_size: 16MB
+
+    targets: [
+        { name: "x86_64",  abi: "sysv",  word_size: 64, page_size: 4KB },
+        { name: "arm64",   abi: "aapcs", word_size: 64, page_size: 4KB },
+        { name: "riscv64", abi: "lp64d", word_size: 64, page_size: 4KB },
+    ]
+
+    features {
+        cheri_capabilities: true
+        acrq_rings: true
+        vitrification_clwb: true
+        dual_virtual_aliasing: true
+        hologram_relocation: true
+    }
+}

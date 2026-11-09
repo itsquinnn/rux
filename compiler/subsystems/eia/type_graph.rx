@@ -1,0 +1,23 @@
+struct EiaTypeGraphEntry {
+    type_sig_hash: uint,
+    field_hash: uint,
+    byte_offset: u32,
+    field_size: u32,
+}
+
+fn eia_resolve_field_displacement(
+    entries: *const EiaTypeGraphEntry,
+    count: uint,
+    type_hash: uint,
+    field_hash: uint
+) -> u32 {
+    var i: uint = 0;
+    while i < count {
+        let entry: *const EiaTypeGraphEntry = &entries[i];
+        if entry.type_sig_hash == type_hash && entry.field_hash == field_hash {
+            return entry.byte_offset;
+        }
+        i = i + 1;
+    }
+    return 0xFFFFFFFF;
+}

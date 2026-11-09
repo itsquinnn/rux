@@ -1,0 +1,98 @@
+include "lib/core/types.rx";
+
+const VM_EXIT_HLT: u32       = 1;
+const VM_EXIT_PIO_OUT: u32   = 2;
+const VM_EXIT_MMIO_WRITE: u32 = 3;
+const VM_EXIT_HYPERCALL: u32 = 4;
+
+struct GuestMemorySlot {
+    slot_id: u32,
+    guest_phys_base: u64,
+    memory_size: u64,
+    host_virt_base: u64,
+    readonly: bool,
+    active: bool,
+}
+
+struct VcpuRegs {
+    rip: u64,
+    rsp: u64,
+    rax: u64,
+    rbx: u64,
+    rcx: u64,
+    rdx: u64,
+    rflags: u64,
+}
+
+struct VmmHypervisor {
+    slots: [GuestMemorySlot; 16],
+    slot_count: uint,
+    vcpu: VcpuRegs,
+    halted: bool,
+    vm_exits: u64,
+    last_pio_byte: u8,
+}
+
+fn vmm_init(vm: *mut VmmHypervisor, entry_rip: u64, initial_rsp: u64) {
+    vm.slot_count = 0;
+    vm.vcpu.rip = entry_rip;
+    vm.vcpu.rsp = initial_rsp;
+    vm.vcpu.rax = 0;
+    vm.vcpu.rbx = 0;
+    vm.vcpu.rcx = 0;
+    vm.vcpu.rdx = 0;
+    vm.vcpu.rflags = 2;
+    vm.halted = false;
+    vm.vm_exits = 0;
+    vm.last_pio_byte = 0;
+}
+
+fn vmm_map_guest_slot(vm: *mut VmmHypervisor, gpa: u64, size: u64, hva: u64, readonly: bool) -> bool {
+    if vm.slot_count >= 16 { return false; }
+    let idx: uint = vm.slot_count;
+    vm.slots[idx].slot_id = idx as u32;
+    vm.slots[idx].guest_phys_base = gpa;
+    vm.slots[idx].memory_size = size;
+    vm.slots[idx].host_virt_base = hva;
+    vm.slots[idx].readonly = readonly;
+    vm.slots[idx].active = true;
+    vm.slot_count = idx + 1;
+    return true;
+}
+
+fn vmm_translate_gpa(vm: *const VmmHypervisor, gpa: u64) -> u64 {
+    var i: uint = 0;
+    while i < vm.slot_count {
+        if vm.slots[i].active {
+            let base: u64 = vm.slots[i].guest_phys_base;
+            let end: u64 = base + vm.slots[i].memory_size;
+            if gpa >= base && gpa < end {
+                return vm.slots[i].host_virt_base + (gpa - base);
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn vmm_handle_exit(vm: *mut VmmHypervisor, exit_reason: u32, io_port: u16, io_val: u64) -> bool {
+    vm.vm_exits = vm.vm_exits + 1;
+    if exit_reason == VM_EXIT_HLT {
+        vm.halted = true;
+        return false;
+    }
+    if exit_reason == VM_EXIT_PIO_OUT {
+        if io_port == 0x03F8 || io_port == 0x00E9 {
+            vm.last_pio_byte = (io_val & 255) as u8;
+        }
+        vm.vcpu.rip = vm.vcpu.rip + 2;
+        return true;
+    }
+    if exit_reason == VM_EXIT_HYPERCALL {
+        vm.vcpu.rax = io_val + 1;
+        vm.vcpu.rip = vm.vcpu.rip + 3;
+        return true;
+    }
+    return true;
+}
+

@@ -1,0 +1,49 @@
+struct ExposedShield {
+    shield_id: uint,
+    probes_absorbed: uint,
+    total_probe_bytes: uint,
+    is_compromised: bool,
+}
+
+struct ZkCommandProof {
+    nonce: uint,
+    epoch: uint,
+    proof_hash: uint,
+}
+
+struct HiddenSwordEnclave {
+    enclave_id: uint,
+    master_key: uint,
+    neutralizations_executed: uint,
+}
+
+fn ccns_shield_init(shield: *mut ExposedShield, id: uint) {
+    shield.shield_id = id;
+    shield.probes_absorbed = 0;
+    shield.total_probe_bytes = 0;
+    shield.is_compromised = false;
+}
+
+fn ccns_shield_absorb_probe(shield: *mut ExposedShield, probe_size: uint) {
+    shield.probes_absorbed = shield.probes_absorbed + 1;
+    shield.total_probe_bytes = shield.total_probe_bytes + probe_size;
+}
+
+fn ccns_sword_init(sword: *mut HiddenSwordEnclave, id: uint, key: uint) {
+    sword.enclave_id = id;
+    sword.master_key = key;
+    sword.neutralizations_executed = 0;
+}
+
+fn ccns_execute_core_neutralization(
+    sword: *mut HiddenSwordEnclave,
+    shield: *mut ExposedShield,
+    proof: *const ZkCommandProof
+) -> bool {
+    if proof.proof_hash == 0 {
+        return false;
+    }
+    shield.is_compromised = false;
+    sword.neutralizations_executed = sword.neutralizations_executed + 1;
+    return true;
+}

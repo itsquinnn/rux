@@ -1,0 +1,225 @@
+include "lib/core/types.rx";
+include "lib/math/checked.rx";
+
+struct Mask4 {
+    m0: bool,
+    m1: bool,
+    m2: bool,
+    m3: bool,
+}
+
+fn mask4_new(m0: bool, m1: bool, m2: bool, m3: bool) -> Mask4 {
+    return Mask4 { m0: m0, m1: m1, m2: m2, m3: m3 };
+}
+
+fn mask4_all(m: Mask4) -> bool {
+    return m.m0 != 0 && m.m1 != 0 && m.m2 != 0 && m.m3 != 0;
+}
+
+fn mask4_any(m: Mask4) -> bool {
+    return m.m0 != 0 || m.m1 != 0 || m.m2 != 0 || m.m3 != 0;
+}
+
+fn mask4_count_true(m: Mask4) -> u32 {
+    var count: u32 = 0;
+    if m.m0 != 0 { count = count + 1; }
+    if m.m1 != 0 { count = count + 1; }
+    if m.m2 != 0 { count = count + 1; }
+    if m.m3 != 0 { count = count + 1; }
+    return count;
+}
+
+fn mask4_not(m: Mask4) -> Mask4 {
+    var res: Mask4;
+    if m.m0 != 0 { res.m0 = 0; } else { res.m0 = 1; }
+    if m.m1 != 0 { res.m1 = 0; } else { res.m1 = 1; }
+    if m.m2 != 0 { res.m2 = 0; } else { res.m2 = 1; }
+    if m.m3 != 0 { res.m3 = 0; } else { res.m3 = 1; }
+    return res;
+}
+
+fn mask4_and(a: Mask4, b: Mask4) -> Mask4 {
+    var res: Mask4;
+    if a.m0 != 0 && b.m0 != 0 { res.m0 = 1; } else { res.m0 = 0; }
+    if a.m1 != 0 && b.m1 != 0 { res.m1 = 1; } else { res.m1 = 0; }
+    if a.m2 != 0 && b.m2 != 0 { res.m2 = 1; } else { res.m2 = 0; }
+    if a.m3 != 0 && b.m3 != 0 { res.m3 = 1; } else { res.m3 = 0; }
+    return res;
+}
+
+fn mask4_or(a: Mask4, b: Mask4) -> Mask4 {
+    var res: Mask4;
+    if a.m0 != 0 || b.m0 != 0 { res.m0 = 1; } else { res.m0 = 0; }
+    if a.m1 != 0 || b.m1 != 0 { res.m1 = 1; } else { res.m1 = 0; }
+    if a.m2 != 0 || b.m2 != 0 { res.m2 = 1; } else { res.m2 = 0; }
+    if a.m3 != 0 || b.m3 != 0 { res.m3 = 1; } else { res.m3 = 0; }
+    return res;
+}
+
+struct Simd4i32 {
+    v0: i32,
+    v1: i32,
+    v2: i32,
+    v3: i32,
+}
+
+fn simd4i32_new(v0: i32, v1: i32, v2: i32, v3: i32) -> Simd4i32 {
+    return Simd4i32 { v0: v0, v1: v1, v2: v2, v3: v3 };
+}
+
+fn simd4i32_splat(val: i32) -> Simd4i32 {
+    return Simd4i32 { v0: val, v1: val, v2: val, v3: val };
+}
+
+fn simd4i32_add(a: Simd4i32, b: Simd4i32) -> Simd4i32 {
+    return Simd4i32 {
+        v0: a.v0 + b.v0,
+        v1: a.v1 + b.v1,
+        v2: a.v2 + b.v2,
+        v3: a.v3 + b.v3,
+    };
+}
+
+fn simd4i32_sub(a: Simd4i32, b: Simd4i32) -> Simd4i32 {
+    return Simd4i32 {
+        v0: a.v0 - b.v0,
+        v1: a.v1 - b.v1,
+        v2: a.v2 - b.v2,
+        v3: a.v3 - b.v3,
+    };
+}
+
+fn simd4i32_mul(a: Simd4i32, b: Simd4i32) -> Simd4i32 {
+    return Simd4i32 {
+        v0: a.v0 * b.v0,
+        v1: a.v1 * b.v1,
+        v2: a.v2 * b.v2,
+        v3: a.v3 * b.v3,
+    };
+}
+
+fn simd4i32_cmpeq(a: Simd4i32, b: Simd4i32) -> Mask4 {
+    var res: Mask4;
+    if a.v0 == b.v0 { res.m0 = 1; } else { res.m0 = 0; }
+    if a.v1 == b.v1 { res.m1 = 1; } else { res.m1 = 0; }
+    if a.v2 == b.v2 { res.m2 = 1; } else { res.m2 = 0; }
+    if a.v3 == b.v3 { res.m3 = 1; } else { res.m3 = 0; }
+    return res;
+}
+
+fn simd4i32_cmpgt(a: Simd4i32, b: Simd4i32) -> Mask4 {
+    var res: Mask4;
+    if a.v0 > b.v0 { res.m0 = 1; } else { res.m0 = 0; }
+    if a.v1 > b.v1 { res.m1 = 1; } else { res.m1 = 0; }
+    if a.v2 > b.v2 { res.m2 = 1; } else { res.m2 = 0; }
+    if a.v3 > b.v3 { res.m3 = 1; } else { res.m3 = 0; }
+    return res;
+}
+
+fn simd4i32_cmplt(a: Simd4i32, b: Simd4i32) -> Mask4 {
+    var res: Mask4;
+    if a.v0 < b.v0 { res.m0 = 1; } else { res.m0 = 0; }
+    if a.v1 < b.v1 { res.m1 = 1; } else { res.m1 = 0; }
+    if a.v2 < b.v2 { res.m2 = 1; } else { res.m2 = 0; }
+    if a.v3 < b.v3 { res.m3 = 1; } else { res.m3 = 0; }
+    return res;
+}
+
+fn simd4i32_select(mask: Mask4, yes: Simd4i32, no: Simd4i32) -> Simd4i32 {
+    var res: Simd4i32;
+    if mask.m0 != 0 { res.v0 = yes.v0; } else { res.v0 = no.v0; }
+    if mask.m1 != 0 { res.v1 = yes.v1; } else { res.v1 = no.v1; }
+    if mask.m2 != 0 { res.v2 = yes.v2; } else { res.v2 = no.v2; }
+    if mask.m3 != 0 { res.v3 = yes.v3; } else { res.v3 = no.v3; }
+    return res;
+}
+
+fn simd4i32_reduce_sum(a: Simd4i32) -> i32 {
+    return a.v0 + a.v1 + a.v2 + a.v3;
+}
+
+fn simd4i32_reduce_min(a: Simd4i32) -> i32 {
+    var m: i32 = a.v0;
+    if a.v1 < m { m = a.v1; }
+    if a.v2 < m { m = a.v2; }
+    if a.v3 < m { m = a.v3; }
+    return m;
+}
+
+fn simd4i32_reduce_max(a: Simd4i32) -> i32 {
+    var m: i32 = a.v0;
+    if a.v1 > m { m = a.v1; }
+    if a.v2 > m { m = a.v2; }
+    if a.v3 > m { m = a.v3; }
+    return m;
+}
+
+fn simd4i32_load_unaligned(ptr: *const i32) -> Simd4i32 {
+    return Simd4i32 {
+        v0: ptr[0],
+        v1: ptr[1],
+        v2: ptr[2],
+        v3: ptr[3],
+    };
+}
+
+fn simd4i32_store_unaligned(ptr: *mut i32, val: Simd4i32) {
+    ptr[0] = val.v0;
+    ptr[1] = val.v1;
+    ptr[2] = val.v2;
+    ptr[3] = val.v3;
+}
+
+fn simd4i32_masked_load(ptr: *const i32, mask: Mask4, default_val: Simd4i32) -> Simd4i32 {
+    var res: Simd4i32;
+    if mask.m0 != 0 { res.v0 = ptr[0]; } else { res.v0 = default_val.v0; }
+    if mask.m1 != 0 { res.v1 = ptr[1]; } else { res.v1 = default_val.v1; }
+    if mask.m2 != 0 { res.v2 = ptr[2]; } else { res.v2 = default_val.v2; }
+    if mask.m3 != 0 { res.v3 = ptr[3]; } else { res.v3 = default_val.v3; }
+    return res;
+}
+
+fn simd4i32_masked_store(ptr: *mut i32, mask: Mask4, val: Simd4i32) {
+    if mask.m0 != 0 { ptr[0] = val.v0; }
+    if mask.m1 != 0 { ptr[1] = val.v1; }
+    if mask.m2 != 0 { ptr[2] = val.v2; }
+    if mask.m3 != 0 { ptr[3] = val.v3; }
+}
+
+fn simd4i32_gather(base: *const i32, indices: Simd4i32) -> Simd4i32 {
+    return Simd4i32 {
+        v0: base[indices.v0 as u64],
+        v1: base[indices.v1 as u64],
+        v2: base[indices.v2 as u64],
+        v3: base[indices.v3 as u64],
+    };
+}
+
+fn simd4i32_scatter(base: *mut i32, indices: Simd4i32, val: Simd4i32) {
+    base[indices.v0 as u64] = val.v0;
+    base[indices.v1 as u64] = val.v1;
+    base[indices.v2 as u64] = val.v2;
+    base[indices.v3 as u64] = val.v3;
+}
+
+fn simd4i32_swizzle(v: Simd4i32, i0: u32, i1: u32, i2: u32, i3: u32) -> Simd4i32 {
+    let arr: [i32; 4] = [v.v0, v.v1, v.v2, v.v3];
+    return Simd4i32 {
+        v0: arr[(i0 & 3) as u64],
+        v1: arr[(i1 & 3) as u64],
+        v2: arr[(i2 & 3) as u64],
+        v3: arr[(i3 & 3) as u64],
+    };
+}
+
+fn cpu_has_sse4() -> bool {
+    return 1;
+}
+
+fn cpu_has_avx2() -> bool {
+    return 1;
+}
+
+fn cpu_has_neon() -> bool {
+    return 0;
+}

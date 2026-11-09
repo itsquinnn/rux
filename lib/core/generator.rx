@@ -1,0 +1,46 @@
+struct GeneratorState {
+    state: u32,
+    current_value: i64,
+    step_fn: *mut u8,
+    context_data: *mut u8,
+    has_next: u32,
+}
+
+fn generator_init(g: *mut GeneratorState, step_fn: *mut u8, context: *mut u8) {
+    g.state = 0;
+    g.current_value = 0;
+    g.step_fn = step_fn;
+    g.context_data = context;
+    g.has_next = 1;
+}
+
+fn generator_is_done(g: *const GeneratorState) -> bool {
+    return g.has_next == 0;
+}
+
+fn generator_next(g: *mut GeneratorState) -> i64 {
+    if g.has_next == 0 {
+        return 0;
+    }
+    if g.step_fn != (0 as *mut u8) {
+        let step: fn(*mut GeneratorState) -> i64 = g.step_fn as fn(*mut GeneratorState) -> i64;
+        let val: i64 = step(g);
+        return val;
+    }
+    g.has_next = 0;
+    return 0;
+}
+
+fn generator_yield(g: *mut GeneratorState, val: i64, next_state: u32) -> i64 {
+    g.current_value = val;
+    g.state = next_state;
+    g.has_next = 1;
+    return val;
+}
+
+fn generator_finish(g: *mut GeneratorState) -> i64 {
+    g.has_next = 0;
+    g.state = 999999;
+    return 0;
+}
+

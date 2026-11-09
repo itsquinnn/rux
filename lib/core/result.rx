@@ -1,0 +1,111 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+const ERR_NONE: int        = 0;
+const ERR_GENERIC: int     = -1;
+const ERR_NOT_FOUND: int   = -2;
+const ERR_PERMISSION: int  = -3;
+const ERR_OUT_OF_BOUNDS: int = -4;
+const ERR_INVALID_INPUT: int = -5;
+const ERR_OUT_OF_MEMORY: int = -6;
+const ERR_IO_FAILURE: int  = -7;
+
+struct Result<T, E> {
+    is_ok: bool,
+    value: T,
+    err_code: E,
+}
+
+fn res_ok<T, E>(val: T) -> Result<T, E> {
+    var r: Result<T, E>;
+    r.is_ok = true;
+    r.value = val;
+    return r;
+}
+
+fn res_err<T, E>(err: E) -> Result<T, E> {
+    var r: Result<T, E>;
+    r.is_ok = false;
+    r.err_code = err;
+    return r;
+}
+
+fn Ok<T, E>(val: T) -> Result<T, E> => res_ok<T, E>(val);
+fn Err<T, E>(err: E) -> Result<T, E> => res_err<T, E>(err);
+
+fn res_is_ok<T, E>(r: *const Result<T, E>) -> int {
+    if r.is_ok {
+        return 1;
+    }
+    return 0;
+}
+
+fn res_is_err<T, E>(r: *const Result<T, E>) -> int {
+    if r.is_ok {
+        return 0;
+    }
+    return 1;
+}
+
+fn res_unwrap<T, E>(r: Result<T, E>) -> T {
+    if !r.is_ok {
+        panic("Called res_unwrap() on an Err Result");
+    }
+    return r.value;
+}
+
+fn result_ok(val: uint) -> Result {
+    return Result {
+        is_ok: true,
+        value: val,
+        err_code: ERR_NONE,
+    };
+}
+
+fn result_err(code: int) -> Result {
+    return Result {
+        is_ok: false,
+        value: 0,
+        err_code: code,
+    };
+}
+
+fn result_is_ok(r: Result) -> bool {
+    return r.is_ok;
+}
+
+fn result_is_err(r: Result) -> bool {
+    return !r.is_ok;
+}
+
+fn result_unwrap(r: Result) -> uint {
+    if !r.is_ok {
+        panic("Called result_unwrap() on an ERR Result");
+    }
+    return r.value;
+}
+
+fn result_unwrap_or(r: Result, default_val: uint) -> uint {
+    if r.is_ok {
+        return r.value;
+    }
+    return default_val;
+}
+
+fn result_error(r: Result) -> int {
+    return r.err_code;
+}
+
+fn result_map(r: Result, map_fn: fn(val: uint) -> uint) -> Result {
+    if r.is_ok {
+        return result_ok(map_fn(r.value));
+    }
+    return result_err(r.err_code);
+}
+
+fn result_and_then(r: Result, chain_fn: fn(val: uint) -> Result) -> Result {
+    if r.is_ok {
+        return chain_fn(r.value);
+    }
+    return result_err(r.err_code);
+}

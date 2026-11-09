@@ -1,0 +1,42 @@
+struct CooperPairCoalescer {
+    buffer: *mut byte,
+    head: uint,
+    capacity: uint,
+    pairs_fused: uint,
+}
+
+fn hsns_cooper_pair_init(
+    c: *mut CooperPairCoalescer,
+    buf: *mut byte,
+    cap: uint
+) {
+    c.buffer = buf;
+    c.head = 0;
+    c.capacity = cap;
+    c.pairs_fused = 0;
+}
+
+fn hsns_cooper_pair_fuse(
+    c: *mut CooperPairCoalescer,
+    op1: *const byte,
+    len1: uint,
+    op2: *const byte,
+    len2: uint
+) -> uint {
+    var i: uint = 0;
+    while i < len1 {
+        c.buffer[c.head + i] = op1[i];
+        i = i + 1;
+    }
+    c.head = c.head + len1;
+
+    var j: uint = 0;
+    while j < len2 {
+        c.buffer[c.head + j] = op2[j];
+        j = j + 1;
+    }
+    c.head = c.head + len2;
+
+    c.pairs_fused = c.pairs_fused + 1;
+    return len1 + len2;
+}

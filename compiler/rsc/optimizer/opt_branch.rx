@@ -1,0 +1,111 @@
+fn opt_emit_cond_branch_true(cg: *mut CodeGen, cond: *mut AstNode) -> u32 {
+    if cond != (0 as *mut AstNode) && cond.kind == 106 {
+        let op: u32 = cond.val as u32;
+        if op >= 41 && op <= 46 {
+            let is_sgn: u32 = cg_is_signed_expr(cg, cond);
+            cg_eval_binary_operands_fast(cg, cond.child1, cond.child2);
+            cg_emit8(cg, 72); cg_emit8(cg, 57); cg_emit8(cg, 216);
+            cg_emit8(cg, 15);
+            if op == 41 { cg_emit8(cg, 132); }
+            else if op == 42 { cg_emit8(cg, 133); }
+            else if op == 43 { if is_sgn == 1 { cg_emit8(cg, 140); } else { cg_emit8(cg, 130); } }
+            else if op == 44 { if is_sgn == 1 { cg_emit8(cg, 143); } else { cg_emit8(cg, 135); } }
+            else if op == 45 { if is_sgn == 1 { cg_emit8(cg, 142); } else { cg_emit8(cg, 134); } }
+            else { if is_sgn == 1 { cg_emit8(cg, 141); } else { cg_emit8(cg, 131); } }
+            let hole: u32 = cg.text_size;
+            cg_emit32(cg, 0);
+            return hole;
+        }
+    }
+    compile_expr(cg, cond);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let def_hole: u32 = cg.text_size;
+    cg_emit32(cg, 0);
+    return def_hole;
+}
+
+fn opt_emit_cond_branch_false(cg: *mut CodeGen, cond: *mut AstNode) -> u32 {
+    if cond != (0 as *mut AstNode) {
+        if cond.kind == 112 && cond.val == 53 {
+            return opt_emit_cond_branch_true(cg, cond.child1);
+        }
+        if cond.kind == 106 {
+            let op: u32 = cond.val as u32;
+            if (op == 41 || op == 42) && cg.has_lambdas == 0 && cond.child2 != (0 as *mut AstNode) {
+                if cond.child2.kind == 116 && cond.child2.val == 0 && cond.child1 != (0 as *mut AstNode) {
+                    let cl: *mut AstNode = cond.child1;
+                    if cl.kind == 106 && cl.val == 50 && cl.child1 != (0 as *mut AstNode) && cl.child2 != (0 as *mut AstNode) {
+                        if cl.child1.kind == 117 && cl.child2.kind == 116 && cl.child2.val <= 2147483647 {
+                            let tlv: *mut LocalVar = cg_find_local(cg, cl.child1.hash);
+                            if tlv != (0 as *mut LocalVar) && tlv.is_struct_val != 1 {
+                                cg_emit8(cg, 247); cg_emit8(cg, 133);
+                                cg_emit32(cg, 0 - (tlv.rbp_offset as u32));
+                                cg_emit32(cg, cl.child2.val as u32);
+                                cg_emit8(cg, 15);
+                                if op == 41 { cg_emit8(cg, 133); } else { cg_emit8(cg, 132); }
+                                let thole: u32 = cg.text_size;
+                                cg_emit32(cg, 0);
+                                return thole;
+                            }
+                        }
+                    }
+                }
+            }
+            if op >= 41 && op <= 46 {
+                let is_sgn: u32 = cg_is_signed_expr(cg, cond);
+                if cg.has_lambdas == 0 && cond.child1 != (0 as *mut AstNode) && cond.child2 != (0 as *mut AstNode) {
+                    if cond.child1.kind == 117 && cond.child2.kind == 116 && cond.child2.val <= 2147483647 {
+                        let clv: *mut LocalVar = cg_find_local(cg, cond.child1.hash);
+                        if clv != (0 as *mut LocalVar) && clv.is_struct_val != 1 {
+                            cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 189);
+                            cg_emit32(cg, 0 - (clv.rbp_offset as u32));
+                            cg_emit32(cg, cond.child2.val as u32);
+                            cg_emit8(cg, 15);
+                            if op == 41 { cg_emit8(cg, 133); }
+                            else if op == 42 { cg_emit8(cg, 132); }
+                            else if op == 43 { if is_sgn == 1 { cg_emit8(cg, 141); } else { cg_emit8(cg, 131); } }
+                            else if op == 44 { if is_sgn == 1 { cg_emit8(cg, 142); } else { cg_emit8(cg, 134); } }
+                            else if op == 45 { if is_sgn == 1 { cg_emit8(cg, 143); } else { cg_emit8(cg, 135); } }
+                            else { if is_sgn == 1 { cg_emit8(cg, 140); } else { cg_emit8(cg, 130); } }
+                            let mhole: u32 = cg.text_size;
+                            cg_emit32(cg, 0);
+                            return mhole;
+                        }
+                    }
+                }
+                cg_eval_binary_operands_fast(cg, cond.child1, cond.child2);
+                cg_emit8(cg, 72); cg_emit8(cg, 57); cg_emit8(cg, 216);
+                cg_emit8(cg, 15);
+                if op == 41 { cg_emit8(cg, 133); }
+                else if op == 42 { cg_emit8(cg, 132); }
+                else if op == 43 {
+                    if is_sgn == 1 { cg_emit8(cg, 141); } else { cg_emit8(cg, 131); }
+                } else if op == 44 {
+                    if is_sgn == 1 { cg_emit8(cg, 142); } else { cg_emit8(cg, 134); }
+                } else if op == 45 {
+                    if is_sgn == 1 { cg_emit8(cg, 143); } else { cg_emit8(cg, 135); }
+                } else {
+                    if is_sgn == 1 { cg_emit8(cg, 140); } else { cg_emit8(cg, 130); }
+                }
+                let hole: u32 = cg.text_size;
+                cg_emit32(cg, 0);
+                return hole;
+            }
+            if op == 57 {
+                let a_true_hole: u32 = opt_emit_cond_branch_true(cg, cond.child1);
+                let b_false_hole: u32 = opt_emit_cond_branch_false(cg, cond.child2);
+                let body_start: u32 = cg.text_size;
+                cg_patch32(cg, a_true_hole, body_start - (a_true_hole + 4));
+                return b_false_hole;
+            }
+        }
+    }
+    compile_expr(cg, cond);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);
+    cg_emit8(cg, 15); cg_emit8(cg, 132);
+    let def_hole2: u32 = cg.text_size;
+    cg_emit32(cg, 0);
+    return def_hole2;
+}
+

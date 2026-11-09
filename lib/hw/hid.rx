@@ -1,0 +1,91 @@
+include "lib/core/types.rx";
+
+const HID_MOD_LCTRL: u8  = 1;
+const HID_MOD_LSHIFT: u8 = 2;
+const HID_MOD_LALT: u8   = 4;
+const HID_MOD_LGUI: u8   = 8;
+
+struct HidKeyEvent {
+    scancode: u8,
+    ascii: byte,
+    pressed: bool,
+    modifiers: u8,
+}
+
+struct HidMouseEvent {
+    dx: int,
+    dy: int,
+    wheel: int,
+    buttons: u8,
+}
+
+struct Ps2KeyboardState {
+    modifiers: u8,
+    extended_prefix: bool,
+}
+
+fn ps2_kbd_init(st: *mut Ps2KeyboardState) {
+    st.modifiers = 0;
+    st.extended_prefix = false;
+}
+
+fn ps2_set1_to_ascii(code: u8, shift: bool) -> byte {
+    if code == 0x1E { if shift { return 65; } return 97; }
+    if code == 0x30 { if shift { return 66; } return 98; }
+    if code == 0x2E { if shift { return 67; } return 99; }
+    if code == 0x20 { if shift { return 68; } return 100; }
+    if code == 0x12 { if shift { return 69; } return 101; }
+    if code == 0x1C { return 10; }
+    if code == 0x39 { return 32; }
+    if code >= 0x02 && code <= 0x0A {
+        return (49 + (code - 0x02)) as byte;
+    }
+    if code == 0x0B { return 48; }
+    return 0;
+}
+
+fn ps2_decode_scancode(st: *mut Ps2KeyboardState, raw: u8, out: *mut HidKeyEvent) -> bool {
+    if raw == 0xE0 {
+        st.extended_prefix = true;
+        return false;
+    }
+    let released: bool = (raw & 128) != 0;
+    let code: u8 = raw & 127;
+    st.extended_prefix = false;
+
+    if code == 0x2A || code == 0x36 {
+        if released {
+            st.modifiers = st.modifiers & (255 ^ HID_MOD_LSHIFT);
+        } else {
+            st.modifiers = st.modifiers | HID_MOD_LSHIFT;
+        }
+    }
+
+    out.scancode = code;
+    out.pressed = !released;
+    out.modifiers = st.modifiers;
+    out.ascii = ps2_set1_to_ascii(code, (st.modifiers & HID_MOD_LSHIFT) != 0);
+    return true;
+}
+
+fn usb_hid_decode_mouse_boot(pkt: *const byte, len: uint, out: *mut HidMouseEvent) -> bool {
+    if len < 3 {
+        return false;
+    }
+    out.buttons = pkt[0] & 7;
+    var dx: int = pkt[1] as int;
+    if dx >= 128 { dx = dx - 256; }
+    var dy: int = pkt[2] as int;
+    if dy >= 128 { dy = dy - 256; }
+    out.dx = dx;
+    out.dy = dy;
+    if len >= 4 {
+        var wh: int = pkt[3] as int;
+        if wh >= 128 { wh = wh - 256; }
+        out.wheel = wh;
+    } else {
+        out.wheel = 0;
+    }
+    return true;
+}
+

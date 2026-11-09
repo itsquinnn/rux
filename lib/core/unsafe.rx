@@ -1,0 +1,59 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+fn volatile_read_u8(ptr: *const u8) -> u8 {
+    return ptr[0];
+}
+
+fn volatile_write_u8(ptr: *mut u8, val: u8) {
+    ptr[0] = val;
+}
+
+fn volatile_read_u32(ptr: *const u32) -> u32 {
+    return ptr[0];
+}
+
+fn volatile_write_u32(ptr: *mut u32, val: u32) {
+    ptr[0] = val;
+}
+
+fn volatile_read_u64(ptr: *const u64) -> u64 {
+    return ptr[0];
+}
+
+fn volatile_write_u64(ptr: *mut u64, val: u64) {
+    ptr[0] = val;
+}
+
+fn bitfield_extract(storage: u64, offset: u32, width: u32) -> u64 {
+    if width >= 64 { return storage; }
+    let mask: u64 = ((1 as u64) << (width as int)) - 1;
+    return (storage >> (offset as int)) & mask;
+}
+
+fn bitfield_insert(storage: u64, offset: u32, width: u32, val: u64) -> u64 {
+    if width >= 64 { return val; }
+    let mask: u64 = ((1 as u64) << (width as int)) - 1;
+    let clean_val: u64 = val & mask;
+    let cleared_storage: u64 = storage & (~(mask << (offset as int)));
+    return cleared_storage | (clean_val << (offset as int));
+}
+
+fn contract_requires(cond: bool, msg: str) {
+    if !cond {
+        panic("Precondition contract violation");
+    }
+}
+
+fn contract_ensures(cond: bool, msg: str) {
+    if !cond {
+        panic("Postcondition contract violation");
+    }
+}
+
+fn contract_invariant(cond: bool, msg: str) {
+    if !cond {
+        panic("Invariant contract violation");
+    }
+}
+

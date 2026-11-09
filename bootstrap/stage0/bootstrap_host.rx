@@ -1,0 +1,102 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "bootstrap/binary/writer.rx";
+
+fn main(argc: int, argv: **byte) -> int {
+    var out_path: *byte = "build_stages/stage0_bin" as *byte;
+    if argc >= 3 {
+        out_path = argv[2 as int] as *byte;
+    }
+
+    println("[stage0-host] Bootstrapping seed from Rux native host...");
+
+    var code: [byte; 128];
+    code[0] = 0x55 as byte;
+    code[1] = 0x48 as byte;
+    code[2] = 0x89 as byte;
+    code[3] = 0xe5 as byte;
+
+    code[4] = 0x48 as byte;
+    code[5] = 0xc7 as byte;
+    code[6] = 0xc0 as byte;
+    code[7] = 0x01 as byte;
+    code[8] = 0x00 as byte;
+    code[9] = 0x00 as byte;
+    code[10] = 0x00 as byte;
+
+    code[11] = 0x48 as byte;
+    code[12] = 0xc7 as byte;
+    code[13] = 0xc7 as byte;
+    code[14] = 0x01 as byte;
+    code[15] = 0x00 as byte;
+    code[16] = 0x00 as byte;
+    code[17] = 0x00 as byte;
+
+    code[18] = 0x48 as byte;
+    code[19] = 0x8d as byte;
+    code[20] = 0x35 as byte;
+    code[21] = 0x0b as byte;
+    code[22] = 0x00 as byte;
+    code[23] = 0x00 as byte;
+    code[24] = 0x00 as byte;
+
+    code[25] = 0x48 as byte;
+    code[26] = 0xc7 as byte;
+    code[27] = 0xc2 as byte;
+    code[28] = 39 as byte;
+    code[29] = 0x00 as byte;
+    code[30] = 0x00 as byte;
+    code[31] = 0x00 as byte;
+
+    code[32] = 0x0f as byte;
+    code[33] = 0x05 as byte;
+
+    code[34] = 0xeb as byte;
+    code[35] = 39 as byte;
+
+    let msg: *const byte = "RUX STAGE-0 SEED BOOTSTRAP INITIALIZED\n" as *const byte;
+    var m: uint = 0;
+    while m < 39 {
+        code[36 + m] = msg[m];
+        m = m + 1;
+    }
+
+    let end_idx: uint = 36 + 39;
+    code[end_idx + 0] = 0x48 as byte;
+    code[end_idx + 1] = 0xc7 as byte;
+    code[end_idx + 2] = 0xc0 as byte;
+    code[end_idx + 3] = 0x3c as byte;
+    code[end_idx + 4] = 0x00 as byte;
+    code[end_idx + 5] = 0x00 as byte;
+    code[end_idx + 6] = 0x00 as byte;
+    code[end_idx + 7] = 0x48 as byte;
+    code[end_idx + 8] = 0x31 as byte;
+    code[end_idx + 9] = 0xff as byte;
+    code[end_idx + 10] = 0x0f as byte;
+    code[end_idx + 11] = 0x05 as byte;
+
+    let total_code_len: uint = end_idx + 12;
+
+    var vessel: ExecutableVessel;
+    vessel.code_ptr = &code[0];
+    vessel.code_len = total_code_len;
+    vessel.entry_offset = 0;
+
+    @os.mkdir("build_stages" as *byte, 493);
+
+    let res: int = write_vessel_elf(&vessel, out_path);
+    if res <= 0 {
+        println("[stage0-host] Error: Failed to write executable");
+        return 1;
+    }
+
+    print("[stage0-host] Wrote freestanding ELF64 executable: ");
+    let s_out: str = out_path as str;
+    print(s_out);
+    print(" (");
+    print(res as uint);
+    println(" bytes)");
+
+    return 0;
+}
+

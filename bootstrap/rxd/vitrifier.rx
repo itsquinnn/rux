@@ -1,0 +1,151 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "bootstrap/rxd/reader.rx";
+
+fn bootstrap_rxd_eval_unit(num: u64, s_ptr: *const u8, s_len: u64) -> u64 {
+    if s_len == 2 {
+        let c0: u8 = s_ptr[0];
+        let c1: u8 = s_ptr[1];
+        if (c0 == 75 || c0 == 107) && (c1 == 66 || c1 == 98) { return num * 1024; }
+        if (c0 == 77 || c0 == 109) && (c1 == 66 || c1 == 98) { return num * 1048576; }
+        if (c0 == 71 || c0 == 103) && (c1 == 66 || c1 == 98) { return num * 1073741824; }
+        if (c0 == 109 || c0 == 77) && (c1 == 115 || c1 == 83) { return num * 1000000; }
+        if (c0 == 117 || c0 == 85) && (c1 == 115 || c1 == 83) { return num * 1000; }
+        if (c0 == 110 || c0 == 78) && (c1 == 115 || c1 == 83) { return num; }
+    }
+    if s_len == 1 {
+        let c: u8 = s_ptr[0];
+        if c == 115 || c == 83 { return num * 1000000000; }
+        if c == 109 || c == 77 { return num * 60000000000; }
+    }
+    return num;
+}
+
+fn bootstrap_rxd_vitrify(text: *const byte, text_len: u64, out_buf: *mut u8, max_out: u64) -> u64 {
+    if max_out < 4096 { return 0; }
+
+    var i: uint = 0;
+    while i < 4096 { out_buf[i] = 0; i = i + 1; }
+
+    let hdr: *mut BootstrapRxdHeader = out_buf as *mut BootstrapRxdHeader;
+    hdr.magic = 4479058;
+    hdr.format_version = 1;
+    hdr.flags = 3;
+    hdr.root_kind = 7;
+    hdr.arena_offset = 2048;
+
+    let arena: *mut u8 = out_buf + 2048;
+    var arena_cur: u64 = 0;
+    var slot_cnt: u64 = 0;
+
+    var pos: u64 = 0;
+    let src: *const u8 = text as *const u8;
+
+    while pos < text_len && slot_cnt < 120 {
+        while pos < text_len {
+            let c: u8 = src[pos];
+            if c == 32 || c == 9 || c == 10 || c == 13 || c == 58 || c == 44 {
+                pos = pos + 1;
+            } else if c == 47 && (pos + 1) < text_len && src[pos + 1] == 47 {
+                pos = pos + 2;
+                while pos < text_len && src[pos] != 10 { pos = pos + 1; }
+            } else {
+                break;
+            }
+        }
+        if pos >= text_len { break; }
+
+        let k_start: u64 = pos;
+        while pos < text_len {
+            let c: u8 = src[pos];
+            if (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95 || c == 45 {
+                pos = pos + 1;
+            } else {
+                break;
+            }
+        }
+        let k_len: u64 = pos - k_start;
+        if k_len == 0 { pos = pos + 1; continue; }
+
+        while pos < text_len && (src[pos] == 32 || src[pos] == 9 || src[pos] == 58) {
+            pos = pos + 1;
+        }
+        if pos >= text_len { break; }
+
+        let k_off: u64 = arena_cur;
+        var ki: u64 = 0;
+        while ki < k_len {
+            arena[arena_cur + ki] = src[k_start + ki];
+            ki = ki + 1;
+        }
+        arena[arena_cur + k_len] = 0;
+        arena_cur = arena_cur + k_len + 1;
+
+        let slot: *mut BootstrapRxdSlot = (out_buf + 64 + (slot_cnt * 16)) as *mut BootstrapRxdSlot;
+        slot.name_offset = k_off as u16;
+        slot.name_len = k_len as u16;
+
+        let vc: u8 = src[pos];
+        if vc == 34 {
+            pos = pos + 1;
+            let str_start: u64 = pos;
+            while pos < text_len && src[pos] != 34 { pos = pos + 1; }
+            let str_len: u64 = pos - str_start;
+            if pos < text_len { pos = pos + 1; }
+
+            let s_off: u64 = arena_cur;
+            var si: u64 = 0;
+            while si < str_len {
+                arena[arena_cur + si] = src[str_start + si];
+                si = si + 1;
+            }
+            arena[arena_cur + str_len] = 0;
+            arena_cur = arena_cur + str_len + 1;
+
+            slot.kind = 5;
+            slot.arena_offset = s_off as u16;
+            slot.val_or_len = str_len;
+            slot_cnt = slot_cnt + 1;
+        } else if vc == 116 && (pos + 3) < text_len && src[pos + 1] == 114 && src[pos + 2] == 117 && src[pos + 3] == 101 {
+            slot.kind = 4;
+            slot.val_or_len = 1;
+            pos = pos + 4;
+            slot_cnt = slot_cnt + 1;
+        } else if vc == 102 && (pos + 4) < text_len && src[pos + 1] == 97 && src[pos + 2] == 108 && src[pos + 3] == 115 && src[pos + 4] == 101 {
+            slot.kind = 4;
+            slot.val_or_len = 0;
+            pos = pos + 5;
+            slot_cnt = slot_cnt + 1;
+        } else if vc >= 48 && vc <= 57 {
+            var num: u64 = 0;
+            while pos < text_len && src[pos] >= 48 && src[pos] <= 57 {
+                num = (num * 10) + ((src[pos] - 48) as u64);
+                pos = pos + 1;
+            }
+            let u_start: u64 = pos;
+            while pos < text_len {
+                let uc: u8 = src[pos];
+                if (uc >= 97 && uc <= 122) || (uc >= 65 && uc <= 90) {
+                    pos = pos + 1;
+                } else {
+                    break;
+                }
+            }
+            let u_len: u64 = pos - u_start;
+            let final_val: u64 = bootstrap_rxd_eval_unit(num, src + u_start, u_len);
+
+            slot.kind = 2;
+            slot.val_or_len = final_val;
+            slot_cnt = slot_cnt + 1;
+        } else {
+            pos = pos + 1;
+        }
+    }
+
+    hdr.slot_count = slot_cnt as u16;
+    let total_used: u64 = 2048 + arena_cur;
+    let aligned_size: u64 = ((total_used + 63) / 64) * 64;
+    hdr.total_byte_size = aligned_size;
+    return aligned_size;
+}
+

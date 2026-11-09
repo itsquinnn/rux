@@ -1,0 +1,86 @@
+enum TargetArch {
+    X86_64 = 1,
+    AARCH64 = 2,
+    RISCV64 = 3,
+    WASM64 = 4,
+}
+
+const TARGET_ENV_LINUX_FREESTANDING: uint = 1;
+const TARGET_ENV_LINUX_EIA: uint          = 2;
+const TARGET_ENV_WINDOWS_PE: uint         = 3;
+const TARGET_ENV_MACOS_MACHO: uint        = 4;
+const TARGET_ENV_BARE_METAL_UPBP: uint    = 5;
+
+type TargetEnv = uint;
+
+enum OptLevel {
+    DEBUG_O0 = 0,
+    FAST_O1 = 1,
+    SILICON_O2 = 2,
+}
+
+struct CompilerOptions {
+    input_path: str,
+    output_path: str,
+    target_arch: TargetArch,
+    target_env: TargetEnv,
+    opt_level: OptLevel,
+    is_verbose: bool,
+    is_freestanding: bool,
+    verify_proofs: bool,
+    max_memory_mb: uint,
+    is_run_mode: bool,
+}
+
+fn str_ends_with(path: *const byte, suffix: *const byte) -> bool {
+    var plen: uint = 0;
+    while path[plen] != 0 { plen = plen + 1; }
+    var slen: uint = 0;
+    while suffix[slen] != 0 { slen = slen + 1; }
+    if plen < slen { return false; }
+    let offset: uint = plen - slen;
+    var i: uint = 0;
+    while i < slen {
+        if path[offset + i] != suffix[i] { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn detect_host_os() -> TargetEnv {
+    var buf: [u8; 512];
+    if @os.uname(&buf[0]) == 0 {
+        return TARGET_ENV_LINUX_EIA;
+    }
+    return TARGET_ENV_LINUX_EIA;
+}
+
+fn infer_target_environment(output_path: str) -> TargetEnv {
+    let p: *const byte = output_path as *const byte;
+    if str_ends_with(p, ".exe" as *const byte) {
+        return TARGET_ENV_WINDOWS_PE;
+    }
+    if str_ends_with(p, ".macho" as *const byte) {
+        return TARGET_ENV_MACOS_MACHO;
+    }
+    if str_ends_with(p, ".elf" as *const byte) {
+        return TARGET_ENV_LINUX_EIA;
+    }
+    return TARGET_ENV_LINUX_EIA;
+}
+
+fn options_default() -> CompilerOptions {
+    var opts: CompilerOptions = CompilerOptions {
+        input_path: "",
+        output_path: "a.out",
+        target_arch: TargetArch.X86_64,
+        target_env: TARGET_ENV_LINUX_EIA,
+        opt_level: OptLevel.FAST_O1,
+        is_verbose: false,
+        is_freestanding: false,
+        verify_proofs: true,
+        max_memory_mb: 16,
+        is_run_mode: false,
+    };
+    return opts;
+}

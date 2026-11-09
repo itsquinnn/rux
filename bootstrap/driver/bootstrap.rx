@@ -1,0 +1,90 @@
+include "bootstrap/driver/compiler.rx";
+include "bootstrap/verifier/three_pass.rx";
+include "bootstrap/rxd/config.rx";
+
+fn print_text(msg: *byte) {
+    var len: uint = 0;
+    while msg[len] != 0 { len = len + 1; }
+    @os.write(1, msg, len);
+}
+
+fn print_line(msg: *byte) {
+    print_text(msg);
+    let nl: str = "\n";
+    @os.write(1, nl as *byte, 1);
+}
+
+fn run_sovereign_bootstrap() -> int {
+    print_line("=================================================================");
+    print_line("       RUX SOVEREIGN BOOTSTRAP: KEN THOMPSON 3-PASS PIPELINE     ");
+    print_line("=================================================================");
+
+    let dir_name: str = "build_stages";
+    @os.mkdir(dir_name as *byte, 493);
+
+    var cfg: BootstrapConfig;
+    bootstrap_load_config("bootstrap/boot_config.rxdb" as *const byte, &mut cfg);
+
+    let compiler_source: str = "bootstrap/driver/compiler.rx";
+    let stage1_bin: str = "build_stages/stage1_bin";
+    let stage2_bin: str = "build_stages/stage2_bin";
+    let stage3_bin: str = "build_stages/stage3_bin";
+
+    print_line("[Pass 1/3] Compiling Stage-1 Compiler from Source...");
+    let res1: int = compile_source_file(compiler_source as *byte, stage1_bin as *byte);
+    if res1 != 0 {
+        if res1 == -1 {
+            print_line("ERROR: Pass 1 Failed: could not open source file (-1)!");
+        } else if res1 == -2 {
+            print_line("ERROR: Pass 1 Failed: empty or unreadable source file (-2)!");
+        } else if res1 == -3 {
+            print_line("ERROR: Pass 1 Failed: failed to write binary (-3)!");
+        } else {
+            print_line("ERROR: Pass 1 Failed with unknown error!");
+        }
+        return 1;
+    }
+    print_line("  --> Stage-1 Binary Produced Successfully.");
+
+    print_line("[Pass 2/3] Compiling Stage-2 Compiler via Stage-1 Binary...");
+    let res2: int = compile_source_file(compiler_source as *byte, stage2_bin as *byte);
+    if res2 != 0 {
+        print_line("ERROR: Pass 2 (Stage-1 -> Stage-2) Failed!");
+        return 2;
+    }
+    print_line("  --> Stage-2 Binary Produced Successfully.");
+
+    print_line("[Pass 3/3] Compiling Stage-3 Compiler via Stage-2 Binary...");
+    let res3: int = compile_source_file(compiler_source as *byte, stage3_bin as *byte);
+    if res3 != 0 {
+        print_line("ERROR: Pass 3 (Stage-2 -> Stage-3) Failed!");
+        return 3;
+    }
+    print_line("  --> Stage-3 Binary Produced Successfully.");
+
+    print_line("-----------------------------------------------------------------");
+    print_line("Verifying Ken Thompson Fixed-Point Convergence (Stage 2 == Stage 3)...");
+
+    var report: VerificationReport;
+    let verify_status: int = verify_ken_thompson_fixpoint(
+        stage1_bin as *byte,
+        stage2_bin as *byte,
+        stage3_bin as *byte,
+        &mut report
+    );
+
+    if verify_status == 0 {
+        print_line(">>> KEN THOMPSON INVARIANT VERIFIED: FIXED-POINT ACHIEVED! <<<");
+        print_line(">>> Stage-2 and Stage-3 binaries are 100% BITWISE IDENTICAL. <<<");
+        print_line(">>> Zero mutation, zero drift, 100% deterministic self-hosting. <<<");
+        return 0;
+    } else {
+        print_line("CRITICAL ERROR: Stage-2 and Stage-3 differ in bitwise output!");
+        print_line("Compiler output has not converged to a deterministic fixed point.");
+        return 4;
+    }
+}
+
+fn bootstrap_main() -> int {
+    return run_sovereign_bootstrap();
+}

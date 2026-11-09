@@ -1,0 +1,26 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+
+fn doc_render_module_header(mod_name: str, description: str) {
+    print("# Module: `");
+    print(mod_name);
+    println("`");
+    println("");
+    println(description);
+    println("");
+    println("## API Reference");
+    println("");
+}
+
+fn doc_render_symbol(name: str, signature: str, doc: str) {
+    print("### `");
+    print(name);
+    println("`");
+    println("");
+    println("```rux");
+    println(signature);
+    println("```");
+    println("");
+    println(doc);
+    println("");
+}

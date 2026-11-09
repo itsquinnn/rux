@@ -1,0 +1,10 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+
+fn lsp_get_hover_markdown(word: str) {
+    print("{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
+    print("### Rux Sovereign Symbol\\n");
+    print("Word: `");
+    print(word);
+    println("`\\n\\nDirect hardware-mapped zero-libc primitive.\"}}");
+}

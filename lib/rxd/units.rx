@@ -1,0 +1,95 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "lib/crypto/blake3.rx";
+
+struct RxdParseContext {
+    src: *const u8,
+    len: u64,
+    pos: u64,
+}
+
+fn rxd_skip_whitespace_and_comments(ctx: *mut RxdParseContext) {
+    while ctx.pos < ctx.len {
+        let c: u8 = ctx.src[ctx.pos];
+
+        if c == 32 || c == 9 || c == 10 || c == 13 || c == 44 || c == 58 || c == 59 {
+            ctx.pos = ctx.pos + 1;
+        } else if c == 47 && (ctx.pos + 1) < ctx.len && ctx.src[ctx.pos + 1] == 47 {
+            ctx.pos = ctx.pos + 2;
+            while ctx.pos < ctx.len && ctx.src[ctx.pos] != 10 {
+                ctx.pos = ctx.pos + 1;
+            }
+        } else if c == 47 && (ctx.pos + 1) < ctx.len && ctx.src[ctx.pos + 1] == 42 {
+            ctx.pos = ctx.pos + 2;
+            while ctx.pos + 1 < ctx.len {
+                if ctx.src[ctx.pos] == 42 && ctx.src[ctx.pos + 1] == 47 {
+                    ctx.pos = ctx.pos + 2;
+                    break;
+                }
+                ctx.pos = ctx.pos + 1;
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+fn rxd_is_ident_char(c: u8) -> bool {
+    if (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || (c >= 48 && c <= 57) || c == 95 || c == 45 || c == 46 {
+        return true;
+    }
+    return false;
+}
+
+fn rxd_eval_unit(num: u64, suffix_ptr: *const u8, suffix_len: u64) -> u64 {
+    if suffix_len == 0 {
+        return num;
+    }
+
+    if suffix_len == 1 && (suffix_ptr[0] == 66 || suffix_ptr[0] == 98) {
+        return num;
+    }
+    if suffix_len == 2 {
+        let c0: u8 = suffix_ptr[0];
+        let c1: u8 = suffix_ptr[1];
+
+        if (c0 == 75 || c0 == 107) && (c1 == 66 || c1 == 98) {
+            return num * 1024;
+        }
+        if (c0 == 77 || c0 == 109) && (c1 == 66 || c1 == 98) {
+            return num * 1048576;
+        }
+        if (c0 == 71 || c0 == 103) && (c1 == 66 || c1 == 98) {
+            return num * 1073741824;
+        }
+        if (c0 == 84 || c0 == 116) && (c1 == 66 || c1 == 98) {
+            return num * 1099511627776;
+        }
+
+        if (c0 == 110 || c0 == 78) && (c1 == 115 || c1 == 83) {
+            return num;
+        }
+        if (c0 == 117 || c0 == 85) && (c1 == 115 || c1 == 83) {
+            return num * 1000;
+        }
+        if (c0 == 109 || c0 == 77) && (c1 == 115 || c1 == 83) {
+            return num * 1000000;
+        }
+    }
+
+    if suffix_len == 1 {
+        let c: u8 = suffix_ptr[0];
+        if c == 115 || c == 83 {
+            return num * 1000000000;
+        }
+        if c == 109 || c == 77 {
+            return num * 60000000000;
+        }
+        if c == 104 || c == 72 {
+            return num * 3600000000000;
+        }
+    }
+
+    return num;
+}
+

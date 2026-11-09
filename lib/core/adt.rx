@@ -1,0 +1,54 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+struct TaggedUnion {
+    tag: uint,
+    payload0: uint,
+    payload1: uint,
+}
+
+fn adt_unit(tag: uint) -> TaggedUnion {
+    return TaggedUnion {
+        tag: tag,
+        payload0: 0,
+        payload1: 0,
+    };
+}
+
+fn adt_payload1(tag: uint, val0: uint) -> TaggedUnion {
+    return TaggedUnion {
+        tag: tag,
+        payload0: val0,
+        payload1: 0,
+    };
+}
+
+fn adt_payload2(tag: uint, val0: uint, val1: uint) -> TaggedUnion {
+    return TaggedUnion {
+        tag: tag,
+        payload0: val0,
+        payload1: val1,
+    };
+}
+
+fn adt_tag(u: TaggedUnion) -> uint {
+    return u.tag;
+}
+
+fn adt_is(u: TaggedUnion, expected_tag: uint) -> bool {
+    return u.tag == expected_tag;
+}
+
+fn adt_get_payload0(u: TaggedUnion, expected_tag: uint) -> uint {
+    if u.tag != expected_tag {
+        panic("ADT variant tag mismatch on payload0 access");
+    }
+    return u.payload0;
+}
+
+fn adt_get_payload1(u: TaggedUnion, expected_tag: uint) -> uint {
+    if u.tag != expected_tag {
+        panic("ADT variant tag mismatch on payload1 access");
+    }
+    return u.payload1;
+}

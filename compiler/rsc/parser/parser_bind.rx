@@ -1,0 +1,384 @@
+fn stmt_chain_tail(s: *mut AstNode) -> *mut AstNode {
+    var cur: *mut AstNode = s;
+    while cur != (0 as *mut AstNode) && cur.next != (0 as *mut AstNode) {
+        cur = cur.next;
+    }
+    return cur;
+}
+
+fn infer_init_let_node(sn: *mut AstNode, init_expr: *mut AstNode) {
+    sn.val = 20;
+    sn.id = 0;
+    sn.is_mut = 1;
+    if init_expr != (0 as *mut AstNode) {
+        if init_expr.kind == 116 && init_expr.is_mut == 0 && init_expr.val > 2147483647 {
+            diag_write_cstr("[COMPILE ERROR] integer literal exceeds i32 range; provide explicit type suffix or annotation\n");
+            sys_exit(1);
+        }
+        if init_expr.kind == 122 { sn.val = init_expr.hash; sn.id = 3; sn.is_mut = 0; }
+        else if init_expr.kind == 118 { sn.val = 23; sn.id = 2; sn.is_mut = 0; }
+        else if init_expr.kind == 131 {
+            if init_expr.is_mut > 0 {
+                sn.val = init_expr.hash;
+                if init_expr.is_mut == 11 { sn.id = 11; }
+                else if init_expr.val == 1 { sn.id = 1; }
+                else { sn.id = 2; }
+                sn.is_mut = 0;
+            } else {
+                sn.val = init_expr.val;
+                sn.id = 0;
+                sn.is_mut = is_signed_type_hash(init_expr.val as u32, init_expr.hash) as u64;
+            }
+        }
+    }
+}
+
+fn parse_let_var_stmt(p: *mut Parser) -> *mut AstNode {
+    var decl_mut: u64 = 0;
+    if p.cur_tok.kind == 12 {
+        lex_next_token(p.lex, &mut p.cur_tok);
+        if p.cur_tok.kind == 13 { diag_syntax_unexpected_tok(p, "'let mut' is not supported; use 'var'"); }
+    } else if p.cur_tok.kind == 123 {
+        decl_mut = 1; lex_next_token(p.lex, &mut p.cur_tok);
+    } else if p.cur_tok.kind == 124 {
+        decl_mut = 2; lex_next_token(p.lex, &mut p.cur_tok);
+    }
+
+    if p.cur_tok.kind == 60 || p.cur_tok.kind == 64 || p.cur_tok.kind == 62 {
+        var close_k: u64 = 61;
+        if p.cur_tok.kind == 64 { close_k = 65; }
+        else if p.cur_tok.kind == 62 { close_k = 63; }
+        parser_expect(p, p.cur_tok.kind as u32);
+        var id_hashes: [u64; 16];
+        var id_cnt: u32 = 0;
+        while p.cur_tok.kind != (close_k as u32) && p.cur_tok.kind != 0 {
+            if id_cnt < 16 { id_hashes[id_cnt as u64] = p.cur_tok.hash; id_cnt = id_cnt + 1; }
+            parser_expect_ident(p);
+            if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+        }
+        parser_expect(p, close_k as u32);
+        parser_expect(p, 40);
+        let rhs: *mut AstNode = parse_expr(p);
+        consume_optional_semi(p);
+        var head_let: *mut AstNode = 0 as *mut AstNode;
+        var last_let: *mut AstNode = 0 as *mut AstNode;
+        var elem: *mut AstNode = 0 as *mut AstNode;
+        var base_expr: *mut AstNode = rhs;
+        if rhs != (0 as *mut AstNode) && rhs.kind != 117 && rhs.kind != 121 {
+            let tmp_let: *mut AstNode = alloc_node(p, 105);
+            let tmp_hash: u64 = 99990000 + p.node_count;
+            tmp_let.hash = tmp_hash;
+            tmp_let.child1 = rhs;
+            tmp_let.child2 = 0 as *mut AstNode;
+            infer_init_let_node(tmp_let, rhs);
+            head_let = tmp_let;
+            last_let = tmp_let;
+            let tmp_ref: *mut AstNode = alloc_node(p, 117);
+            tmp_ref.hash = tmp_hash;
+            base_expr = tmp_ref;
+        } else if rhs != (0 as *mut AstNode) && rhs.kind == 121 {
+            elem = rhs.child1;
+        }
+        var i: u32 = 0;
+        while i < id_cnt {
+            let nlet: *mut AstNode = alloc_node(p, 105);
+            nlet.hash = id_hashes[i as u64];
+            nlet.child2 = decl_mut as *mut AstNode;
+            if elem != (0 as *mut AstNode) {
+                nlet.child1 = elem;
+                infer_init_let_node(nlet, elem);
+                elem = elem.next;
+            } else if base_expr != (0 as *mut AstNode) {
+                let fld: *mut AstNode = alloc_node(p, 114);
+                fld.child1 = base_expr;
+                if close_k == 63 { fld.hash = id_hashes[i as u64]; }
+                else { fld.hash = 1000 + (i as u64); }
+                nlet.child1 = fld;
+                nlet.val = 20;
+                nlet.id = 0;
+            }
+            if head_let == (0 as *mut AstNode) { head_let = nlet; }
+            else { last_let.next = nlet; }
+            last_let = nlet;
+            i = i + 1;
+        }
+        if head_let != (0 as *mut AstNode) { return head_let; }
+        return alloc_node(p, 0);
+    }
+
+    var sn: *mut AstNode = alloc_node(p, 105);
+    sn.id = 0;
+    sn.is_mut = 0;
+    sn.child2 = decl_mut as *mut AstNode;
+    sn.hash = p.cur_tok.hash;
+    parser_expect_ident(p);
+
+    if p.cur_tok.kind == 70 {
+        parser_expect(p, 70);
+        while p.cur_tok.kind == 99 || p.cur_tok.kind == 53 || p.cur_tok.kind == 104 || p.cur_tok.kind == 101 {
+            lex_next_token(p.lex, &mut p.cur_tok);
+        }
+
+        if p.cur_tok.kind == 56 {
+            parser_expect(p, 56);
+            lex_next_token(p.lex, &mut p.cur_tok);
+            parser_expect(p, 60);
+            let vlen: u64 = p.cur_tok.int_val;
+            lex_next_token(p.lex, &mut p.cur_tok);
+            if p.cur_tok.kind == 72 { parser_expect(p, 72); }
+            let vtk: u32 = p.cur_tok.kind as u32;
+            let vth: u64 = p.cur_tok.hash;
+            lex_next_token(p.lex, &mut p.cur_tok);
+            parser_expect(p, 61);
+            let vesz: u64 = type_prim_size_from_tok(vtk, vth);
+            sn.val = vlen * vesz;
+            if vesz == 8 { sn.id = 11; }
+            else if vesz == 1 { sn.id = 10; }
+            else { sn.id = 12; sn.is_mut = vesz; }
+        } else if p.cur_tok.kind == 64 {
+            parser_expect(p, 64);
+            if p.cur_tok.kind == 65 {
+                parser_expect(p, 65);
+                while p.cur_tok.kind == 13 || p.cur_tok.kind == 12 { lex_next_token(p.lex, &mut p.cur_tok); }
+                let sl_k: u32 = p.cur_tok.kind as u32;
+                let sl_h: u64 = p.cur_tok.hash;
+                lex_next_token(p.lex, &mut p.cur_tok);
+                if sl_k == 1 { sn.val = sl_h; sn.id = 1; }
+                else if sl_k == 23 { sn.val = 23; sn.id = 2; }
+                else { sn.val = sl_h; sn.id = 2; }
+            } else {
+                var elem_ptr: u32 = 0;
+                while p.cur_tok.kind == 32 || p.cur_tok.kind == 50 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 || p.cur_tok.kind == 124 {
+                    if p.cur_tok.kind == 32 || p.cur_tok.kind == 50 { elem_ptr = 1; }
+                    lex_next_token(p.lex, &mut p.cur_tok);
+                }
+                var e_kind: u32 = p.cur_tok.kind as u32;
+                var e_hash: u64 = p.cur_tok.hash;
+                if p.cur_tok.kind != 71 && p.cur_tok.kind != 0 {
+                    lex_next_token(p.lex, &mut p.cur_tok);
+                }
+                while p.cur_tok.kind != 71 && p.cur_tok.kind != 0 {
+                    lex_next_token(p.lex, &mut p.cur_tok);
+                }
+                parser_expect(p, 71);
+                var arr_len: u64 = 0;
+                if p.cur_tok.kind == 2 {
+                    arr_len = p.cur_tok.int_val;
+                    lex_next_token(p.lex, &mut p.cur_tok);
+                } else {
+                    let ace: *mut ConstEntry = parser_find_const(p, p.cur_tok.hash);
+                    if ace != (0 as *mut ConstEntry) { arr_len = ace.val; }
+                    lex_next_token(p.lex, &mut p.cur_tok);
+                }
+                parser_expect(p, 65);
+
+                var elem_sz: u64 = 8;
+                var eks: *mut ConstEntry = 0 as *mut ConstEntry;
+                if elem_ptr == 0 {
+                    if e_kind == 1 {
+                        let eal: *mut ConstEntry = parser_find_alias(p, e_hash);
+                        if eal != (0 as *mut ConstEntry) {
+                            if eal.extra >= 1000 { elem_sz = 8; e_kind = 20; }
+                            else { e_hash = eal.val; e_kind = eal.extra as u32; }
+                        }
+                    }
+                    if e_kind == 1 {
+                        eks = parser_find_known_struct(p, e_hash);
+                        if eks != (0 as *mut ConstEntry) { elem_sz = eks.val; }
+                        else { elem_sz = 8; }
+                    } else {
+                        elem_sz = type_prim_size_from_tok(e_kind, e_hash);
+                    }
+                }
+                sn.val = arr_len * elem_sz;
+                if eks != (0 as *mut ConstEntry) {
+                    sn.child3 = e_hash as *mut AstNode;
+                    sn.id = 12;
+                    sn.is_mut = elem_sz;
+                } else if elem_sz == 1 {
+                    sn.id = 10;
+                } else if elem_sz == 8 {
+                    sn.id = 11;
+                } else {
+                    sn.id = 12;
+                    sn.is_mut = elem_sz;
+                }
+            }
+        } else if p.cur_tok.kind == 11 {
+            lex_next_token(p.lex, &mut p.cur_tok);
+            if p.cur_tok.kind == 60 {
+                parser_expect(p, 60);
+                var pd: u32 = 1;
+                while pd > 0 && p.cur_tok.kind != 0 {
+                    if p.cur_tok.kind == 60 { pd = pd + 1; }
+                    else if p.cur_tok.kind == 61 { pd = pd - 1; }
+                    lex_next_token(p.lex, &mut p.cur_tok);
+                }
+            }
+            if p.cur_tok.kind == 74 {
+                parser_expect(p, 74);
+                while p.cur_tok.kind == 32 || p.cur_tok.kind == 50 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 || p.cur_tok.kind == 124 {
+                    lex_next_token(p.lex, &mut p.cur_tok);
+                }
+                lex_next_token(p.lex, &mut p.cur_tok);
+            }
+            sn.val = 20;
+            sn.id = 0;
+        } else if p.cur_tok.kind == 32 || p.cur_tok.kind == 50 {
+            var p_stars: u32 = 0;
+            while p.cur_tok.kind == 32 || p.cur_tok.kind == 50 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 || p.cur_tok.kind == 124 || p.cur_tok.kind == 104 {
+                if p.cur_tok.kind == 32 || p.cur_tok.kind == 50 { p_stars = p_stars + 1; }
+                lex_next_token(p.lex, &mut p.cur_tok);
+            }
+            var pt_kind: u32 = p.cur_tok.kind as u32;
+            var pt_hash: u64 = p.cur_tok.hash;
+            lex_next_token(p.lex, &mut p.cur_tok);
+            if p.cur_tok.kind == 43 {
+                parser_expect(p, 43);
+                let g_arg0: u64 = parse_type_arg_hash(p);
+                var g_arg1: u64 = 0;
+                if p.cur_tok.kind == 72 {
+                    parser_expect(p, 72);
+                    g_arg1 = parse_type_arg_hash(p);
+                }
+                parser_expect(p, 44);
+                if p.cg != (0 as *mut u8) {
+                    pt_hash = instantiate_generic_struct(p, p.cg as *mut CodeGen, pt_hash, g_arg0, g_arg1);
+                    pt_kind = 1;
+                }
+            } else if is_generic_struct(p, pt_hash) == 1 && p.cg != (0 as *mut u8) {
+                let gs_ptr: *mut GenericStruct = find_generic_struct(p, pt_hash);
+                if gs_ptr != (0 as *mut GenericStruct) {
+                    if gs_ptr.param_count == 1 {
+                        pt_hash = instantiate_generic_struct(p, p.cg as *mut CodeGen, pt_hash, 5563585020063213298, 0);
+                    } else if gs_ptr.param_count == 2 {
+                        pt_hash = instantiate_generic_struct(p, p.cg as *mut CodeGen, pt_hash, 5563585020063213298, 3089943341986682694);
+                    }
+                    pt_kind = 1;
+                }
+            }
+            if pt_kind == 1 {
+                let pal: *mut ConstEntry = parser_find_alias(p, pt_hash);
+                if pal != (0 as *mut ConstEntry) {
+                    if pal.extra < 1000 {
+                        pt_hash = pal.val;
+                        pt_kind = pal.extra as u32;
+                    }
+                }
+            }
+            if p_stars > 1 {
+                sn.val = pt_hash;
+                sn.id = 11;
+            } else if pt_kind == 1 {
+                sn.val = pt_hash;
+                sn.id = 1;
+            } else {
+                if pt_kind == 23 {
+                    sn.val = 23;
+                } else {
+                    sn.val = pt_hash;
+                }
+                sn.id = 2;
+            }
+        } else if p.cur_tok.kind == 1 {
+            var t_hash: u64 = p.cur_tok.hash;
+            lex_next_token(p.lex, &mut p.cur_tok);
+            if p.cur_tok.kind == 43 {
+                parser_expect(p, 43);
+                let g_arg0: u64 = parse_type_arg_hash(p);
+                var g_arg1: u64 = 0;
+                if p.cur_tok.kind == 72 {
+                    parser_expect(p, 72);
+                    g_arg1 = parse_type_arg_hash(p);
+                }
+                parser_expect(p, 44);
+                if p.cg != (0 as *mut u8) {
+                    t_hash = instantiate_generic_struct(p, p.cg as *mut CodeGen, t_hash, g_arg0, g_arg1);
+                }
+            } else if is_generic_struct(p, t_hash) == 1 && p.cg != (0 as *mut u8) {
+                let gs_val: *mut GenericStruct = find_generic_struct(p, t_hash);
+                if gs_val != (0 as *mut GenericStruct) {
+                    if gs_val.param_count == 1 {
+                        t_hash = instantiate_generic_struct(p, p.cg as *mut CodeGen, t_hash, 5563585020063213298, 0);
+                    } else if gs_val.param_count == 2 {
+                        t_hash = instantiate_generic_struct(p, p.cg as *mut CodeGen, t_hash, 5563585020063213298, 3089943341986682694);
+                    }
+                }
+            }
+            let tal: *mut ConstEntry = parser_find_alias(p, t_hash);
+            if tal != (0 as *mut ConstEntry) {
+                if tal.extra == 1001 {
+                    sn.val = tal.val;
+                    sn.id = 1;
+                } else if tal.extra == 1002 {
+                    sn.val = tal.val;
+                    sn.id = 2;
+                } else if tal.extra == 1011 {
+                    sn.val = tal.val;
+                    sn.id = 11;
+                } else if tal.extra != 1 {
+                    sn.val = tal.extra;
+                    sn.id = 0;
+                    sn.is_mut = is_signed_type_hash(tal.extra as u32, tal.val) as u64;
+                } else {
+                    sn.val = tal.val;
+                    sn.id = 3;
+                }
+            } else {
+                sn.val = t_hash;
+                sn.id = 3;
+            }
+        } else if p.cur_tok.kind == 138 {
+            sn.val = 23;
+            sn.id = 2;
+            lex_next_token(p.lex, &mut p.cur_tok);
+        } else {
+            sn.val = p.cur_tok.kind as u64;
+            sn.id = 0;
+            sn.is_mut = is_signed_type_hash(p.cur_tok.kind as u32, p.cur_tok.hash) as u64;
+            lex_next_token(p.lex, &mut p.cur_tok);
+        }
+
+        if p.cur_tok.kind == 99 {
+            lex_next_token(p.lex, &mut p.cur_tok);
+        }
+
+        if p.cur_tok.kind == 40 {
+            parser_expect(p, 40);
+            sn.child1 = parse_expr(p);
+        }
+    } else if p.cur_tok.kind == 77 || p.cur_tok.kind == 40 {
+        lex_next_token(p.lex, &mut p.cur_tok);
+        sn.child1 = parse_expr(p);
+        infer_init_let_node(sn, sn.child1);
+    } else {
+        sn.val = 20;
+        sn.id = 0;
+        sn.is_mut = 1;
+    }
+
+    if (sn.child2 as u64) == 2 {
+        if sn.child1 == (0 as *mut AstNode) {
+            diag_syntax_unexpected_tok(p, "const declaration must have an initializer");
+        } else if is_const_evaluatable(p, sn.child1) == 0 {
+            diag_syntax_unexpected_tok(p, "const initializer must be a compile-time constant expression");
+        } else {
+            parser_add_const(p, sn.hash, eval_const_ast(p, sn.child1), 1);
+        }
+    }
+    if p.cur_tok.kind == 15 {
+        lex_next_token(p.lex, &mut p.cur_tok);
+        parser_expect(p, 62);
+        var l_else_body: *mut AstNode = 0 as *mut AstNode;
+        while p.cur_tok.kind != 63 && p.cur_tok.kind != 0 {
+            var est: *mut AstNode = parse_stmt(p);
+            if l_else_body == (0 as *mut AstNode) { sn.child3 = est; } else { l_else_body.next = est; }
+            while est != (0 as *mut AstNode) && est.next != (0 as *mut AstNode) { est = est.next; }
+            l_else_body = est;
+        }
+        parser_expect(p, 63);
+    }
+    consume_optional_semi(p);
+    return sn;
+}
+

@@ -1,0 +1,132 @@
+include "lib/core/types.rx";
+
+const VFS_TYPE_REG: u8  = 1;
+const VFS_TYPE_DIR: u8  = 2;
+const VFS_TYPE_CHAR: u8 = 3;
+const VFS_TYPE_BLK: u8  = 4;
+
+struct VfsInode {
+    ino: uint,
+    node_type: u8,
+    mode: u16,
+    size_bytes: u64,
+    dev_major: u16,
+    dev_minor: u16,
+    path_hash: uint,
+}
+
+struct VfsMountPoint {
+    prefix_hash: uint,
+    prefix_len: uint,
+    fs_kind: u8,
+    root_ino: uint,
+    active: bool,
+}
+
+struct VfsOpenFile {
+    ino: uint,
+    offset: u64,
+    flags: u32,
+    in_use: bool,
+}
+
+struct VfsTable {
+    inodes: [VfsInode; 64],
+    inode_count: uint,
+    mounts: [VfsMountPoint; 16],
+    mount_count: uint,
+    fds: [VfsOpenFile; 32],
+}
+
+fn vfs_hash_path(path: *const byte, max_len: uint) -> uint {
+    var h: uint = 14695981039346656037;
+    var i: uint = 0;
+    while i < max_len && path[i] != 0 {
+        h = (h ^ (path[i] as uint)) * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn vfs_path_len(path: *const byte) -> uint {
+    var i: uint = 0;
+    while path[i] != 0 { i = i + 1; }
+    return i;
+}
+
+fn vfs_init(v: *mut VfsTable) {
+    v.inode_count = 0;
+    v.mount_count = 0;
+    var i: uint = 0;
+    while i < 32 {
+        v.fds[i].in_use = false;
+        i = i + 1;
+    }
+}
+
+fn vfs_mount(v: *mut VfsTable, prefix: *const byte, fs_kind: u8, root_ino: uint) -> bool {
+    if v.mount_count >= 16 { return false; }
+    let plen: uint = vfs_path_len(prefix);
+    let idx: uint = v.mount_count;
+    v.mounts[idx].prefix_hash = vfs_hash_path(prefix, plen);
+    v.mounts[idx].prefix_len = plen;
+    v.mounts[idx].fs_kind = fs_kind;
+    v.mounts[idx].root_ino = root_ino;
+    v.mounts[idx].active = true;
+    v.mount_count = idx + 1;
+    return true;
+}
+
+fn vfs_register_inode(v: *mut VfsTable, path: *const byte, node_type: u8, mode: u16, size: u64) -> int {
+    if v.inode_count >= 64 { return -1; }
+    let idx: uint = v.inode_count;
+    let ino: uint = idx + 1;
+    let plen: uint = vfs_path_len(path);
+    v.inodes[idx].ino = ino;
+    v.inodes[idx].node_type = node_type;
+    v.inodes[idx].mode = mode;
+    v.inodes[idx].size_bytes = size;
+    v.inodes[idx].dev_major = 0;
+    v.inodes[idx].dev_minor = 0;
+    v.inodes[idx].path_hash = vfs_hash_path(path, plen);
+    v.inode_count = idx + 1;
+    return ino as int;
+}
+
+fn vfs_register_devnode(v: *mut VfsTable, path: *const byte, is_block: bool, major: u16, minor: u16) -> int {
+    var nt: u8 = VFS_TYPE_CHAR;
+    if is_block { nt = VFS_TYPE_BLK; }
+    let ino: int = vfs_register_inode(v, path, nt, 438, 0);
+    if ino < 0 { return -1; }
+    let idx: uint = (ino - 1) as uint;
+    v.inodes[idx].dev_major = major;
+    v.inodes[idx].dev_minor = minor;
+    return ino;
+}
+
+fn vfs_open(v: *mut VfsTable, path: *const byte, flags: u32) -> int {
+    let plen: uint = vfs_path_len(path);
+    let ph: uint = vfs_hash_path(path, plen);
+    var found_ino: uint = 0;
+    var i: uint = 0;
+    while i < v.inode_count {
+        if v.inodes[i].path_hash == ph {
+            found_ino = v.inodes[i].ino;
+        }
+        i = i + 1;
+    }
+    if found_ino == 0 { return -2; }
+    var fd: uint = 3;
+    while fd < 32 {
+        if !v.fds[fd].in_use {
+            v.fds[fd].ino = found_ino;
+            v.fds[fd].offset = 0;
+            v.fds[fd].flags = flags;
+            v.fds[fd].in_use = true;
+            return fd as int;
+        }
+        fd = fd + 1;
+    }
+    return -24;
+}
+

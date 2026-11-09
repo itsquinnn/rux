@@ -1,0 +1,67 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "lib/rxd/rxd.rx";
+
+fn rxd_cmd_inspect(filepath: *const byte) -> int {
+    let buf: *mut u8 = uses_substrate_alloc(65536);
+    if (buf as u64) == 0 {
+        return 1;
+    }
+    let nread: int = os_read_file(filepath, buf, 65536);
+    if nread < 64 {
+        let err: str = "[ERROR] Invalid RXD file: size smaller than 64-byte cacheline 0 header";
+        os_println(err as *const byte);
+        uses_substrate_free(buf, 65536);
+        return 1;
+    }
+
+    let plate: RxdPlate = rxd_plate_from_bytes(buf, nread as u64);
+    if plate.byte_length == 0 {
+        let err2: str = "[ERROR] Corrupted RXD header: magic != 'RXD\\0'";
+        os_println(err2 as *const byte);
+        uses_substrate_free(buf, 65536);
+        return 2;
+    }
+
+    let hdr: *const RxdHeader = buf as *const RxdHeader;
+    let title: str = "=== RXD-SILICON (64-BYTE CACHELINE STRATIGRAPHY) ===";
+    os_println(title as *const byte);
+
+    let l1: str = "CACHELINE 0: Universal Hologram Header (64 Bytes)";
+    os_println(l1 as *const byte);
+    let l2: str = "  Magic:              'R','X','D','\\0' (0x00445852 - OK)";
+    os_println(l2 as *const byte);
+    let l3: str = "  Format Version:     1";
+    os_println(l3 as *const byte);
+    let l4: str = "  Flags:              Little-Endian | Sealed";
+    os_println(l4 as *const byte);
+
+    let l5: str = "CACHELINE 1..N: Slot Table";
+    os_println(l5 as *const byte);
+
+    var i: u64 = 0;
+    while i < plate.slot_count {
+        let slot: *mut RxdSlotDescriptor = rxd_plate_get_slot(&plate, i);
+        let arena_base: *const u8 = plate.raw_ptr + plate.arena_offset;
+        let k_ptr: *const u8 = arena_base + (slot.name_offset as u64);
+        let k_len: u64 = slot.name_len as u64;
+
+        os_print("  [Slot " as *const byte);
+        let digit: byte = (i + 48) as byte;
+        os_write(1, &digit, 1);
+        os_print("] " as *const byte);
+        os_write(1, k_ptr, k_len as uint);
+        os_print(": kind=" as *const byte);
+        let kdigit: byte = (slot.kind + 48) as byte;
+        os_write(1, &kdigit, 1);
+        os_println("" as *const byte);
+
+        i = i + 1;
+    }
+
+    let done: str = "[OK] Inspection complete (0.000 ns direct pointer cast verified)";
+    os_println(done as *const byte);
+    uses_substrate_free(buf, 65536);
+    return 0;
+}
+

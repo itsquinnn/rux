@@ -1,0 +1,32 @@
+type int   = i64;
+type uint  = u64;
+type byte  = u8;
+type float = f64;
+type bool  = u8;
+type isize = i64;
+type usize = u64;
+type char  = u32;
+type f16   = u16;
+type i128  = u64;
+type u128  = u64;
+type never = void;
+type Unit  = void;
+type str   = *u8;
+
+type i64 = i64;
+type u64 = u64;
+type i32 = i32;
+type u32 = u32;
+type i16 = i16;
+type u16 = u16;
+type i8  = i8;
+type u8  = u8;
+type f64 = f64;
+type f32 = f32;
+
+const true: bool = 1 as byte;
+const false: bool = 0 as byte;
+
+fn is_int32(val: int) -> bool => val >= -2147483648 && val <= 2147483647;
+
+fn is_byte(val: uint) -> bool => val <= 255;

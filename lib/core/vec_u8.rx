@@ -1,0 +1,86 @@
+include "lib/core/types.rx";
+include "lib/core/slice.rx";
+include "lib/core/allocator.rx";
+include "lib/core/heap.rx";
+
+struct ByteVec {
+    data: *mut byte,
+    len: uint,
+    cap: uint,
+}
+
+fn byte_vec_init(v: *mut ByteVec, initial_cap: uint) {
+    var cap: uint = initial_cap;
+    if cap == 0 {
+        cap = 16;
+    }
+    v.data = uses_substrate_alloc(cap) as *mut byte;
+    v.len = 0;
+    v.cap = cap;
+}
+
+fn byte_vec_push(v: *mut ByteVec, b: byte) {
+    if v.len >= v.cap {
+        let new_cap: uint = v.cap * 2;
+        let new_data: *mut byte = uses_substrate_alloc(new_cap) as *mut byte;
+        var i: uint = 0;
+        while i < v.len {
+            new_data[i] = v.data[i];
+            i = i + 1;
+        }
+        uses_substrate_free(v.data, v.cap);
+        v.data = new_data;
+        v.cap = new_cap;
+    }
+    v.data[v.len] = b;
+    v.len = v.len + 1;
+}
+
+fn byte_vec_append(v: *mut ByteVec, src: *const byte, len: uint) {
+    var i: uint = 0;
+    while i < len {
+        byte_vec_push(v, src[i]);
+        i = i + 1;
+    }
+}
+
+fn byte_vec_append_str(v: *mut ByteVec, s: str) {
+    let p: *const byte = s as *const byte;
+    var i: uint = 0;
+    while p[i] != (0 as byte) {
+        byte_vec_push(v, p[i]);
+        i = i + 1;
+    }
+}
+
+fn byte_vec_get(v: *const ByteVec, idx: uint) -> int {
+    if idx >= v.len {
+        return -1;
+    }
+    return v.data[idx] as int;
+}
+
+fn byte_vec_set(v: *mut ByteVec, idx: uint, val: byte) -> bool {
+    if idx >= v.len {
+        return false;
+    }
+    v.data[idx] = val;
+    return true;
+}
+
+fn byte_vec_as_slice(v: *const ByteVec) -> ByteSlice {
+    return slice_from_raw(v.data as *const byte, v.len);
+}
+
+fn byte_vec_len(v: *const ByteVec) -> uint {
+    return v.len;
+}
+
+fn byte_vec_free(v: *mut ByteVec) {
+    if (v.data as uint) != 0 && v.cap > 0 {
+        uses_substrate_free(v.data, v.cap);
+        v.data = 0 as *mut byte;
+        v.len = 0;
+        v.cap = 0;
+    }
+}

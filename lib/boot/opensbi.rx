@@ -1,0 +1,47 @@
+include "lib/core/types.rx";
+
+const SBI_EXT_BASE: u64 = 16;
+const SBI_EXT_TIME: u64 = 1414090053;
+const SBI_EXT_IPI: u64  = 7557193;
+const SBI_EXT_HSM: u64  = 4739917;
+const SBI_EXT_SRST: u64 = 1397904212;
+
+const SBI_SUCCESS: i64 = 0;
+
+struct SbiRet {
+    error: i64,
+    value: i64,
+}
+
+struct SbiCallRequest {
+    extension_id: u64,
+    function_id: u64,
+    arg0: u64,
+    arg1: u64,
+}
+
+fn opensbi_prepare_timer(next_cycle: u64) -> SbiCallRequest {
+    return SbiCallRequest {
+        extension_id: SBI_EXT_TIME,
+        function_id: 0,
+        arg0: next_cycle,
+        arg1: 0,
+    };
+}
+
+fn opensbi_prepare_hart_start(hartid: u64, start_paddr: u64, opaque: u64) -> SbiCallRequest {
+    return SbiCallRequest {
+        extension_id: SBI_EXT_HSM,
+        function_id: 0,
+        arg0: hartid,
+        arg1: start_paddr ^ opaque,
+    };
+}
+
+fn opensbi_simulate_dispatch(req: *const SbiCallRequest) -> SbiRet {
+    if req.extension_id == SBI_EXT_BASE && req.function_id == 0 {
+        return SbiRet { error: SBI_SUCCESS, value: 2 };
+    }
+    return SbiRet { error: SBI_SUCCESS, value: 0 };
+}
+

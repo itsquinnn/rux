@@ -1,0 +1,46 @@
+struct SynapticSpike {
+    source_subsystem: uint,
+    event_payload: uint,
+}
+
+struct SpikeChannel {
+    storage: *mut SynapticSpike,
+    capacity: uint,
+    head: uint,
+    tail: uint,
+    spikes_dispatched: uint,
+    spikes_dropped: uint,
+}
+
+fn lnga_channel_init(
+    chan: *mut SpikeChannel,
+    storage: *mut SynapticSpike,
+    capacity: uint
+) {
+    chan.storage = storage;
+    chan.capacity = capacity;
+    chan.head = 0;
+    chan.tail = 0;
+    chan.spikes_dispatched = 0;
+    chan.spikes_dropped = 0;
+}
+
+fn lnga_dispatch_spike(
+    chan: *mut SpikeChannel,
+    source_sys: uint,
+    payload: uint
+) -> bool {
+    let next_head: uint = (chan.head + 1) % chan.capacity;
+    if next_head == chan.tail {
+        chan.spikes_dropped = chan.spikes_dropped + 1;
+        return false;
+    }
+
+    let spike: *mut SynapticSpike = &mut chan.storage[chan.head];
+    spike.source_subsystem = source_sys;
+    spike.event_payload = payload;
+
+    @atomic.store_u64(&mut chan.head, next_head);
+    chan.spikes_dispatched = chan.spikes_dispatched + 1;
+    return true;
+}

@@ -1,0 +1,124 @@
+include "lib/core/types.rx";
+
+struct CompRect {
+    x: int,
+    y: int,
+    w: int,
+    h: int,
+}
+
+struct CompWindow {
+    id: uint,
+    bounds: CompRect,
+    z_index: int,
+    visible: bool,
+    focused: bool,
+    bg_argb: u32,
+}
+
+struct DisplayCompositor {
+    windows: [CompWindow; 32],
+    count: uint,
+    damage: CompRect,
+    has_damage: bool,
+    cursor_x: int,
+    cursor_y: int,
+}
+
+fn comp_init(c: *mut DisplayCompositor) {
+    c.count = 0;
+    c.has_damage = false;
+    c.damage.x = 0;
+    c.damage.y = 0;
+    c.damage.w = 0;
+    c.damage.h = 0;
+    c.cursor_x = 0;
+    c.cursor_y = 0;
+}
+
+fn comp_mark_damage(c: *mut DisplayCompositor, rx: int, ry: int, rw: int, rh: int) {
+    if !c.has_damage {
+        c.damage.x = rx;
+        c.damage.y = ry;
+        c.damage.w = rw;
+        c.damage.h = rh;
+        c.has_damage = true;
+        return;
+    }
+    var min_x: int = c.damage.x;
+    if rx < min_x { min_x = rx; }
+    var min_y: int = c.damage.y;
+    if ry < min_y { min_y = ry; }
+
+    var max_x: int = c.damage.x + c.damage.w;
+    if (rx + rw) > max_x { max_x = rx + rw; }
+    var max_y: int = c.damage.y + c.damage.h;
+    if (ry + rh) > max_y { max_y = ry + rh; }
+
+    c.damage.x = min_x;
+    c.damage.y = min_y;
+    c.damage.w = max_x - min_x;
+    c.damage.h = max_y - min_y;
+}
+
+fn comp_create_window(c: *mut DisplayCompositor, x: int, y: int, w: int, h: int, bg_argb: u32) -> int {
+    if c.count >= 32 { return -1; }
+    let idx: uint = c.count;
+    c.windows[idx].id = idx + 1;
+    c.windows[idx].bounds.x = x;
+    c.windows[idx].bounds.y = y;
+    c.windows[idx].bounds.w = w;
+    c.windows[idx].bounds.h = h;
+    c.windows[idx].z_index = idx as int;
+    c.windows[idx].visible = true;
+    c.windows[idx].focused = true;
+    c.windows[idx].bg_argb = bg_argb;
+    c.count = idx + 1;
+    comp_mark_damage(c, x, y, w, h);
+    return (idx + 1) as int;
+}
+
+fn comp_hit_test(c: *const DisplayCompositor, px: int, py: int) -> int {
+    var best_win: int = -1;
+    var best_z: int = -999999;
+    var i: uint = 0;
+    while i < c.count {
+        if c.windows[i].visible {
+            let bx: int = c.windows[i].bounds.x;
+            let by: int = c.windows[i].bounds.y;
+            let bw: int = c.windows[i].bounds.w;
+            let bh: int = c.windows[i].bounds.h;
+            if px >= bx && px < (bx + bw) && py >= by && py < (by + bh) {
+                if c.windows[i].z_index >= best_z {
+                    best_z = c.windows[i].z_index;
+                    best_win = c.windows[i].id as int;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return best_win;
+}
+
+fn comp_raise_window(c: *mut DisplayCompositor, win_id: uint) -> bool {
+    var max_z: int = 0;
+    var target_idx: int = -1;
+    var i: uint = 0;
+    while i < c.count {
+        if c.windows[i].z_index > max_z {
+            max_z = c.windows[i].z_index;
+        }
+        if c.windows[i].id == win_id {
+            target_idx = i as int;
+        }
+        c.windows[i].focused = false;
+        i = i + 1;
+    }
+    if target_idx < 0 { return false; }
+    let u: uint = target_idx as uint;
+    c.windows[u].z_index = max_z + 1;
+    c.windows[u].focused = true;
+    comp_mark_damage(c, c.windows[u].bounds.x, c.windows[u].bounds.y, c.windows[u].bounds.w, c.windows[u].bounds.h);
+    return true;
+}
+

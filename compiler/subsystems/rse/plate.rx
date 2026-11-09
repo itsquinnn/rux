@@ -1,0 +1,63 @@
+const RSE_PLATE_SIZE: uint = 16777216;
+
+enum RseSector {
+    SECTOR_0_HEADER = 0,
+    SECTOR_1_AST = 1,
+    SECTOR_2_SYMBOLS = 2,
+    SECTOR_3_STENCILS = 3,
+    SECTOR_4_PERSIST = 4,
+    SECTOR_5_CHANNELS = 5,
+}
+
+struct RseSpacetimePlate {
+    raw_memory: *mut byte,
+    sector_offsets: [uint; 6],
+    sector_watermarks: [uint; 6],
+    sector_capacities: [uint; 6],
+}
+
+fn rse_plate_init(plate: *mut RseSpacetimePlate, memory: *mut byte) -> bool {
+    plate.raw_memory = memory;
+
+    plate.sector_offsets[0] = 0;
+    plate.sector_capacities[0] = 1048576;
+
+    plate.sector_offsets[1] = 1048576;
+    plate.sector_capacities[1] = 4194304;
+
+    plate.sector_offsets[2] = 5242880;
+    plate.sector_capacities[2] = 3145728;
+
+    plate.sector_offsets[3] = 8388608;
+    plate.sector_capacities[3] = 4194304;
+
+    plate.sector_offsets[4] = 12582912;
+    plate.sector_capacities[4] = 2097152;
+
+    plate.sector_offsets[5] = 14680064;
+    plate.sector_capacities[5] = 2097152;
+
+    var i: uint = 0;
+    while i < 6 {
+        plate.sector_watermarks[i] = 0;
+        i = i + 1;
+    }
+    return true;
+}
+
+fn rse_plate_alloc_sector(
+    plate: *mut RseSpacetimePlate,
+    sector: RseSector,
+    size: uint
+) -> *mut byte {
+    let s_idx: uint = sector as uint;
+    let aligned_sz: uint = ((size + 7) / 8) * 8;
+
+    if (plate.sector_watermarks[s_idx] + aligned_sz) > plate.sector_capacities[s_idx] {
+        return 0 as *mut byte;
+    }
+
+    let ptr: *mut byte = (plate.raw_memory as uint + plate.sector_offsets[s_idx] + plate.sector_watermarks[s_idx]) as *mut byte;
+    plate.sector_watermarks[s_idx] = plate.sector_watermarks[s_idx] + aligned_sz;
+    return ptr;
+}

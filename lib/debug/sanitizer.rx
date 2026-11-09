@@ -1,0 +1,108 @@
+include "lib/core/types.rx";
+
+const ASAN_SHADOW_VALID: u8      = 0;
+const ASAN_SHADOW_REDZONE: u8    = 0xFA;
+const ASAN_SHADOW_FREED: u8      = 0xFD;
+const ASAN_SHADOW_STACK_OOB: u8  = 0xF1;
+
+struct AsanShadowState {
+    base_addr: u64,
+    shadow_granule_shift: u32,
+    shadow_bytes: [u8; 512],
+    violation_count: u32,
+    last_bad_addr: u64,
+}
+
+struct TsanLockGraph {
+    edges_from: [u32; 32],
+    edges_to: [u32; 32],
+    edge_count: uint,
+    cycle_violations: u32,
+}
+
+fn asan_init(st: *mut AsanShadowState, tracked_base: u64) {
+    st.base_addr = tracked_base;
+    st.shadow_granule_shift = 3;
+    st.violation_count = 0;
+    st.last_bad_addr = 0;
+    var i: uint = 0;
+    while i < 512 {
+        st.shadow_bytes[i] = ASAN_SHADOW_VALID;
+        i = i + 1;
+    }
+}
+
+fn asan_set_region(st: *mut AsanShadowState, addr: u64, byte_len: u64, tag: u8) {
+    if addr < st.base_addr { return; }
+    let start_idx: uint = ((addr - st.base_addr) >> 3) as uint;
+    let granules: uint = ((byte_len + 7) >> 3) as uint;
+    var i: uint = 0;
+    while i < granules && (start_idx + i) < 512 {
+        st.shadow_bytes[start_idx + i] = tag;
+        i = i + 1;
+    }
+}
+
+fn asan_poison_region(st: *mut AsanShadowState, addr: u64, byte_len: u64, reason_tag: u8) {
+    asan_set_region(st, addr, byte_len, reason_tag);
+}
+
+fn asan_unpoison_region(st: *mut AsanShadowState, addr: u64, byte_len: u64) {
+    asan_set_region(st, addr, byte_len, ASAN_SHADOW_VALID);
+}
+
+fn asan_check_access(st: *mut AsanShadowState, addr: u64, byte_len: u64) -> bool {
+    if addr < st.base_addr {
+        st.violation_count = st.violation_count + 1;
+        st.last_bad_addr = addr;
+        return false;
+    }
+    let start_idx: uint = ((addr - st.base_addr) >> 3) as uint;
+    let granules: uint = ((byte_len + 7) >> 3) as uint;
+    var i: uint = 0;
+    while i < granules {
+        let g: uint = start_idx + i;
+        if g >= 512 || st.shadow_bytes[g] != ASAN_SHADOW_VALID {
+            st.violation_count = st.violation_count + 1;
+            st.last_bad_addr = addr;
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+fn ubsan_check_shift_u64(shift_amt: int) -> bool {
+    return shift_amt >= 0 && shift_amt < 64;
+}
+
+fn ubsan_check_nonnull(ptr_val: uint) -> bool {
+    return ptr_val != 0;
+}
+
+fn tsan_init(g: *mut TsanLockGraph) {
+    g.edge_count = 0;
+    g.cycle_violations = 0;
+}
+
+fn tsan_record_lock_order(g: *mut TsanLockGraph, held_lock_id: u32, next_lock_id: u32) -> bool {
+    var i: uint = 0;
+    while i < g.edge_count {
+        if g.edges_from[i] == next_lock_id && g.edges_to[i] == held_lock_id {
+            g.cycle_violations = g.cycle_violations + 1;
+            return false;
+        }
+        if g.edges_from[i] == held_lock_id && g.edges_to[i] == next_lock_id {
+            return true;
+        }
+        i = i + 1;
+    }
+    if g.edge_count < 32 {
+        let idx: uint = g.edge_count;
+        g.edges_from[idx] = held_lock_id;
+        g.edges_to[idx] = next_lock_id;
+        g.edge_count = idx + 1;
+    }
+    return true;
+}
+

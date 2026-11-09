@@ -1,0 +1,38 @@
+include "bootstrap/verifier/hash_check.rx";
+
+struct VerificationReport {
+    stage1_hash: uint,
+    stage2_hash: uint,
+    stage3_hash: uint,
+    is_fixpoint_achieved: int,
+}
+
+fn verify_ken_thompson_fixpoint(
+    stage1_path: *byte,
+    stage2_path: *byte,
+    stage3_path: *byte,
+    report: *mut VerificationReport
+) -> int {
+    var buffer_a: [byte; 262144];
+    var buffer_b: [byte; 262144];
+
+    report.stage1_hash = compute_file_checksum(stage1_path, &buffer_a[0], 262144);
+    report.stage2_hash = compute_file_checksum(stage2_path, &buffer_a[0], 262144);
+    report.stage3_hash = compute_file_checksum(stage3_path, &buffer_a[0], 262144);
+
+    let is_identical: int = compare_two_binaries(
+        stage2_path,
+        stage3_path,
+        &buffer_a[0],
+        &buffer_b[0],
+        262144
+    );
+
+    report.is_fixpoint_achieved = is_identical;
+
+    if is_identical == 1 {
+        return 0;
+    } else {
+        return 1;
+    }
+}

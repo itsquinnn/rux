@@ -1,0 +1,53 @@
+include "lib/core/types.rx";
+
+struct Point {
+    x: u64,
+    y: u64,
+}
+
+struct Pair {
+    first: u64,
+    second: u64,
+}
+
+fn test_struct_destructuring() {
+    let pt: Point = Point { x: 100, y: 250 };
+    var sum: u64 = 0;
+
+    match pt {
+        Point { x, y } => {
+            sum = x + y;
+        }
+    }
+
+    if sum != 350 {
+        println("[FAIL] Struct destructuring failed to compute sum!");
+        sys_exit(1);
+    }
+    println("[PASS] Struct pattern destructuring OK (x=100, y=250 -> sum=350)");
+}
+
+fn test_tuple_destructuring() {
+    let p: Pair = Pair { first: 40, second: 2 };
+    var product: u64 = 0;
+
+    match p {
+        (a, b) => {
+            product = a * b;
+        }
+    }
+
+    if product != 80 {
+        println("[FAIL] Tuple destructuring failed to compute product!");
+        sys_exit(1);
+    }
+    println("[PASS] Tuple pattern destructuring OK (a=40, b=2 -> product=80)");
+}
+
+fn main() -> int {
+    println("=== RUNNING PATTERN DESTRUCTURING SUITE ===");
+    test_struct_destructuring();
+    test_tuple_destructuring();
+    println("=== ALL PATTERN DESTRUCTURING TESTS PASSED (SILICON CONFIRMED) ===");
+    return 0;
+}

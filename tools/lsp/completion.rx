@@ -1,0 +1,27 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+
+enum CompletionKind {
+    KEYWORD = 14,
+    FUNCTION = 3,
+    STRUCT = 7,
+    VARIABLE = 6,
+    MODULE = 9,
+}
+
+struct CompletionItem {
+    label: str,
+    detail: str,
+    kind: CompletionKind,
+}
+
+fn lsp_emit_keyword_completions() {
+    println("  {\"label\":\"fn\",\"kind\":14,\"detail\":\"Define a sovereign function\"},");
+    println("  {\"label\":\"let\",\"kind\":14,\"detail\":\"Declare an immutable binding\"},");
+    println("  {\"label\":\"var\",\"kind\":14,\"detail\":\"Declare a mutable binding\"},");
+    println("  {\"label\":\"const\",\"kind\":14,\"detail\":\"Declare a compile-time constant\"},");
+    println("  {\"label\":\"struct\",\"kind\":14,\"detail\":\"Define a memory-aligned struct\"},");
+    println("  {\"label\":\"shape\",\"kind\":14,\"detail\":\"Define an RXD continuum shape\"},");
+    println("  {\"label\":\"include\",\"kind\":14,\"detail\":\"Direct headerless file inclusion\"},");
+    println("  {\"label\":\"defer\",\"kind\":14,\"detail\":\"Deterministic scope cleanup\"}");
+}

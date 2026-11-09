@@ -1,0 +1,21 @@
+include "lib/core/types.rx";
+
+struct FmtRules {
+    tab_size: uint,
+    use_tabs: bool,
+    max_line_length: uint,
+    space_around_operators: bool,
+    space_after_colon: bool,
+    space_before_brace: bool,
+}
+
+fn fmt_rules_canonical() -> FmtRules {
+    return FmtRules {
+        tab_size: 4,
+        use_tabs: false,
+        max_line_length: 100,
+        space_around_operators: true,
+        space_after_colon: true,
+        space_before_brace: true,
+    };
+}

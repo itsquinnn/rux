@@ -1,0 +1,152 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/os/uses_substrate.rx";
+
+struct HashEntry {
+    key: uint,
+    val: uint,
+    is_occupied: bool,
+}
+
+struct HashMap {
+    entries: *mut HashEntry,
+    cap: uint,
+    len: uint,
+}
+
+fn hash_u64(x: uint) -> uint {
+    var z: uint = x + 11400714819323198485;
+    z = (z ^ (z >> 30)) * 13787848793156544583;
+    z = (z ^ (z >> 27)) * 10723151780598845931;
+    return z ^ (z >> 31);
+}
+
+fn hashmap_init(m: *mut HashMap, initial_cap: uint) {
+    var cap: uint = initial_cap;
+    if cap < 16 {
+        cap = 16;
+    }
+    let bytes: uint = cap * 24;
+    let mem: *mut byte = uses_substrate_alloc(bytes);
+    let entries: *mut HashEntry = mem as *mut HashEntry;
+
+    var i: uint = 0;
+    while i < cap {
+        entries[i].key = 0;
+        entries[i].val = 0;
+        entries[i].is_occupied = false;
+        i = i + 1;
+    }
+
+    m.entries = entries;
+    m.cap = cap;
+    m.len = 0;
+}
+
+fn hashmap_resize(m: *mut HashMap) {
+    let old_cap: uint = m.cap;
+    let old_entries: *mut HashEntry = m.entries;
+    let new_cap: uint = old_cap * 2;
+    let new_bytes: uint = new_cap * 24;
+    let new_entries: *mut HashEntry = uses_substrate_alloc(new_bytes) as *mut HashEntry;
+
+    var i: uint = 0;
+    while i < new_cap {
+        new_entries[i].key = 0;
+        new_entries[i].val = 0;
+        new_entries[i].is_occupied = false;
+        i = i + 1;
+    }
+
+    m.entries = new_entries;
+    m.cap = new_cap;
+    m.len = 0;
+
+    i = 0;
+    while i < old_cap {
+        if old_entries[i].is_occupied {
+            hashmap_insert(m, old_entries[i].key, old_entries[i].val);
+        }
+        i = i + 1;
+    }
+
+    uses_substrate_free(old_entries as *mut byte, old_cap * 24);
+}
+
+fn hashmap_insert(m: *mut HashMap, key: uint, val: uint) {
+    if (m.len * 10) >= (m.cap * 7) {
+        hashmap_resize(m);
+    }
+
+    let mask: uint = m.cap - 1;
+    var idx: uint = hash_u64(key) & mask;
+
+    while m.entries[idx].is_occupied {
+        if m.entries[idx].key == key {
+            m.entries[idx].val = val;
+            return;
+        }
+        idx = (idx + 1) & mask;
+    }
+
+    m.entries[idx].key = key;
+    m.entries[idx].val = val;
+    m.entries[idx].is_occupied = true;
+    m.len = m.len + 1;
+}
+
+fn hashmap_get(m: *const HashMap, key: uint) -> Option {
+    let mask: uint = m.cap - 1;
+    var idx: uint = hash_u64(key) & mask;
+    var scanned: uint = 0;
+
+    while scanned < m.cap {
+        if !m.entries[idx].is_occupied {
+            return option_none();
+        }
+        if m.entries[idx].key == key {
+            return option_some(m.entries[idx].val);
+        }
+        idx = (idx + 1) & mask;
+        scanned = scanned + 1;
+    }
+    return option_none();
+}
+
+fn hashmap_contains(m: *const HashMap, key: uint) -> bool {
+    let opt: Option = hashmap_get(m, key);
+    return option_is_some(opt);
+}
+
+fn hashmap_remove(m: *mut HashMap, key: uint) -> bool {
+    let mask: uint = m.cap - 1;
+    var idx: uint = hash_u64(key) & mask;
+    var scanned: uint = 0;
+
+    while scanned < m.cap {
+        if !m.entries[idx].is_occupied {
+            return false;
+        }
+        if m.entries[idx].key == key {
+            m.entries[idx].is_occupied = false;
+            m.len = m.len - 1;
+            return true;
+        }
+        idx = (idx + 1) & mask;
+        scanned = scanned + 1;
+    }
+    return false;
+}
+
+fn hashmap_len(m: *const HashMap) -> uint {
+    return m.len;
+}
+
+fn hashmap_free(m: *mut HashMap) {
+    if (m.entries as uint) != 0 && m.cap > 0 {
+        uses_substrate_free(m.entries as *mut byte, m.cap * 24);
+        m.entries = 0 as *mut HashEntry;
+        m.cap = 0;
+        m.len = 0;
+    }
+}

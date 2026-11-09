@@ -1,0 +1,44 @@
+include "bootstrap/memory/allocator.rx";
+include "bootstrap/syntax/parser.rx";
+include "bootstrap/binary/writer.rx";
+
+fn compile_source_file(source_filepath: *byte, output_filepath: *byte) -> int {
+    let arena_buffer: *mut byte = @os.mmap(0 as *mut byte, 2097152, 3, 34, 0 - 1, 0);
+    var arena: MemoryArena;
+    allocator_init(&mut arena, arena_buffer, 2097152);
+
+    let source_buffer: *mut byte = @os.mmap(0 as *mut byte, 524288, 3, 34, 0 - 1, 0);
+    let fd: int = @os.open(source_filepath, 0, 0);
+    if fd < 0 {
+        return -1;
+    }
+    let bytes_read: int = @os.read(fd, source_buffer, 524288);
+    @os.close(fd);
+    if bytes_read <= 0 {
+        return -2;
+    }
+
+    var reader: SourceReader;
+    reader_init(&mut reader, source_buffer, bytes_read as uint);
+
+    var parser: ParserState;
+    parser.reader = &mut reader;
+    parser.arena = &mut arena;
+    parser.node_id_counter = 0;
+    scan_next_token(&mut reader, &mut parser.current_token);
+
+    var shapes: [ShapeContract; 16];
+    let ast_root: *mut AstNode = parse_program(&mut parser, &shapes[0], 16);
+
+    let machine_code_buffer: *mut byte = @os.mmap(0 as *mut byte, 65536, 3, 34, 0 - 1, 0);
+    var cg: CodeGenerator;
+    codegen_init(&mut cg, machine_code_buffer, 65536);
+    compile_node(&mut cg, ast_root);
+
+    let write_result: int = write_executable_binary(&mut cg, output_filepath);
+    if write_result <= 0 {
+        return -3;
+    }
+
+    return 0;
+}

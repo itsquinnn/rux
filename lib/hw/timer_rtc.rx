@@ -1,0 +1,83 @@
+include "lib/core/types.rx";
+
+const PIT_BASE_FREQ_HZ: u32 = 1193182;
+
+struct RtcDateTime {
+    year: u32,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+}
+
+struct HardwareTimerState {
+    pit_divisor: u16,
+    tick_hz: u32,
+    lapic_ticks_per_ms: u64,
+    monotonic_ns: u64,
+}
+
+fn timer_pit_divisor(target_hz: u32) -> u16 {
+    if target_hz == 0 {
+        return 65535;
+    }
+    let div: u32 = PIT_BASE_FREQ_HZ / target_hz;
+    if div == 0 { return 1; }
+    if div > 65535 { return 65535; }
+    return div as u16;
+}
+
+fn timer_init_state(st: *mut HardwareTimerState, target_hz: u32, lapic_10ms_delta: u64) {
+    st.pit_divisor = timer_pit_divisor(target_hz);
+    st.tick_hz = target_hz;
+    st.lapic_ticks_per_ms = lapic_10ms_delta / 10;
+    st.monotonic_ns = 0;
+}
+
+fn timer_advance_tick(st: *mut HardwareTimerState) -> u64 {
+    if st.tick_hz > 0 {
+        st.monotonic_ns = st.monotonic_ns + (1000000000 / (st.tick_hz as u64));
+    }
+    return st.monotonic_ns;
+}
+
+fn rtc_bcd_to_bin(bcd: u8) -> u8 {
+    return ((bcd >> 4) * 10) + (bcd & 15);
+}
+
+fn rtc_is_leap_year(year: u32) -> bool {
+    if (year % 400) == 0 { return true; }
+    if (year % 100) == 0 { return false; }
+    return (year % 4) == 0;
+}
+
+fn rtc_to_unix_epoch(dt: *const RtcDateTime) -> u64 {
+    var days: u64 = 0;
+    var y: u32 = 1970;
+    while y < dt.year {
+        if rtc_is_leap_year(y) {
+            days = days + 366;
+        } else {
+            days = days + 365;
+        }
+        y = y + 1;
+    }
+    var m: u8 = 1;
+    while m < dt.month {
+        if m == 2 {
+            if rtc_is_leap_year(dt.year) { days = days + 29; } else { days = days + 28; }
+        } else if m == 4 || m == 6 || m == 9 || m == 11 {
+            days = days + 30;
+        } else {
+            days = days + 31;
+        }
+        m = m + 1;
+    }
+    if dt.day > 0 {
+        days = days + ((dt.day - 1) as u64);
+    }
+    let secs: u64 = (((days * 24 + (dt.hour as u64)) * 60 + (dt.minute as u64)) * 60) + (dt.second as u64);
+    return secs;
+}
+

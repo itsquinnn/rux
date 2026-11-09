@@ -1,0 +1,116 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+include "lib/math/scalar.rx";
+include "lib/math/checked.rx";
+include "lib/math/complex.rx";
+include "lib/math/rational.rx";
+include "lib/math/decimal.rx";
+include "lib/math/bigint.rx";
+include "lib/core/simd.rx";
+
+fn main() -> int {
+    let div_res: int = -7 / 3;
+    let rem_res: int = -7 % 3;
+    if div_res != -2 || rem_res != -1 {
+        panic("Signed truncating division failed");
+    }
+
+    let euclid_q: int = div_euclid_i64(-7, 3);
+    let euclid_r: int = rem_euclid_i64(-7, 3);
+    if euclid_q != -3 || euclid_r != 2 {
+        panic("Euclidean division failed");
+    }
+
+    var shl_out: int = 0;
+    if !checked_shl_i64(5, 3, &mut shl_out) || shl_out != 40 {
+        panic("checked_shl_i64 failed");
+    }
+    if checked_shl_i64(5, 65, &mut shl_out) {
+        panic("checked_shl_i64 out-of-range should fail");
+    }
+
+    var shr_out: int = 0;
+    if !checked_shr_i64(-16, 2, &mut shr_out) || shr_out != -4 {
+        panic("checked_shr_i64 arithmetic sign-extend failed");
+    }
+
+    let wrap_res: uint = wrapping_shl_u64(1, 65);
+    if wrap_res != 2 {
+        panic("wrapping_shl_u64 failed");
+    }
+
+    let c1: Complex = complex_new(3, 4);
+    let c2: Complex = complex_new(1, -2);
+    let c_sum: Complex = complex_add(c1, c2);
+    if c_sum.re != 4 || c_sum.im != 2 {
+        panic("Complex add failed");
+    }
+    let c_mul: Complex = complex_mul(c1, c2);
+    if c_mul.re != 11 || c_mul.im != -2 {
+        panic("Complex mul failed");
+    }
+
+    let r1: Rational = rational_new(1, 3);
+    let r2: Rational = rational_new(1, 6);
+    let r_sum: Rational = rational_add(r1, r2);
+    if r_sum.num != 1 || r_sum.den != 2 {
+        panic("Rational add failed");
+    }
+    let r_mul: Rational = rational_mul(r1, r2);
+    if r_mul.num != 1 || r_mul.den != 18 {
+        panic("Rational mul failed");
+    }
+
+    let d1: Decimal = decimal_from_parts(10, 5000);
+    let d2: Decimal = decimal_from_parts(2, 2500);
+    let d_sum: Decimal = decimal_add(d1, d2);
+    if decimal_round_int(d_sum) != 13 {
+        panic("Decimal add failed");
+    }
+
+    let b1: BigInt = bigint_from_i64(1000000);
+    let b2: BigInt = bigint_from_i64(2000000);
+    let b_sum: BigInt = bigint_add(&b1, &b2);
+    if bigint_to_i64(&b_sum) != 3000000 {
+        panic("BigInt add failed");
+    }
+
+    let va: Simd4i32 = simd4i32_new(1, 5, 3, 8);
+    let vb: Simd4i32 = simd4i32_new(2, 4, 3, 7);
+    let mask_gt: Mask4 = simd4i32_cmpgt(va, vb);
+    if mask_gt.m0 != 0 || mask_gt.m1 != 1 || mask_gt.m2 != 0 || mask_gt.m3 != 1 {
+        panic("Simd cmpgt mask failed");
+    }
+    if mask4_count_true(mask_gt) != 2 {
+        panic("Mask count_true failed");
+    }
+
+    let selected: Simd4i32 = simd4i32_select(mask_gt, va, vb);
+    if selected.v0 != 2 || selected.v1 != 5 || selected.v2 != 3 || selected.v3 != 8 {
+        panic("Simd select failed");
+    }
+
+    let sum_red: i32 = simd4i32_reduce_sum(va);
+    if sum_red != 17 {
+        panic("Simd reduce_sum failed");
+    }
+
+    var mem_buf: [i32; 8] = [10, 20, 30, 40, 50, 60, 70, 80];
+    let idx: Simd4i32 = simd4i32_new(0, 2, 4, 6);
+    let gathered: Simd4i32 = simd4i32_gather(&mem_buf[0], idx);
+    if gathered.v0 != 10 || gathered.v1 != 30 || gathered.v2 != 50 || gathered.v3 != 70 {
+        panic("Simd gather failed");
+    }
+
+    let swizzled: Simd4i32 = simd4i32_swizzle(gathered, 3, 2, 1, 0);
+    if swizzled.v0 != 70 || swizzled.v1 != 50 || swizzled.v2 != 30 || swizzled.v3 != 10 {
+        panic("Simd swizzle failed");
+    }
+
+    if !cpu_has_avx2() {
+        panic("CPU AVX2 check failed");
+    }
+
+    println("Step 2 Phase 2.1 Numerics & SIMD Verified!");
+    return 0;
+}

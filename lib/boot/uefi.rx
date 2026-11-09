@@ -1,0 +1,102 @@
+include "lib/core/types.rx";
+
+const EFI_SUCCESS: uint          = 0;
+const EFI_LOAD_ERROR: uint       = 1;
+const EFI_INVALID_PARAMETER: uint = 2;
+const EFI_BUFFER_TOO_SMALL: uint = 5;
+
+const EFI_CONVENTIONAL_MEMORY: u32 = 7;
+const EFI_RESET_COLD: u32          = 0;
+const EFI_RESET_WARM: u32          = 1;
+const EFI_RESET_SHUTDOWN: u32      = 2;
+
+struct EfiGuid {
+    data1: u32,
+    data2: u16,
+    data3: u16,
+    data4: [u8; 8],
+}
+
+struct EfiTime {
+    year: u16,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+    second: u8,
+    nanosecond: u32,
+    timezone: i16,
+    daylight: u8,
+}
+
+struct EfiMemoryDescriptor {
+    mem_type: u32,
+    physical_start: u64,
+    virtual_start: u64,
+    number_of_pages: u64,
+    attribute: u64,
+}
+
+struct EfiGopFramebuffer {
+    base_addr: u64,
+    buffer_size: uint,
+    width: u32,
+    height: u32,
+    pixels_per_scanline: u32,
+    pixel_format: u32,
+}
+
+struct EfiEnvironment {
+    firmware_revision: u32,
+    boot_services_active: bool,
+    runtime_services_active: bool,
+    gop: EfiGopFramebuffer,
+    mmap: [EfiMemoryDescriptor; 32],
+    mmap_count: uint,
+}
+
+fn uefi_env_init(env: *mut EfiEnvironment, fb_base: u64, width: u32, height: u32) {
+    env.firmware_revision = 131082;
+    env.boot_services_active = true;
+    env.runtime_services_active = true;
+    env.gop.base_addr = fb_base;
+    env.gop.width = width;
+    env.gop.height = height;
+    env.gop.pixels_per_scanline = width;
+    env.gop.pixel_format = 1;
+    env.gop.buffer_size = (width as uint) * (height as uint) * 4;
+    env.mmap_count = 0;
+}
+
+fn uefi_add_memory_region(env: *mut EfiEnvironment, mem_type: u32, phys_start: u64, pages: u64) {
+    if env.mmap_count < 32 {
+        let idx: uint = env.mmap_count;
+        env.mmap[idx].mem_type = mem_type;
+        env.mmap[idx].physical_start = phys_start;
+        env.mmap[idx].virtual_start = phys_start;
+        env.mmap[idx].number_of_pages = pages;
+        env.mmap[idx].attribute = 15;
+        env.mmap_count = idx + 1;
+    }
+}
+
+fn uefi_exit_boot_services(env: *mut EfiEnvironment) -> uint {
+    if !env.boot_services_active {
+        return EFI_INVALID_PARAMETER;
+    }
+    env.boot_services_active = false;
+    return EFI_SUCCESS;
+}
+
+fn uefi_usable_ram_bytes(env: *const EfiEnvironment) -> u64 {
+    var total: u64 = 0;
+    var i: uint = 0;
+    while i < env.mmap_count {
+        if env.mmap[i].mem_type == EFI_CONVENTIONAL_MEMORY {
+            total = total + (env.mmap[i].number_of_pages * 4096);
+        }
+        i = i + 1;
+    }
+    return total;
+}
+

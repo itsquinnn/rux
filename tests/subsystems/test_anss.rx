@@ -1,0 +1,38 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/subsystems/anss/ast_fold.rx";
+include "compiler/subsystems/anss/patcher.rx";
+
+fn main() -> int {
+    println("=== RUX COMPILER SUITE: ANSS (ADAPTIVE NATIVE STENCILS) ===");
+
+    let mult_mb: uint = anss_resolve_unit_multiplier("MB");
+    let mult_ms: uint = anss_resolve_unit_multiplier("ms");
+    let mult_s: uint = anss_resolve_unit_multiplier("s");
+
+    if mult_mb != 1048576 || mult_ms != 1000000 || mult_s != 1000000000 {
+        println("[FAIL] ANSS: Unit literal multiplier resolution failed");
+        return 1;
+    }
+    println("[PASS] ANSS: Unit literal multiplier resolution (MB, ms, s) verified");
+
+    let sum: int = anss_fold_binary_constant(1, 100, 250);
+    let prod: int = anss_fold_binary_constant(3, 12, 12);
+    if sum != 350 || prod != 144 {
+        println("[FAIL] ANSS: Constant expression folding failed");
+        return 2;
+    }
+    println("[PASS] ANSS: Compile-time constant expression subtree folding verified");
+
+    var target_callsite: [byte; 16];
+    var new_stencil: [byte; 16];
+    let ok: bool = anss_hot_patch_stencil(&mut target_callsite[0], &new_stencil[0], 16);
+    if !ok {
+        println("[FAIL] ANSS: Stencil atomic hot-patching failed");
+        return 3;
+    }
+    println("[PASS] ANSS: Atomic stencil hot-patching verified");
+
+    println("ALL ANSS ADAPTIVE STENCIL TESTS PASSED (100% OK)");
+    return 0;
+}

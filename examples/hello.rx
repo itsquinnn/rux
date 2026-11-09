@@ -1,0 +1,92 @@
+fn str_match(a: *u8, b: *u8) -> u32 {
+    var i: u64 = 0;
+    while a[i] != 0 && b[i] != 0 {
+        if a[i] != b[i] {
+            return 0;
+        }
+        i = i + 1;
+    }
+    if a[i] == b[i] {
+        return 1;
+    }
+    return 0;
+}
+
+fn compute_banner_score(a: u64, b: u64, c: u64, d: u64, e: u64, f: u64, g: u64, h: u64) -> u64 {
+    return a + b + c + d + e + f + g + h;
+}
+
+fn demo_null_pointer() -> u64 {
+    let p: *mut u64 = 0 as *mut u64;
+    *p = 99;
+    return *p;
+}
+
+fn demo_bad_address() -> u64 {
+    let p: *u64 = 3735928559 as *u64;
+    return *p;
+}
+
+fn demo_div_by_zero(x: int, y: int) -> int {
+    return x / y;
+}
+
+fn demo_array_oob(idx: int) -> u64 {
+    var items: [u64; 4];
+    items[0] = 10;
+    items[1] = 20;
+    items[2] = 30;
+    items[3] = 40;
+    return items[idx];
+}
+
+fn demo_stack_overflow(depth: u64) -> u64 {
+    var pad: [u64; 8];
+    pad[0] = depth;
+    if depth == 0 {
+        return 0;
+    }
+    return pad[0] + demo_stack_overflow(depth + 1);
+}
+
+fn main(argc: u64, argv: **u8) -> int {
+    if argc > 1 {
+        let mode: *u8 = argv[1];
+        if str_match(mode, "--fault-null") == 1 {
+            return demo_null_pointer() as int;
+        }
+        if str_match(mode, "--fault-ptr") == 1 {
+            return demo_bad_address() as int;
+        }
+        if str_match(mode, "--fault-div0") == 1 {
+            return demo_div_by_zero(42, 0);
+        }
+        if str_match(mode, "--fault-oob") == 1 {
+            return demo_array_oob(9) as int;
+        }
+        if str_match(mode, "--fault-neg-oob") == 1 {
+            return demo_array_oob(-2) as int;
+        }
+        if str_match(mode, "--fault-stack") == 1 {
+            return demo_stack_overflow(1) as int;
+        }
+    }
+
+    println("Hello from Rux!");
+    var nums: [u64; 4];
+    nums[0] = 10;
+    nums[1] = 20;
+    nums[2] = 30;
+    nums[3] = 40;
+    let sum4: u64 = nums[0] + nums[1] + nums[2] + nums[3];
+    let score8: u64 = compute_banner_score(1, 2, 3, 4, 5, 6, 7, 8);
+    print("Array sum: ");
+    println(sum4);
+    print("8-arg call result: ");
+    println(score8);
+    if sum4 != 100 || score8 != 36 {
+        return 1;
+    }
+    return 0;
+}
+

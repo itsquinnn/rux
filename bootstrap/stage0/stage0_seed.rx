@@ -1,0 +1,20 @@
+include "bootstrap/driver/compiler.rx";
+
+fn main(argc: int, argv: **byte) -> int {
+    var src_path: *byte = "bootstrap/driver/compiler.rx" as *byte;
+    var out_path: *byte = "build_stages/stage1_bin" as *byte;
+
+    if argc >= 2 {
+        src_path = argv[1 as int];
+    }
+    if argc >= 3 {
+        out_path = argv[2 as int];
+    }
+
+    let res: int = compile_source_file(src_path, out_path);
+    if res != 0 {
+        return 1;
+    }
+
+    return 0;
+}

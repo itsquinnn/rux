@@ -1,0 +1,11 @@
+include "lib/core/types.rx";
+include "lib/time/duration.rx";
+
+fn sleep(d: Duration) {
+    var req: [uint; 2];
+    req[0] = d.nanoseconds / 1000000000;
+    req[1] = d.nanoseconds % 1000000000;
+    @os.nanosleep(&req[0], 0 as *mut uint);
+}
+
+fn sleep_ms(ms: uint) => sleep(from_millis(ms));

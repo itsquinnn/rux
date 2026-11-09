@@ -1,0 +1,24 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+fn test_arrow_function() {
+    let add = fn(a: int, b: int) => a + b;
+    assert(add(10, 20) == 30, "Arrow function addition failed");
+}
+
+shape TestPoint {
+    x: int,
+    y: int,
+}
+
+fn test_shape_instantiation() {
+    let p: TestPoint = TestPoint { x: 100, y: 200 };
+    assert(p.x == 100, "Shape x field mismatch");
+    assert(p.y == 200, "Shape y field mismatch");
+}
+
+fn main() -> int {
+    test_arrow_function();
+    test_shape_instantiation();
+    return 0;
+}

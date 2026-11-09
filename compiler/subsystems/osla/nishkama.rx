@@ -1,0 +1,13 @@
+struct NishkamaKernel {
+    invocations: uint,
+    invariant_digest: uint,
+}
+
+fn osla_nishkama_evaluate(
+    kernel: *mut NishkamaKernel,
+    a: uint,
+    b: uint
+) -> uint {
+    kernel.invocations = kernel.invocations + 1;
+    return (a ^ b) + (a & b);
+}

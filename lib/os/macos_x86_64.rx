@@ -1,0 +1,29 @@
+include "lib/core/types.rx";
+
+const MAC_SYS_CLASS: uint         = 0x2000000;
+
+const MAC_SYS_EXIT: uint          = 0x2000001;
+const MAC_SYS_FORK: uint          = 0x2000002;
+const MAC_SYS_READ: uint          = 0x2000003;
+const MAC_SYS_WRITE: uint         = 0x2000004;
+const MAC_SYS_OPEN: uint          = 0x2000005;
+const MAC_SYS_CLOSE: uint         = 0x2000006;
+const MAC_SYS_WAIT4: uint         = 0x2000007;
+const MAC_SYS_UNLINK: uint        = 0x200000A;
+const MAC_SYS_GETPID: uint        = 0x2000014;
+const MAC_SYS_SOCKET: uint        = 0x2000061;
+const MAC_SYS_CONNECT: uint       = 0x2000062;
+const MAC_SYS_ACCEPT: uint        = 0x200001E;
+const MAC_SYS_MMAP: uint          = 0x20000C5;
+const MAC_SYS_MUNMAP: uint        = 0x2000049;
+const MAC_SYS_MPROTECT: uint      = 0x200004A;
+
+const MAC_O_RDONLY: uint          = 0x0000;
+const MAC_O_WRONLY: uint          = 0x0001;
+const MAC_O_RDWR: uint            = 0x0002;
+const MAC_O_CREAT: uint           = 0x0200;
+const MAC_O_TRUNC: uint           = 0x0400;
+
+fn macos_syscall3(num: uint, arg1: uint, arg2: uint, arg3: uint) -> int {
+    return @os.raw_syscall3(num, arg1, arg2, arg3);
+}

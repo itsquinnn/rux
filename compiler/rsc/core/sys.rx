@@ -1,0 +1,200 @@
+struct Arena {
+    memory: *mut u8,
+    offset: u64,
+    capacity: u64,
+}
+
+fn mmap_alloc(size: u64) -> *mut u8 {
+    let aligned: u64 = ((size + 4095) / 4096) * 4096;
+    return acrq_port_submit(5, 0, 7, 0, aligned, 34) as *mut u8;
+}
+
+fn uses_alloc(bytes: u64) -> *mut u8 {
+    let aligned: u64 = ((bytes + 15) / 16) * 16;
+    return acrq_port_submit(5, 0, 7, 0, aligned, 34) as *mut u8;
+}
+
+fn uses_free(ptr: *mut u8, bytes: u64) {
+    if (ptr as i64) > 0 {
+        acrq_port_submit(6, 0, 0, ptr as u64, bytes, 0);
+    }
+}
+
+fn uses_print(s: *u8) {
+    var len: u64 = 0;
+    while s[len] != 0 { len = len + 1; }
+    acrq_port_submit(1, 1, 0, s as u64, 0, len);
+}
+
+fn uses_println(s: *u8) {
+    uses_print(s);
+    let nl: *u8 = "\n";
+    acrq_port_submit(1, 1, 0, nl as u64, 0, 1);
+}
+
+fn sys_exit(code: int) {
+    acrq_port_submit(8, code as u32, 0, 0, 0, 0);
+}
+
+fn uses_print_u64(n: u64) {
+    if n == 0 {
+        let zero: *u8 = "0";
+        acrq_port_submit(1, 1, 0, zero as u64, 0, 1);
+        return;
+    }
+    var buf: [u8; 32];
+    var i: u64 = 0;
+    var temp: u64 = n;
+    while temp > 0 {
+        buf[i] = ((temp % 10) + 48) as u8;
+        temp = temp / 10;
+        i = i + 1;
+    }
+    var j: u64 = 0;
+    var rev: [u8; 32];
+    while j < i { rev[j] = buf[i - 1 - j]; j = j + 1; }
+    rev[i] = 0;
+    acrq_port_submit(1, 1, 0, (&rev[0]) as u64, 0, i);
+}
+
+fn acrq_file_read(path: *u8, dst: *mut u8, max_bytes: u64) -> i64 {
+    let fd: i64 = acrq_port_submit(3, 0, 0, path as u64, 0, 0);
+    if fd < 0 {
+        return 0 - 1;
+    }
+    let nread: i64 = acrq_port_submit(2, fd as u32, 0, 0, dst as u64, max_bytes);
+    acrq_port_submit(4, fd as u32, 0, 0, 0, 0);
+    return nread;
+}
+
+fn acrq_file_write_bytes(path: *u8, data: *u8, len: u64, mode: u64) -> i64 {
+    let flags: u64 = 577;
+    let fd: i64 = acrq_port_submit(3, 493, flags, path as u64, 0, 0);
+    if fd < 0 {
+        return 0 - 1;
+    }
+    var written: i64 = 0;
+    var off: u64 = 0;
+    while off < len {
+        let chunk: u64 = len - off;
+        let n: i64 = acrq_port_submit(1, fd as u32, 0, (data + off) as u64, 0, chunk);
+        if n <= 0 {
+            acrq_port_submit(4, fd as u32, 0, 0, 0, 0);
+            return 0 - 1;
+        }
+        off = off + (n as u64);
+        written = written + n;
+    }
+    acrq_port_submit(4, fd as u32, 0, 0, 0, 0);
+    return written;
+}
+
+fn uses_unlink(path: *u8) -> i64 {
+    return acrq_port_submit(7, 0, 0, path as u64, 0, 0);
+}
+
+fn iphee_exec_binary(bin_path: *u8, max_bin_size: u64) -> i64 {
+    let code_buf: *mut u8 = mmap_alloc(max_bin_size);
+    if (code_buf as i64) <= 0 {
+        return 0 - 1;
+    }
+    let nread: i64 = acrq_file_read(bin_path, code_buf, max_bin_size);
+    if nread <= 0 {
+        return 0 - 1;
+    }
+    let elf_magic: u32 = (code_buf[0] as u32) | ((code_buf[1] as u32) << 8) |
+                         ((code_buf[2] as u32) << 16) | ((code_buf[3] as u32) << 24);
+    let e_entry_ptr: *u64 = (code_buf + 24) as *u64;
+    let e_entry_raw: u64 = e_entry_ptr[0];
+    var main_off: u64 = 0;
+    if elf_magic == 1179403647 {
+        if e_entry_raw > 4194304 {
+            main_off = e_entry_raw - 4194304;
+        }
+    }
+
+    var holo_off: u64 = 128;
+    if code_buf[0] == 77 && code_buf[1] == 90 {
+        holo_off = 1152;
+    }
+    let holo: *mut UniversalHologramHeader = (code_buf + holo_off) as *mut UniversalHologramHeader;
+    let m: u64 = holo.magic & 4294967295;
+    var text_offset: u64 = 65536;
+    var rodata_offset: u64 = 524288;
+    if m == 1145588037 {
+        if holo.reserved0 > 4194304 {
+            text_offset = holo.reserved0 - 4194304;
+        }
+        if holo.reserved1 > 4194304 {
+            rodata_offset = holo.reserved1 - 4194304;
+        }
+        var sci: u64 = 0;
+
+        let main_hash: u64 = 2258945139493307336;
+        while sci < holo.contracts_count {
+            let sc: *mut SymbolContract = (code_buf + holo.contracts_offset + (sci * 48)) as *mut SymbolContract;
+            if sc.symbol_hash == main_hash {
+                main_off = sc.vaddr - 4194304;
+                sci = holo.contracts_count;
+            }
+            sci = sci + 1;
+        }
+    }
+    let aligned_cap: u64 = ((nread as u64 + 4095) / 4096) * 4096;
+    let page: *mut u8 = acrq_port_submit(5, 0, 7, 0, aligned_cap, 34) as *mut u8;
+    if (page as i64) <= 0 {
+        return 0 - 1;
+    }
+    var i: u64 = 0;
+    while i < (nread as u64) {
+        page[i] = code_buf[i];
+        i = i + 1;
+    }
+
+    var scan_i: u64 = text_offset;
+    var scan_end: u64 = rodata_offset;
+    if scan_end > (nread as u64) {
+        scan_end = nread as u64;
+    }
+    let rodata_base: u64 = (page as u64) + rodata_offset;
+    while (scan_i + 10) <= scan_end {
+        if page[scan_i] == 72 && page[scan_i + 1] == 184 {
+            let imm_ptr: *mut u64 = (page + scan_i + 2) as *mut u64;
+            let val: u64 = imm_ptr[0];
+            if val >= 4718592 && val < 5767168 {
+                let ro_off: u64 = val - 4718592;
+                imm_ptr[0] = rodata_base + ro_off;
+                scan_i = scan_i + 9;
+            }
+        }
+        scan_i = scan_i + 1;
+    }
+
+    @silicon.mfence();
+    let fn_target: *mut u8 = page + main_off;
+
+    var host_argv: [*mut u8; 2];
+    host_argv[0] = bin_path;
+    host_argv[1] = 0 as *mut u8;
+    let ret: i64 = fn_target(1, &host_argv[0]);
+
+    acrq_port_submit(6, 0, 0, page as u64, aligned_cap, 0);
+    uses_free(code_buf, max_bin_size);
+    return ret;
+}
+
+fn arena_init(arena: *mut Arena, size: u64) {
+    let mem: *mut u8 = mmap_alloc(size);
+    arena.memory = mem;
+    arena.offset = 0;
+    arena.capacity = size;
+}
+
+fn arena_alloc(arena: *mut Arena, bytes: u64) -> *mut u8 {
+    let aligned: u64 = ((bytes + 7) / 8) * 8;
+    let cur: u64 = arena.offset;
+    let next_off: u64 = cur + aligned;
+    arena.offset = next_off;
+    let ptr: *mut u8 = arena.memory + cur;
+    return ptr;
+}

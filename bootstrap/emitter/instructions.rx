@@ -1,0 +1,30 @@
+struct InstructionStream {
+    buffer: *mut byte,
+    length: uint,
+    capacity: uint,
+}
+
+fn stream_init(s: *mut InstructionStream, buf: *mut byte, cap: uint) {
+    s.buffer = buf;
+    s.length = 0;
+    s.capacity = cap;
+}
+
+fn emit_byte(s: *mut InstructionStream, b: byte) {
+    if s.length < s.capacity {
+        s.buffer[s.length] = b;
+        s.length = s.length + 1;
+    }
+}
+
+fn emit_u32(s: *mut InstructionStream, val: uint) {
+    emit_byte(s, (val & 0xFF) as byte);
+    emit_byte(s, ((val >> 8) & 0xFF) as byte);
+    emit_byte(s, ((val >> 16) & 0xFF) as byte);
+    emit_byte(s, ((val >> 24) & 0xFF) as byte);
+}
+
+fn emit_u64(s: *mut InstructionStream, val: uint) {
+    emit_u32(s, val & 0xFFFFFFFF);
+    emit_u32(s, (val >> 32) & 0xFFFFFFFF);
+}

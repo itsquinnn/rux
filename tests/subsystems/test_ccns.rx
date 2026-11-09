@@ -1,0 +1,43 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/subsystems/ccns/cap.rx";
+include "compiler/subsystems/ccns/enclave.rx";
+
+fn main() -> int {
+    println("=== RUX COMPILER SUITE: CCNS (CAPABILITY SECURITY & ENCLAVES) ===");
+
+    var raw_slice: [byte; 128];
+    var token: AegisCapToken;
+    ccns_cap_from_slice(&mut token, &mut raw_slice[0], 128, 7);
+
+    if !ccns_cap_validate(&token, 0, 64, 1) {
+        println("[FAIL] CCNS: Capability READ validation failed");
+        return 1;
+    }
+
+    if ccns_cap_validate(&token, 100, 50, 1) {
+        println("[FAIL] CCNS: Capability spatial bounds violation went undetected");
+        return 2;
+    }
+    println("[PASS] CCNS: 128-bit spatial capability bounds validation verified");
+
+    ccns_cap_restrict(&mut token, 3);
+    if ccns_cap_validate(&token, 0, 10, 4) {
+        println("[FAIL] CCNS: Capability failed to restrict monotonically");
+        return 3;
+    }
+    println("[PASS] CCNS: Monotonic permission restriction verified");
+
+    var shield: ExposedShield;
+    ccns_shield_init(&mut shield, 1);
+    ccns_shield_absorb_probe(&mut shield, 512);
+
+    if shield.probes_absorbed != 1 || shield.total_probe_bytes != 512 {
+        println("[FAIL] CCNS: Exposed shield probe absorption failed");
+        return 4;
+    }
+    println("[PASS] CCNS: Dual-perimeter exposed shield probe absorption verified");
+
+    println("ALL CCNS CAPABILITY SECURITY TESTS PASSED (100% OK)");
+    return 0;
+}

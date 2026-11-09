@@ -1,0 +1,126 @@
+include "lib/core/types.rx";
+include "lib/os/uses_substrate.rx";
+
+struct GcObjectHeader {
+    ptr: *mut byte,
+    size: uint,
+    marked: bool,
+    in_use: bool,
+}
+
+struct GcHeap {
+    objects: *mut GcObjectHeader,
+    capacity: uint,
+    live_count: uint,
+    live_bytes: uint,
+}
+
+fn gc_init(heap: *mut GcHeap, max_objs: uint) {
+    var cap: uint = max_objs;
+    if cap < 64 { cap = 64; }
+    heap.objects = uses_substrate_alloc(cap * 32) as *mut GcObjectHeader;
+    var i: uint = 0;
+    while i < cap {
+        heap.objects[i].ptr = 0 as *mut byte;
+        heap.objects[i].size = 0;
+        heap.objects[i].marked = false;
+        heap.objects[i].in_use = false;
+        i = i + 1;
+    }
+    heap.capacity = cap;
+    heap.live_count = 0;
+    heap.live_bytes = 0;
+}
+
+fn gc_alloc(heap: *mut GcHeap, bytes: uint) -> *mut byte {
+    var i: uint = 0;
+    while i < heap.capacity {
+        if !heap.objects[i].in_use {
+            let mem: *mut byte = uses_substrate_alloc(bytes);
+            heap.objects[i].ptr = mem;
+            heap.objects[i].size = bytes;
+            heap.objects[i].marked = false;
+            heap.objects[i].in_use = true;
+            heap.live_count = heap.live_count + 1;
+            heap.live_bytes = heap.live_bytes + bytes;
+            return mem;
+        }
+        i = i + 1;
+    }
+    return 0 as *mut byte;
+}
+
+fn gc_mark(heap: *mut GcHeap, root_ptr: *const byte) {
+    var i: uint = 0;
+    while i < heap.capacity {
+        if heap.objects[i].in_use && (heap.objects[i].ptr as uint) == (root_ptr as uint) {
+            heap.objects[i].marked = true;
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+fn gc_sweep(heap: *mut GcHeap) -> uint {
+    var freed_bytes: uint = 0;
+    var i: uint = 0;
+    while i < heap.capacity {
+        if heap.objects[i].in_use {
+            if heap.objects[i].marked {
+                heap.objects[i].marked = false;
+            } else {
+                uses_substrate_free(heap.objects[i].ptr, heap.objects[i].size);
+                freed_bytes = freed_bytes + heap.objects[i].size;
+                heap.live_bytes = heap.live_bytes - heap.objects[i].size;
+                heap.live_count = heap.live_count - 1;
+                heap.objects[i].ptr = 0 as *mut byte;
+                heap.objects[i].size = 0;
+                heap.objects[i].in_use = false;
+            }
+        }
+        i = i + 1;
+    }
+    return freed_bytes;
+}
+
+struct ArrayBuffer {
+    data: *mut byte,
+    byte_length: uint,
+}
+
+struct Uint8Array {
+    buffer: *mut byte,
+    length: uint,
+}
+
+fn arraybuffer_new(byte_len: uint) -> ArrayBuffer {
+    var ab: ArrayBuffer;
+    ab.data = uses_substrate_alloc(byte_len);
+    ab.byte_length = byte_len;
+    var i: uint = 0;
+    while i < byte_len {
+        ab.data[i] = 0;
+        i = i + 1;
+    }
+    return ab;
+}
+
+fn uint8array_from_buffer(ab: *mut ArrayBuffer) -> Uint8Array {
+    var ua: Uint8Array;
+    ua.buffer = ab.data;
+    ua.length = ab.byte_length;
+    return ua;
+}
+
+fn uint8array_set(ua: *mut Uint8Array, idx: uint, val: byte) {
+    if idx < ua.length {
+        ua.buffer[idx] = val;
+    }
+}
+
+fn uint8array_get(ua: *const Uint8Array, idx: uint) -> byte {
+    if idx < ua.length {
+        return ua.buffer[idx];
+    }
+    return 0;
+}

@@ -1,0 +1,44 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/subsystems/tspa/ledger.rx";
+include "compiler/subsystems/tspa/nvbox.rx";
+
+fn main() -> int {
+    println("=== RUX COMPILER SUITE: TSPA (PERSISTENCE ARCHITECTURE) ===");
+
+    var ledger_buf: [byte; 64];
+    let ledger: *mut PersistenceLedger = (&mut ledger_buf[0]) as *mut PersistenceLedger;
+    ledger.magic = 0x54535041;
+    ledger.generation = 10;
+    ledger.committed_root = 123456789;
+    ledger.total_entries = 50;
+    ledger.is_cleanly_closed = true;
+
+    let bind_ok: bool = tspa_bind_on_reboot(&mut ledger_buf[0], 10);
+    if !bind_ok || ledger.generation != 11 || ledger.is_cleanly_closed {
+        println("[FAIL] TSPA: Crash recovery ledger reboot binding failed");
+        return 1;
+    }
+    println("[PASS] TSPA: Crash recovery ledger reboot binding verified");
+
+    var storage: [byte; 256];
+    var nvbox: NvBoxDescriptor;
+    nvbox.tier = MemoryTier.TIER_2_NVRAM_PERSISTENT;
+    nvbox.base_ptr = &mut storage[0];
+    nvbox.capacity = 256;
+    nvbox.watermark = 0;
+    nvbox.mutations_count = 0;
+
+    let p1: *mut byte = tspa_alloc_persistent(&mut nvbox, 60, MemoryTier.TIER_2_NVRAM_PERSISTENT);
+    if (p1 as uint) == 0 || nvbox.watermark != 64 {
+        println("[FAIL] TSPA: 64-byte aligned NVBox allocation failed");
+        return 2;
+    }
+    println("[PASS] TSPA: 64-byte cacheline-aligned NVBox allocation verified");
+
+    tspa_hardware_persist_barrier(p1 as *const byte, 64);
+    println("[PASS] TSPA: Hardware persist barrier (CLWB + SFENCE) executed");
+
+    println("ALL TSPA PERSISTENCE TESTS PASSED (100% OK)");
+    return 0;
+}

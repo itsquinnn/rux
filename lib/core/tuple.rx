@@ -1,0 +1,41 @@
+include "lib/core/types.rx";
+
+struct Pair {
+    first: uint,
+    second: uint,
+}
+
+struct Tuple3 {
+    first: uint,
+    second: uint,
+    third: uint,
+}
+
+struct ValueErr {
+    val: uint,
+    err: int,
+    has_err: bool,
+}
+
+fn make_ok(val: uint) -> ValueErr {
+    var res: ValueErr;
+    res.val = val;
+    res.err = 0;
+    res.has_err = false;
+    return res;
+}
+
+fn make_err(err: int) -> ValueErr {
+    var res: ValueErr;
+    res.val = 0;
+    res.err = err;
+    res.has_err = true;
+    return res;
+}
+
+fn make_pair(a: uint, b: uint) -> Pair {
+    var p: Pair;
+    p.first = a;
+    p.second = b;
+    return p;
+}

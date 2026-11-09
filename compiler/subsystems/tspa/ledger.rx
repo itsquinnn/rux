@@ -1,0 +1,25 @@
+struct PersistenceLedger {
+    magic: u32,
+    generation: uint,
+    committed_root: uint,
+    total_entries: uint,
+    is_cleanly_closed: bool,
+}
+
+fn tspa_bind_on_reboot(
+    ledger_ptr: *mut byte,
+    expected_generation: uint
+) -> bool {
+    let ledger: *mut PersistenceLedger = ledger_ptr as *mut PersistenceLedger;
+    if ledger.magic != 0x54535041 {
+        return false;
+    }
+
+    if ledger.generation < expected_generation {
+        return false;
+    }
+
+    ledger.generation = ledger.generation + 1;
+    ledger.is_cleanly_closed = false;
+    return true;
+}

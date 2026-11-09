@@ -1,0 +1,48 @@
+include "lib/core/types.rx";
+
+fn write_raw(fd: int, buf: *const byte, len: uint) -> int {
+    return @os.write(fd, buf, len);
+}
+
+fn print(s: str) {
+    let ptr: *const byte = s as *const byte;
+    let len: uint = @str.len(s);
+    write_raw(1, ptr, len);
+}
+
+fn println(s: str) {
+    print(s);
+    let nl: byte = 10 as byte;
+    write_raw(1, &nl, 1);
+}
+
+fn print_uint(val: uint) {
+    if val == 0 {
+        let zero: byte = 48 as byte;
+        write_raw(1, &zero, 1);
+        return;
+    }
+
+    var buf: [byte; 24];
+    var i: uint = 24;
+    var v: uint = val;
+
+    while v > 0 {
+        i = i - 1;
+        buf[i] = ((v % 10) + 48) as byte;
+        v = v / 10;
+    }
+
+    let ptr: *const byte = (&buf[i]) as *const byte;
+    write_raw(1, ptr, 24 - i);
+}
+
+fn print_int(val: int) {
+    if val < 0 {
+        let minus: byte = 45 as byte;
+        write_raw(1, &minus, 1);
+        print_uint((-val) as uint);
+    } else {
+        print_uint(val as uint);
+    }
+}

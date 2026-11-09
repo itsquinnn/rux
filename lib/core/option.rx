@@ -1,0 +1,80 @@
+include "lib/core/types.rx";
+include "lib/core/panic.rx";
+
+struct Option<T> {
+    has_val: bool,
+    value: T,
+}
+
+fn opt_some<T>(val: T) -> Option<T> {
+    var o: Option<T>;
+    o.has_val = true;
+    o.value = val;
+    return o;
+}
+
+fn opt_none<T>() -> Option<T> {
+    var o: Option<T>;
+    o.has_val = false;
+    return o;
+}
+
+fn Some<T>(val: T) -> Option<T> => opt_some<T>(val);
+fn None<T>() -> Option<T> => opt_none<T>();
+
+fn opt_unwrap<T>(opt: Option<T>) -> T {
+    if !opt.has_val {
+        panic("Called opt_unwrap() on a None Option");
+    }
+    return opt.value;
+}
+
+fn option_some(val: uint) -> Option {
+    return Option {
+        has_val: true,
+        value: val,
+    };
+}
+
+fn option_none() -> Option {
+    return Option {
+        has_val: false,
+        value: 0,
+    };
+}
+
+fn option_is_some(opt: Option) -> bool {
+    return opt.has_val;
+}
+
+fn option_is_none(opt: Option) -> bool {
+    return !opt.has_val;
+}
+
+fn option_unwrap(opt: Option) -> uint {
+    if !opt.has_val {
+        panic("Called option_unwrap() on a None Option");
+    }
+    return opt.value;
+}
+
+fn option_unwrap_or(opt: Option, fallback: uint) -> uint {
+    if opt.has_val {
+        return opt.value;
+    }
+    return fallback;
+}
+
+fn option_map(opt: Option, map_fn: fn(val: uint) -> uint) -> Option {
+    if opt.has_val {
+        return option_some(map_fn(opt.value));
+    }
+    return option_none();
+}
+
+fn option_and_then(opt: Option, chain_fn: fn(val: uint) -> Option) -> Option {
+    if opt.has_val {
+        return chain_fn(opt.value);
+    }
+    return option_none();
+}

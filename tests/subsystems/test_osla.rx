@@ -1,0 +1,29 @@
+include "lib/core/types.rx";
+include "lib/io/print.rx";
+include "compiler/subsystems/osla/codon.rx";
+include "compiler/subsystems/osla/cooper_fma.rx";
+
+fn main() -> int {
+    println("=== RUX COMPILER SUITE: OSLA (OMNI-SCIENTIFIC ARCHITECTURE) ===");
+
+    var triplet: [byte; 3];
+    triplet[0] = 0x12 as byte;
+    triplet[1] = 0x34 as byte;
+    triplet[2] = 0x56 as byte;
+
+    if !osla_codon_proofread(&triplet[0]) {
+        println("[FAIL] OSLA: Codon triplet proofreading failed");
+        return 1;
+    }
+    println("[PASS] OSLA: Genetic codon triplet proofreading verified");
+
+    let res: uint = osla_cooper_pair_execute_fma(12, 10, 8);
+    if res != 128 {
+        println("[FAIL] OSLA: Cooper-Pair FMA execution mismatch");
+        return 2;
+    }
+    println("[PASS] OSLA: Hardware Cooper-Pair FMA execution verified");
+
+    println("ALL OSLA SCIENTIFIC NUMERICAL TESTS PASSED (100% OK)");
+    return 0;
+}

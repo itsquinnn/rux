@@ -1,0 +1,294 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+include "lib/crypto/blake3.rx";
+
+fn rxd_vitrify(text: *const byte, text_len: u64, out_buf: *mut u8, max_out: u64) -> u64 {
+    if max_out < 128 {
+        return 0;
+    }
+
+    var ctx: RxdParseContext;
+    ctx.src = text as *const u8;
+    ctx.len = text_len;
+    ctx.pos = 0;
+
+    let max_slots: u64 = 256;
+    var num_slots: u64 = 0;
+    let arena_start: u64 = 4160;
+    var arena_cur: u64 = 0;
+
+    while ctx.pos < ctx.len && num_slots < max_slots {
+        rxd_skip_whitespace_and_comments(&mut ctx);
+        if ctx.pos >= ctx.len {
+            break;
+        }
+
+        let c: u8 = ctx.src[ctx.pos];
+        if c == 0 {
+            break;
+        }
+
+        if c == 125 || c == 93 {
+            ctx.pos = ctx.pos + 1;
+            continue;
+        }
+
+        let key_start: u64 = ctx.pos;
+        var key_len: u64 = 0;
+
+        if c == 34 {
+            ctx.pos = ctx.pos + 1;
+            let q_start: u64 = ctx.pos;
+            while ctx.pos < ctx.len && ctx.src[ctx.pos] != 34 {
+                ctx.pos = ctx.pos + 1;
+            }
+            key_len = ctx.pos - q_start;
+            if ctx.pos < ctx.len { ctx.pos = ctx.pos + 1; }
+        } else if rxd_is_ident_char(c) {
+            while ctx.pos < ctx.len && rxd_is_ident_char(ctx.src[ctx.pos]) {
+                ctx.pos = ctx.pos + 1;
+            }
+            key_len = ctx.pos - key_start;
+        } else {
+            ctx.pos = ctx.pos + 1;
+            continue;
+        }
+
+        if key_len == 0 {
+            continue;
+        }
+
+        let k_arena_off: u16 = arena_cur as u16;
+        var ki: u64 = 0;
+        while ki < key_len {
+            let src_idx: u64 = key_start + ki;
+            out_buf[arena_start + arena_cur] = ctx.src[src_idx];
+            arena_cur = arena_cur + 1;
+            ki = ki + 1;
+        }
+        out_buf[arena_start + arena_cur] = 0;
+        arena_cur = arena_cur + 1;
+
+        rxd_skip_whitespace_and_comments(&mut ctx);
+        if ctx.pos >= ctx.len {
+            break;
+        }
+
+        let vc: u8 = ctx.src[ctx.pos];
+
+        var val_kind: u8 = 2;
+        var val_flags: u8 = 0;
+        var val_scalar: u64 = 0;
+        var val_aoff: u16 = 0;
+
+        if vc == 34 || vc == 96 {
+            val_kind = 5;
+            ctx.pos = ctx.pos + 1;
+            let str_start: u64 = ctx.pos;
+            while ctx.pos < ctx.len && ctx.src[ctx.pos] != vc {
+                ctx.pos = ctx.pos + 1;
+            }
+            let s_len: u64 = ctx.pos - str_start;
+            if ctx.pos < ctx.len { ctx.pos = ctx.pos + 1; }
+
+            val_aoff = arena_cur as u16;
+            val_scalar = s_len;
+
+            var si: u64 = 0;
+            while si < s_len {
+                let src_idx: u64 = str_start + si;
+                out_buf[arena_start + arena_cur] = ctx.src[src_idx];
+                arena_cur = arena_cur + 1;
+                si = si + 1;
+            }
+            out_buf[arena_start + arena_cur] = 0;
+            arena_cur = arena_cur + 1;
+        }
+        else if (vc == 116 && (ctx.pos + 3) < ctx.len && ctx.src[ctx.pos + 1] == 114 && ctx.src[ctx.pos + 2] == 117 && ctx.src[ctx.pos + 3] == 101) {
+            val_kind = 4;
+            val_scalar = 1;
+            ctx.pos = ctx.pos + 4;
+        } else if (vc == 102 && (ctx.pos + 4) < ctx.len && ctx.src[ctx.pos + 1] == 97 && ctx.src[ctx.pos + 2] == 108 && ctx.src[ctx.pos + 3] == 115 && ctx.src[ctx.pos + 4] == 101) {
+            val_kind = 4;
+            val_scalar = 0;
+            ctx.pos = ctx.pos + 5;
+        }
+        else if vc == 123 {
+            val_kind = 7;
+            ctx.pos = ctx.pos + 1;
+            val_scalar = 1;
+        }
+        else if vc == 91 {
+            val_kind = 8;
+            ctx.pos = ctx.pos + 1;
+            let arr_start: u64 = ctx.pos;
+            while ctx.pos < ctx.len && ctx.src[ctx.pos] != 93 {
+                ctx.pos = ctx.pos + 1;
+            }
+            let arr_len: u64 = ctx.pos - arr_start;
+            if ctx.pos < ctx.len { ctx.pos = ctx.pos + 1; }
+
+            val_aoff = arena_cur as u16;
+            val_scalar = arr_len;
+
+            var ai: u64 = 0;
+            while ai < arr_len {
+                let src_idx: u64 = arr_start + ai;
+                out_buf[arena_start + arena_cur] = ctx.src[src_idx];
+                arena_cur = arena_cur + 1;
+                ai = ai + 1;
+            }
+            out_buf[arena_start + arena_cur] = 0;
+            arena_cur = arena_cur + 1;
+        }
+        else if (vc >= 48 && vc <= 57) || vc == 45 {
+            val_kind = 2;
+            var is_neg: bool = false;
+            if vc == 45 {
+                is_neg = true;
+                ctx.pos = ctx.pos + 1;
+            }
+
+            if ctx.pos + 1 < ctx.len && ctx.src[ctx.pos] == 48 && (ctx.src[ctx.pos + 1] == 120 || ctx.src[ctx.pos + 1] == 88) {
+                ctx.pos = ctx.pos + 2;
+                var hex_val: u64 = 0;
+                while ctx.pos < ctx.len {
+                    let hc: u8 = ctx.src[ctx.pos];
+                    if hc >= 48 && hc <= 57 {
+                        hex_val = hex_val * 16 + ((hc - 48) as u64);
+                        ctx.pos = ctx.pos + 1;
+                    } else if hc >= 97 && hc <= 102 {
+                        hex_val = hex_val * 16 + ((hc - 87) as u64);
+                        ctx.pos = ctx.pos + 1;
+                    } else if hc >= 65 && hc <= 70 {
+                        hex_val = hex_val * 16 + ((hc - 55) as u64);
+                        ctx.pos = ctx.pos + 1;
+                    } else if hc == 95 {
+                        ctx.pos = ctx.pos + 1;
+                    } else {
+                        break;
+                    }
+                }
+                val_scalar = hex_val;
+            } else {
+                var num: u64 = 0;
+                while ctx.pos < ctx.len {
+                    let dc: u8 = ctx.src[ctx.pos];
+                    if dc >= 48 && dc <= 57 {
+                        num = num * 10 + ((dc - 48) as u64);
+                        ctx.pos = ctx.pos + 1;
+                    } else if dc == 95 {
+                        ctx.pos = ctx.pos + 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let suff_start: u64 = ctx.pos;
+                while ctx.pos < ctx.len && rxd_is_ident_char(ctx.src[ctx.pos]) {
+                    ctx.pos = ctx.pos + 1;
+                }
+                let suff_len: u64 = ctx.pos - suff_start;
+
+                if suff_len > 0 {
+                    val_scalar = rxd_eval_unit(num, ctx.src + suff_start, suff_len);
+                    val_flags = val_flags | 2;
+                } else {
+                    val_scalar = num;
+                }
+
+                if is_neg {
+                    val_kind = 1;
+                    let neg_val: i64 = 0 - (val_scalar as i64);
+                    val_scalar = neg_val as u64;
+                }
+            }
+        } else {
+            val_kind = 5;
+            let tok_start: u64 = ctx.pos;
+            while ctx.pos < ctx.len && rxd_is_ident_char(ctx.src[ctx.pos]) {
+                ctx.pos = ctx.pos + 1;
+            }
+            let t_len: u64 = ctx.pos - tok_start;
+            val_aoff = arena_cur as u16;
+            val_scalar = t_len;
+
+            var ti: u64 = 0;
+            while ti < t_len {
+                let src_idx: u64 = tok_start + ti;
+                out_buf[arena_start + arena_cur] = ctx.src[src_idx];
+                arena_cur = arena_cur + 1;
+                ti = ti + 1;
+            }
+            out_buf[arena_start + arena_cur] = 0;
+            arena_cur = arena_cur + 1;
+        }
+
+        let desc_ptr: *mut RxdSlotDescriptor = (out_buf + 64 + (num_slots * 16)) as *mut RxdSlotDescriptor;
+        desc_ptr.kind = val_kind;
+        desc_ptr.flags = val_flags;
+        desc_ptr.name_offset = k_arena_off;
+        desc_ptr.name_len = key_len as u16;
+        desc_ptr.arena_offset = val_aoff;
+        desc_ptr.val_or_len = val_scalar;
+        num_slots = num_slots + 1;
+    }
+
+    let raw_total_size: u64 = arena_start + arena_cur;
+    let aligned_total_size: u64 = ((raw_total_size + 63) / 64) * 64;
+
+    var pad_i: u64 = raw_total_size;
+    while pad_i < aligned_total_size {
+        out_buf[pad_i] = 0;
+        pad_i = pad_i + 1;
+    }
+
+    let content_hash: u64 = blake3_64((out_buf + 64) as *const byte, (aligned_total_size - 64) as uint) as u64;
+
+    let hdr: *mut RxdHeader = out_buf as *mut RxdHeader;
+    hdr.magic = 4479058;
+    hdr.format_version = 1;
+    hdr.flags = 3;
+    hdr.total_byte_size = aligned_total_size;
+    hdr.root_kind = 7;
+    hdr.slot_count = num_slots as u16;
+    hdr.reserved_pad = 0;
+    hdr.shape_schema_hash = 10001;
+    hdr.blake3_content_hash = content_hash;
+    hdr.arena_offset = arena_start;
+    hdr.reserved0 = 0;
+
+    return aligned_total_size;
+}
+
+fn rxd_vitrify_file(in_path: *const byte, out_path: *const byte) -> int {
+    let text_buf: *mut u8 = uses_substrate_alloc(65536);
+    if (text_buf as u64) == 0 {
+        return -1;
+    }
+    let nread: int = os_read_file(in_path, text_buf, 65536);
+    if nread <= 0 {
+        uses_substrate_free(text_buf, 65536);
+        return -1;
+    }
+
+    let out_plate: *mut u8 = uses_substrate_alloc(65536);
+    if (out_plate as u64) == 0 {
+        uses_substrate_free(text_buf, 65536);
+        return -2;
+    }
+    let plate_size: u64 = rxd_vitrify(text_buf as *const byte, nread as u64, out_plate, 65536);
+    if plate_size == 0 {
+        uses_substrate_free(text_buf, 65536);
+        uses_substrate_free(out_plate, 65536);
+        return -2;
+    }
+
+    let nwritten: int = os_write_file(out_path, out_plate as *const u8, plate_size as uint);
+    uses_substrate_free(text_buf, 65536);
+    uses_substrate_free(out_plate, 65536);
+    if nwritten <= 0 {
+        return -3;
+    }
+    return plate_size as int;
+}

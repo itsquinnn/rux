@@ -1,0 +1,18 @@
+struct CodonStream {
+    buffer: *const byte,
+    length: uint,
+    cursor: uint,
+    codons_read: uint,
+}
+
+fn osla_codon_stream_init(stream: *mut CodonStream, buf: *const byte, len: uint) {
+    stream.buffer = buf;
+    stream.length = len;
+    stream.cursor = 0;
+    stream.codons_read = 0;
+}
+
+fn osla_codon_proofread(codon: *const byte) -> bool {
+    let parity: byte = codon[0] ^ codon[1] ^ codon[2];
+    return parity != 0xFF;
+}

@@ -1,0 +1,654 @@
+struct FieldInfo {
+    name_hash: u64,
+    byte_offset: u32,
+    field_size: u32,
+    type_kind: u32,
+}
+
+struct StructInfo {
+    name_hash: u64,
+    type_sig_hash: u64,
+    total_size: u64,
+    field_count: u64,
+}
+
+struct LocalVar {
+    name_hash: u64,
+    rbp_offset: u64,
+    size: u64,
+    is_struct_ptr: u64,
+    is_struct_val: u64,
+    struct_hash: u64,
+}
+
+struct CallFixup {
+    hole_offset: u64,
+    callee_hash: u64,
+}
+
+struct FnEntry {
+    fn_hash: u64,
+    text_offset: u64,
+}
+
+struct CodeGen {
+    text_buf: *mut u8,
+    text_size: u64,
+
+    rodata_buf: *mut u8,
+    rodata_size: u64,
+
+    relocs: *mut EiaRelocHole,
+    reloc_count: u64,
+
+    type_graph: *mut EiaTypeGraphEntry,
+    tg_count: u64,
+
+    contracts: *mut SymbolContract,
+    contract_count: u64,
+
+    call_main_hole: u64,
+
+    call_fixups: *mut CallFixup,
+    call_fixup_count: u64,
+
+    fn_entries: *mut FnEntry,
+    fn_entry_count: u64,
+
+    structs: *mut StructInfo,
+    struct_count: u64,
+
+    locals: *mut LocalVar,
+    local_count: u64,
+    local_muts: *mut u8,
+    current_stack_offset: u64,
+    force_bridge: u64,
+    permute_seed: u64,
+    target_arch: u64,
+
+    rodata_fixups: *mut RodataFixup,
+    rodata_fixup_count: u64,
+    field_metas: *mut FieldMeta,
+    field_meta_count: u64,
+    fn_ret_structs: *mut ConstEntry,
+    fn_ret_struct_count: u64,
+    fn_signed_rets: *mut ConstEntry,
+    fn_signed_ret_count: u64,
+    cur_fn_ret_size: u64,
+    ret_stage_off: u64,
+    loop_depth: u64,
+    loop_cont_offs: *mut u64,
+    loop_break_holes: *mut u64,
+    loop_break_counts: *mut u64,
+    defer_nodes: *mut u64,
+    defer_count: u64,
+    pe_exit_iat_hole: u64,
+    pe_getstd_iat_hole: u64,
+    pe_writefile_iat_hole: u64,
+    pe_valloc_iat_hole: u64,
+    pe_write_helper_off: u64,
+    pe_valloc_helper_off: u64,
+    is_freestanding: u64,
+    strict_safety: u64,
+    unsafe_depth: u64,
+    parser: *mut u8,
+    upvalues: *mut ConstEntry,
+    upvalue_count: u64,
+    has_lambdas: u64,
+    cur_fn_hash: u64,
+    cur_fn_body_off: u64,
+    cur_fn_param_cnt: u64,
+    dbg_fns: *mut u8,
+    dbg_fn_count: u64,
+    dbg_file_ro_off: u64,
+    rt_install_hole: u64,
+    rt_bounds_holes: *mut u32,
+    rt_bounds_hole_count: u64,
+    sym_checks: *mut ConstEntry,
+    sym_check_count: u64,
+    skip_ir_opt: u64,
+}
+
+fn cg_emit8(cg: *mut CodeGen, b: u8) {
+    cg.text_buf[cg.text_size as u64] = b;
+    cg.text_size = cg.text_size + 1;
+}
+
+fn cg_emit32(cg: *mut CodeGen, val: u32) {
+    cg_emit8(cg, (val & 255) as u8);
+    cg_emit8(cg, ((val >> 8) & 255) as u8);
+    cg_emit8(cg, ((val >> 16) & 255) as u8);
+    cg_emit8(cg, ((val >> 24) & 255) as u8);
+}
+
+fn cg_emit64(cg: *mut CodeGen, val: u64) {
+    cg_emit32(cg, (val & 4294967295) as u32);
+    cg_emit32(cg, ((val >> 32) & 4294967295) as u32);
+}
+
+fn cg_patch32(cg: *mut CodeGen, offset: u32, val: u32) {
+    cg.text_buf[offset as u64] = (val & 255) as u8;
+    cg.text_buf[(offset + 1) as u64] = ((val >> 8) & 255) as u8;
+    cg.text_buf[(offset + 2) as u64] = ((val >> 16) & 255) as u8;
+    cg.text_buf[(offset + 3) as u64] = ((val >> 24) & 255) as u8;
+}
+
+fn cg_add_rodata_fixup(cg: *mut CodeGen, hole_offset: u32, rodata_off: u32) {
+    if cg.rodata_fixups == (0 as *mut RodataFixup) { return; }
+    if cg.rodata_fixup_count < 65536 {
+        let rf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (cg.rodata_fixup_count * 16)) as *mut RodataFixup;
+        rf.hole_offset = hole_offset as u64;
+        rf.rodata_off = rodata_off as u64;
+        cg.rodata_fixup_count = cg.rodata_fixup_count + 1;
+    }
+}
+
+fn cg_add_field_meta(cg: *mut CodeGen, struct_hash: u64, field_hash: u64, type_hash: u64, flags: u64) {
+    if cg.field_metas == (0 as *mut FieldMeta) { return; }
+    if cg.field_meta_count < 16384 {
+        let fm: *mut FieldMeta = ((cg.field_metas as *mut u8) + (cg.field_meta_count * 32)) as *mut FieldMeta;
+        fm.struct_hash = struct_hash;
+        fm.field_hash = field_hash;
+        fm.type_hash = type_hash;
+        fm.flags = flags;
+        cg.field_meta_count = cg.field_meta_count + 1;
+    }
+}
+
+fn cg_find_field_meta(cg: *mut CodeGen, struct_hash: u64, field_hash: u64) -> *mut FieldMeta {
+    if cg.field_metas == (0 as *mut FieldMeta) { return 0 as *mut FieldMeta; }
+    var sig_hash: u64 = struct_hash;
+    if struct_hash != 0 {
+        let si: *mut StructInfo = cg_find_struct(cg, struct_hash);
+        if si != (0 as *mut StructInfo) {
+            sig_hash = si.type_sig_hash;
+        }
+    }
+    var i: u64 = 0;
+    while i < cg.field_meta_count {
+        let fm: *mut FieldMeta = ((cg.field_metas as *mut u8) + (i * 32)) as *mut FieldMeta;
+        if fm.field_hash == field_hash {
+            if struct_hash == 0 || fm.struct_hash == struct_hash || fm.struct_hash == sig_hash {
+                return fm;
+            }
+        }
+        i = i + 1;
+    }
+    return 0 as *mut FieldMeta;
+}
+
+fn cg_register_fn_ret_struct(cg: *mut CodeGen, fn_hash: u64, struct_hash: u64, struct_size: u64) {
+    if cg.fn_ret_structs == (0 as *mut ConstEntry) { return; }
+    if cg.fn_ret_struct_count < 2048 {
+        let ce: *mut ConstEntry = ((cg.fn_ret_structs as *mut u8) + (cg.fn_ret_struct_count * 24)) as *mut ConstEntry;
+        ce.name_hash = fn_hash;
+        ce.val = struct_hash;
+        ce.extra = struct_size;
+        cg.fn_ret_struct_count = cg.fn_ret_struct_count + 1;
+    }
+}
+
+fn cg_find_fn_ret_struct(cg: *mut CodeGen, fn_hash: u64) -> *mut ConstEntry {
+    if cg.fn_ret_structs == (0 as *mut ConstEntry) { return 0 as *mut ConstEntry; }
+    var i: u64 = 0;
+    while i < cg.fn_ret_struct_count {
+        let ce: *mut ConstEntry = ((cg.fn_ret_structs as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if ce.name_hash == fn_hash {
+            return ce;
+        }
+        i = i + 1;
+    }
+    return 0 as *mut ConstEntry;
+}
+
+fn cg_register_fn_signed_ret(cg: *mut CodeGen, fn_hash: u64) {
+    if cg.fn_signed_rets == (0 as *mut ConstEntry) { return; }
+    if cg.fn_signed_ret_count < 4096 {
+        let ce: *mut ConstEntry = ((cg.fn_signed_rets as *mut u8) + (cg.fn_signed_ret_count * 24)) as *mut ConstEntry;
+        ce.name_hash = fn_hash;
+        ce.val = 1;
+        ce.extra = 0;
+        cg.fn_signed_ret_count = cg.fn_signed_ret_count + 1;
+    }
+}
+
+fn cg_is_fn_signed_ret(cg: *mut CodeGen, fn_hash: u64) -> u32 {
+    if cg.fn_signed_rets == (0 as *mut ConstEntry) { return 0; }
+    var i: u64 = 0;
+    while i < cg.fn_signed_ret_count {
+        let ce: *mut ConstEntry = ((cg.fn_signed_rets as *mut u8) + (i * 24)) as *mut ConstEntry;
+        if ce.name_hash == fn_hash {
+            return 1;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn cg_add_reloc(cg: *mut CodeGen, insn_offset: u32, type_hash: u64, field_hash: u64) {
+    let hole: *mut EiaRelocHole = ((cg.relocs as *mut u8) + ((cg.reloc_count as u64) * 24)) as *mut EiaRelocHole;
+    hole.insn_offset = insn_offset;
+    hole.patch_kind = 1;
+    hole.type_sig_hash = type_hash;
+    hole.field_or_sym_hash = field_hash;
+    cg.reloc_count = cg.reloc_count + 1;
+}
+
+fn cg_add_reloc_ex(cg: *mut CodeGen, insn_offset: u32, patch_kind: u32, type_hash: u64, field_or_sym_hash: u64) {
+    let hole: *mut EiaRelocHole = ((cg.relocs as *mut u8) + ((cg.reloc_count as u64) * 24)) as *mut EiaRelocHole;
+    hole.insn_offset = insn_offset;
+    hole.patch_kind = patch_kind;
+    hole.type_sig_hash = type_hash;
+    hole.field_or_sym_hash = field_or_sym_hash;
+    cg.reloc_count = cg.reloc_count + 1;
+}
+
+fn cg_add_type_graph_entry(cg: *mut CodeGen, type_hash: u64, field_hash: u64, byte_offset: u32, field_size: u32) {
+    let entry: *mut EiaTypeGraphEntry = ((cg.type_graph as *mut u8) + ((cg.tg_count as u64) * 24)) as *mut EiaTypeGraphEntry;
+    entry.type_sig_hash = type_hash;
+    entry.field_hash = field_hash;
+    entry.byte_offset = byte_offset;
+    entry.field_size = field_size;
+    cg.tg_count = cg.tg_count + 1;
+}
+
+fn cg_find_struct(cg: *mut CodeGen, name_hash: u64) -> *mut StructInfo {
+    var i: u32 = 0;
+    while i < cg.struct_count {
+        let si: *mut StructInfo = ((cg.structs as *mut u8) + ((i as u64) * 32)) as *mut StructInfo;
+        if si.name_hash == name_hash || si.type_sig_hash == name_hash {
+            return si;
+        }
+        i = i + 1;
+    }
+    return 0 as *mut StructInfo;
+}
+
+fn cg_lookup_field_offset(cg: *mut CodeGen, type_hash: u64, field_hash: u64) -> u32 {
+    var sig_hash: u64 = type_hash;
+    let si: *mut StructInfo = cg_find_struct(cg, type_hash);
+    if si != (0 as *mut StructInfo) {
+        sig_hash = si.type_sig_hash;
+    }
+    var ti: u32 = 0;
+    while ti < (cg.tg_count as u32) {
+        let tge: *mut EiaTypeGraphEntry = ((cg.type_graph as *mut u8) + ((ti as u64) * 24)) as *mut EiaTypeGraphEntry;
+        if (type_hash == 0 || tge.type_sig_hash == sig_hash || tge.type_sig_hash == type_hash) && tge.field_hash == field_hash {
+            return tge.byte_offset;
+        }
+        ti = ti + 1;
+    }
+    if field_hash == hash_identifier("val", 3) {
+        let val_alt_h: u64 = hash_identifier("value", 5);
+        var ti2: u32 = 0;
+        while ti2 < (cg.tg_count as u32) {
+            let tge2: *mut EiaTypeGraphEntry = ((cg.type_graph as *mut u8) + ((ti2 as u64) * 24)) as *mut EiaTypeGraphEntry;
+            if (si == (0 as *mut StructInfo) || tge2.type_sig_hash == sig_hash) && tge2.field_hash == val_alt_h {
+                return tge2.byte_offset;
+            }
+            ti2 = ti2 + 1;
+        }
+    }
+    return 0;
+}
+
+fn cg_find_local(cg: *mut CodeGen, name_hash: u64) -> *mut LocalVar {
+    var i: u32 = cg.local_count as u32;
+    while i > 0 {
+        i = i - 1;
+        let lv: *mut LocalVar = ((cg.locals as *mut u8) + ((i as u64) * 48)) as *mut LocalVar;
+        if lv.name_hash == name_hash {
+            return lv;
+        }
+    }
+    return 0 as *mut LocalVar;
+}
+
+fn cg_find_local_index(cg: *mut CodeGen, name_hash: u64) -> u64 {
+    var i: u32 = cg.local_count as u32;
+    while i > 0 {
+        i = i - 1;
+        let lv: *mut LocalVar = ((cg.locals as *mut u8) + ((i as u64) * 48)) as *mut LocalVar;
+        if lv.name_hash == name_hash {
+            return i as u64;
+        }
+    }
+    return 18446744073709551615;
+}
+
+fn emit_start_stub(cg: *mut CodeGen) {
+    if cg.target_arch == 11 {
+        return;
+    }
+    if cg.target_arch == 10 {
+        cg_emit32(cg, 3531669533);
+        cg_emit32(cg, 3531669534);
+        cg.call_main_hole = cg.text_size;
+        cg_emit32(cg, 2483027968);
+        cg_emit32(cg, 3531669552);
+        cg_emit32(cg, 3556773889);
+        return;
+    }
+    if cg.target_arch == 1 {
+        cg_emit32(cg, 3531669533);
+        cg_emit32(cg, 3531669534);
+        cg_emit32(cg, 4181722080);
+        cg_emit32(cg, 2432705505);
+        cg.call_main_hole = cg.text_size;
+        cg_emit32(cg, 2483027968);
+        cg_emit32(cg, 3531672488);
+        cg_emit32(cg, 3556769793);
+        return;
+    }
+    if cg.target_arch == 2 {
+        cg_emit32(cg, 1043);
+        cg_emit32(cg, 147);
+        cg_emit32(cg, 79107);
+        cg_emit32(cg, 8455571);
+        cg.call_main_hole = cg.text_size;
+        cg_emit32(cg, 239);
+        cg_emit32(cg, 97521811);
+        cg_emit32(cg, 115);
+        return;
+    }
+    if cg.target_arch == 3 {
+        cg_emit8(cg, 235); cg_emit8(cg, 14); cg_emit8(cg, 144); cg_emit8(cg, 144);
+        cg_emit32(cg, 464367618);
+        cg_emit32(cg, 3);
+        cg_emit32(cg, 3830599675);
+
+        cg_emit8(cg, 250);
+        cg_emit8(cg, 252);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 196); cg_emit32(cg, 589824);
+        cg_emit8(cg, 188); cg_emit32(cg, 589824);
+
+        cg_emit8(cg, 102); cg_emit8(cg, 186); cg_emit8(cg, 249); cg_emit8(cg, 3); cg_emit8(cg, 48); cg_emit8(cg, 192); cg_emit8(cg, 238);
+        cg_emit8(cg, 102); cg_emit8(cg, 186); cg_emit8(cg, 251); cg_emit8(cg, 3); cg_emit8(cg, 176); cg_emit8(cg, 128); cg_emit8(cg, 238);
+        cg_emit8(cg, 102); cg_emit8(cg, 186); cg_emit8(cg, 248); cg_emit8(cg, 3); cg_emit8(cg, 176); cg_emit8(cg, 3); cg_emit8(cg, 238);
+        cg_emit8(cg, 102); cg_emit8(cg, 186); cg_emit8(cg, 249); cg_emit8(cg, 3); cg_emit8(cg, 48); cg_emit8(cg, 192); cg_emit8(cg, 238);
+        cg_emit8(cg, 102); cg_emit8(cg, 186); cg_emit8(cg, 251); cg_emit8(cg, 3); cg_emit8(cg, 176); cg_emit8(cg, 3); cg_emit8(cg, 238);
+        cg_emit8(cg, 102); cg_emit8(cg, 186); cg_emit8(cg, 250); cg_emit8(cg, 3); cg_emit8(cg, 176); cg_emit8(cg, 199); cg_emit8(cg, 238);
+        cg_emit8(cg, 102); cg_emit8(cg, 186); cg_emit8(cg, 252); cg_emit8(cg, 3); cg_emit8(cg, 176); cg_emit8(cg, 11); cg_emit8(cg, 238);
+
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 199); cg_emit32(cg, 753664);
+        cg_emit8(cg, 102); cg_emit8(cg, 199); cg_emit8(cg, 7); cg_emit8(cg, 91); cg_emit8(cg, 31);
+        cg_emit8(cg, 102); cg_emit8(cg, 199); cg_emit8(cg, 71); cg_emit8(cg, 2); cg_emit8(cg, 69); cg_emit8(cg, 31);
+        cg_emit8(cg, 102); cg_emit8(cg, 199); cg_emit8(cg, 71); cg_emit8(cg, 4); cg_emit8(cg, 73); cg_emit8(cg, 31);
+        cg_emit8(cg, 102); cg_emit8(cg, 199); cg_emit8(cg, 71); cg_emit8(cg, 6); cg_emit8(cg, 65); cg_emit8(cg, 31);
+        cg_emit8(cg, 102); cg_emit8(cg, 199); cg_emit8(cg, 71); cg_emit8(cg, 8); cg_emit8(cg, 95); cg_emit8(cg, 31);
+        cg_emit8(cg, 102); cg_emit8(cg, 199); cg_emit8(cg, 71); cg_emit8(cg, 10); cg_emit8(cg, 79); cg_emit8(cg, 31);
+        cg_emit8(cg, 102); cg_emit8(cg, 199); cg_emit8(cg, 71); cg_emit8(cg, 12); cg_emit8(cg, 75); cg_emit8(cg, 31);
+        cg_emit8(cg, 102); cg_emit8(cg, 199); cg_emit8(cg, 71); cg_emit8(cg, 14); cg_emit8(cg, 93); cg_emit8(cg, 31);
+
+        cg_emit8(cg, 232);
+        cg.call_main_hole = cg.text_size;
+        cg_emit32(cg, 0);
+
+        cg_emit8(cg, 102); cg_emit8(cg, 186); cg_emit8(cg, 248); cg_emit8(cg, 3); cg_emit8(cg, 238);
+        cg_emit8(cg, 230); cg_emit8(cg, 244);
+        cg_emit8(cg, 250); cg_emit8(cg, 244); cg_emit8(cg, 235); cg_emit8(cg, 252);
+        return;
+    }
+    if cg.target_arch == 4 {
+        cg_emit8(cg, 85);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 48);
+        cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 210);
+        cg_emit8(cg, 116); cg_emit8(cg, 52);
+        cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 74); cg_emit8(cg, 64);
+        cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 201);
+        cg_emit8(cg, 116); cg_emit8(cg, 43);
+        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 21); cg_emit32(cg, 3);
+        cg_emit8(cg, 144);
+        cg_emit8(cg, 235); cg_emit8(cg, 30);
+        cg_emit8(cg, 91); cg_emit8(cg, 0); cg_emit8(cg, 69); cg_emit8(cg, 0);
+        cg_emit8(cg, 73); cg_emit8(cg, 0); cg_emit8(cg, 65); cg_emit8(cg, 0);
+        cg_emit8(cg, 95); cg_emit8(cg, 0); cg_emit8(cg, 69); cg_emit8(cg, 0);
+        cg_emit8(cg, 70); cg_emit8(cg, 0); cg_emit8(cg, 73); cg_emit8(cg, 0);
+        cg_emit8(cg, 95); cg_emit8(cg, 0); cg_emit8(cg, 79); cg_emit8(cg, 0);
+        cg_emit8(cg, 75); cg_emit8(cg, 0); cg_emit8(cg, 93); cg_emit8(cg, 0);
+        cg_emit8(cg, 13); cg_emit8(cg, 0); cg_emit8(cg, 10); cg_emit8(cg, 0);
+        cg_emit8(cg, 0);  cg_emit8(cg, 0);
+        cg_emit8(cg, 255); cg_emit8(cg, 81); cg_emit8(cg, 8);
+        cg_emit8(cg, 232);
+        cg.call_main_hole = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_emit8(cg, 49); cg_emit8(cg, 192);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236);
+        cg_emit8(cg, 93);
+        cg_emit8(cg, 195);
+        return;
+    }
+    if cg.target_arch == 6 {
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 40);
+        cg_emit8(cg, 72); cg_emit8(cg, 49); cg_emit8(cg, 192);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 32);
+        cg_emit8(cg, 49); cg_emit8(cg, 255);
+        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 116); cg_emit8(cg, 36); cg_emit8(cg, 32);
+        cg_emit8(cg, 232);
+        cg.call_main_hole = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_emit8(cg, 137); cg_emit8(cg, 193);
+        cg_emit8(cg, 255); cg_emit8(cg, 21);
+        cg.pe_exit_iat_hole = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 196); cg_emit8(cg, 40);
+        cg_emit8(cg, 195);
+
+        cg.pe_write_helper_off = cg.text_size;
+        cg_emit8(cg, 85);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 64);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 117); cg_emit8(cg, 248);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 85); cg_emit8(cg, 240);
+        cg_emit8(cg, 185); cg_emit32(cg, 4294967285);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 255); cg_emit8(cg, 2);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 185); cg_emit32(cg, 4294967284);
+        cg_emit8(cg, 255); cg_emit8(cg, 21);
+        cg.pe_getstd_iat_hole = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 193);
+        cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 85); cg_emit8(cg, 248);
+        cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 69); cg_emit8(cg, 240);
+        cg_emit8(cg, 76); cg_emit8(cg, 141); cg_emit8(cg, 77); cg_emit8(cg, 232);
+        cg_emit8(cg, 49); cg_emit8(cg, 192);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 32);
+        cg_emit8(cg, 255); cg_emit8(cg, 21);
+        cg.pe_writefile_iat_hole = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_emit8(cg, 139); cg_emit8(cg, 69); cg_emit8(cg, 232);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236);
+        cg_emit8(cg, 93);
+        cg_emit8(cg, 195);
+
+        cg.pe_valloc_helper_off = cg.text_size;
+        cg_emit8(cg, 85);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 32);
+        cg_emit8(cg, 49); cg_emit8(cg, 201);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 242);
+        cg_emit8(cg, 65); cg_emit8(cg, 184); cg_emit32(cg, 12288);
+        cg_emit8(cg, 65); cg_emit8(cg, 185); cg_emit32(cg, 64);
+        cg_emit8(cg, 255); cg_emit8(cg, 21);
+        cg.pe_valloc_iat_hole = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236);
+        cg_emit8(cg, 93);
+        cg_emit8(cg, 195);
+        return;
+    }
+    if cg.target_arch == 7 {
+        cg_emit8(cg, 85);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 232);
+        cg.call_main_hole = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 199);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 192); cg_emit32(cg, 33554433);
+        cg_emit8(cg, 15); cg_emit8(cg, 5);
+        return;
+    }
+    if cg.target_arch == 8 {
+        cg_emit32(cg, 335544336);
+        cg_emit32(cg, 0);
+        cg_emit32(cg, 524288);
+        cg_emit32(cg, 0);
+        cg_emit32(cg, 8192);
+        cg_emit32(cg, 0);
+        cg_emit32(cg, 0); cg_emit32(cg, 0);
+        cg_emit32(cg, 0); cg_emit32(cg, 0);
+        cg_emit32(cg, 0); cg_emit32(cg, 0);
+        cg_emit32(cg, 0); cg_emit32(cg, 0);
+        cg_emit32(cg, 1682821697);
+        cg_emit32(cg, 0);
+
+        cg_emit32(cg, 3533832192);
+        cg_emit32(cg, 268435777);
+        cg_emit32(cg, 943723554);
+        cg_emit32(cg, 872415426);
+        cg_emit32(cg, 956301314);
+        cg_emit32(cg, 402653181);
+        cg_emit32(cg, 1384120576);
+        cg_emit32(cg, 1923121152);
+        cg_emit32(cg, 3556769794);
+        cg_emit32(cg, 3573752063);
+        cg_emit32(cg, 3596551104);
+        return;
+    }
+    if cg.target_arch == 9 {
+        cg_emit32(cg, 67108975);
+        var p: u32 = 0;
+        while p < 11 {
+            cg_emit32(cg, 0);
+            p = p + 1;
+        }
+        cg_emit32(cg, 1447252818);
+        cg_emit32(cg, 1);
+        cg_emit32(cg, 2147483648);
+        cg_emit32(cg, 0);
+
+        cg_emit32(cg, 268436151);
+        cg_emit32(cg, 791);
+        cg_emit32(cg, 50537235);
+        cg_emit32(cg, 213891);
+        cg_emit32(cg, 231523);
+        cg_emit32(cg, 7503907);
+        cg_emit32(cg, 1245971);
+        cg_emit32(cg, 4279238767);
+        cg_emit32(cg, 1049527);
+        cg_emit32(cg, 24119);
+        cg_emit32(cg, 1432227347);
+        cg_emit32(cg, 30286371);
+        cg_emit32(cg, 32871);
+        return;
+    }
+
+    if cg.is_freestanding == 1 {
+        cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 60); cg_emit8(cg, 36);
+        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 116); cg_emit8(cg, 36); cg_emit8(cg, 8);
+        cg_emit8(cg, 232);
+        cg.call_main_hole = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 199);
+        cg_emit8(cg, 184); cg_emit32(cg, 60);
+        cg_emit8(cg, 15); cg_emit8(cg, 5);
+        return;
+    }
+
+    cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 60); cg_emit8(cg, 36);
+    cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 116); cg_emit8(cg, 36); cg_emit8(cg, 8);
+    cg_emit8(cg, 87);
+    cg_emit8(cg, 86);
+
+    cg_emit8(cg, 15); cg_emit8(cg, 174); cg_emit8(cg, 240);
+
+    cg_emit8(cg, 73); cg_emit8(cg, 199); cg_emit8(cg, 196); cg_emit32(cg, 4195456);
+    cg_emit8(cg, 65); cg_emit8(cg, 129); cg_emit8(cg, 60); cg_emit8(cg, 36); cg_emit32(cg, 1145588037);
+    cg_emit8(cg, 116); cg_emit8(cg, 7);
+    cg_emit8(cg, 73); cg_emit8(cg, 199); cg_emit8(cg, 196); cg_emit32(cg, 4194432);
+    cg_emit8(cg, 77); cg_emit8(cg, 139); cg_emit8(cg, 108); cg_emit8(cg, 36); cg_emit8(cg, 32);
+    cg_emit8(cg, 73); cg_emit8(cg, 129); cg_emit8(cg, 197); cg_emit32(cg, 4194304);
+    cg_emit8(cg, 77); cg_emit8(cg, 139); cg_emit8(cg, 116); cg_emit8(cg, 36); cg_emit8(cg, 40);
+    cg_emit8(cg, 77); cg_emit8(cg, 139); cg_emit8(cg, 124); cg_emit8(cg, 36); cg_emit8(cg, 48);
+    cg_emit8(cg, 73); cg_emit8(cg, 129); cg_emit8(cg, 199); cg_emit32(cg, 4194304);
+    cg_emit8(cg, 73); cg_emit8(cg, 139); cg_emit8(cg, 76); cg_emit8(cg, 36); cg_emit8(cg, 56);
+    cg_emit8(cg, 76); cg_emit8(cg, 1); cg_emit8(cg, 249);
+
+    let reloc_loop_offset: u32 = cg.text_size;
+    cg_emit8(cg, 77); cg_emit8(cg, 133); cg_emit8(cg, 246);
+    cg_emit8(cg, 15); cg_emit8(cg, 132);
+    let jz_patch_done_hole: u32 = cg.text_size;
+    cg_emit32(cg, 0);
+
+    cg_emit8(cg, 69); cg_emit8(cg, 139); cg_emit8(cg, 69); cg_emit8(cg, 0);
+    cg_emit8(cg, 77); cg_emit8(cg, 139); cg_emit8(cg, 77); cg_emit8(cg, 8);
+    cg_emit8(cg, 77); cg_emit8(cg, 139); cg_emit8(cg, 85); cg_emit8(cg, 16);
+    cg_emit8(cg, 76); cg_emit8(cg, 137); cg_emit8(cg, 254);
+
+    let type_loop_offset: u32 = cg.text_size;
+    cg_emit8(cg, 72); cg_emit8(cg, 57); cg_emit8(cg, 206);
+    cg_emit8(cg, 15); cg_emit8(cg, 131);
+    let jae_next_reloc_hole: u32 = cg.text_size;
+    cg_emit32(cg, 0);
+
+    cg_emit8(cg, 76); cg_emit8(cg, 57); cg_emit8(cg, 14);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let jne_next_type1_hole: u32 = cg.text_size;
+    cg_emit32(cg, 0);
+
+    cg_emit8(cg, 76); cg_emit8(cg, 57); cg_emit8(cg, 86); cg_emit8(cg, 8);
+    cg_emit8(cg, 15); cg_emit8(cg, 133);
+    let jne_next_type2_hole: u32 = cg.text_size;
+    cg_emit32(cg, 0);
+
+    cg_emit8(cg, 139); cg_emit8(cg, 70); cg_emit8(cg, 16);
+    cg_emit8(cg, 73); cg_emit8(cg, 139); cg_emit8(cg, 124); cg_emit8(cg, 36); cg_emit8(cg, 80);
+    cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 255);
+    cg_emit8(cg, 117); cg_emit8(cg, 7);
+    cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 199); cg_emit32(cg, 4259840);
+    cg_emit8(cg, 76); cg_emit8(cg, 1); cg_emit8(cg, 199);
+    cg_emit8(cg, 137); cg_emit8(cg, 7);
+    cg_emit8(cg, 233);
+    let jmp_next_reloc_hole: u32 = cg.text_size;
+    cg_emit32(cg, 0);
+
+    let next_type_offset: u32 = cg.text_size;
+    cg_patch32(cg, jne_next_type1_hole, next_type_offset - (jne_next_type1_hole + 4));
+    cg_patch32(cg, jne_next_type2_hole, next_type_offset - (jne_next_type2_hole + 4));
+    cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 198); cg_emit8(cg, 24);
+    cg_emit8(cg, 233);
+    let jmp_type_loop: i32 = (type_loop_offset as i32) - ((cg.text_size + 4) as i32);
+    cg_emit32(cg, jmp_type_loop as u32);
+
+    let next_reloc_offset: u32 = cg.text_size;
+    cg_patch32(cg, jae_next_reloc_hole, next_reloc_offset - (jae_next_reloc_hole + 4));
+    cg_patch32(cg, jmp_next_reloc_hole, next_reloc_offset - (jmp_next_reloc_hole + 4));
+    cg_emit8(cg, 73); cg_emit8(cg, 131); cg_emit8(cg, 197); cg_emit8(cg, 24);
+    cg_emit8(cg, 73); cg_emit8(cg, 255); cg_emit8(cg, 206);
+    cg_emit8(cg, 233);
+    let jmp_reloc_loop: i32 = (reloc_loop_offset as i32) - ((cg.text_size + 4) as i32);
+    cg_emit32(cg, jmp_reloc_loop as u32);
+
+    let patch_done_offset: u32 = cg.text_size;
+    cg_patch32(cg, jz_patch_done_hole, patch_done_offset - (jz_patch_done_hole + 4));
+
+    cg_emit8(cg, 49); cg_emit8(cg, 192);
+    cg_emit8(cg, 15); cg_emit8(cg, 162);
+    cg_emit8(cg, 15); cg_emit8(cg, 174); cg_emit8(cg, 240);
+    cg_emit8(cg, 15); cg_emit8(cg, 174); cg_emit8(cg, 240);
+
+    cg_emit8(cg, 232);
+    cg.rt_install_hole = cg.text_size as u64;
+    cg_emit32(cg, 0);
+
+    cg_emit8(cg, 94);
+    cg_emit8(cg, 95);
+    cg_emit8(cg, 232);
+    cg.call_main_hole = cg.text_size;
+    cg_emit32(cg, 0);
+
+    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 199);
+    cg_emit8(cg, 184); cg_emit32(cg, 60);
+    cg_emit8(cg, 15); cg_emit8(cg, 5);
+}

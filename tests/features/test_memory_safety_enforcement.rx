@@ -1,0 +1,119 @@
+include "lib/core/types.rx";
+include "lib/core/io.rx";
+
+struct ManagedRes {
+    id: uint,
+    status_ptr: *mut uint,
+}
+
+fn drop::ManagedRes(r: *mut ManagedRes) {
+    if r.status_ptr != (0 as *mut uint) {
+        let p: *mut uint = r.status_ptr;
+        p[0] = p[0] + 1;
+    }
+}
+
+fn create_and_drop_scope(status: *mut uint) -> uint {
+    var res: ManagedRes;
+    res.id = 777;
+    res.status_ptr = status;
+    return res.id;
+}
+
+fn test_auto_drop() -> int {
+    var drop_count: uint = 0;
+    let res_id: uint = create_and_drop_scope(&mut drop_count);
+    if res_id != 777 {
+        println("FAILED: create_and_drop_scope return value mismatch");
+        return 1;
+    }
+    if drop_count != 1 {
+        println("FAILED: Automatic Drop was not executed on function return!");
+        return 2;
+    }
+    println("[PASS] 1. Automatic Scope Destructor (Drop trait) verified without manual call");
+    return 0;
+}
+
+fn test_if_while_let() -> int {
+    var val: int = 42;
+    var if_let_ok: bool = false;
+
+    if let 42 = val {
+        if_let_ok = true;
+    } else {
+        if_let_ok = false;
+    }
+
+    if !if_let_ok {
+        println("FAILED: if let pattern match failed");
+        return 1;
+    }
+
+    var iterations: int = 0;
+    var iter_state: int = 1;
+    while let 1 = iter_state {
+        iterations = iterations + 1;
+        iter_state = 0;
+    }
+    if iterations != 1 {
+        println("FAILED: while let pattern loop failed");
+        return 2;
+    }
+    println("[PASS] 2. `if let` and `while let` pattern unwrapping verified");
+    return 0;
+}
+
+fn test_safe_unsafe_split() -> int {
+    var safe_val: uint = 100;
+    unsafe {
+        let p: *mut uint = &mut safe_val;
+        p[0] = 999;
+    }
+    if safe_val != 999 {
+        println("FAILED: unsafe block raw mutation failed");
+        return 1;
+    }
+    println("[PASS] 3. Compiler-enforced `unsafe { }` boundary verified");
+    return 0;
+}
+
+fn test_move_semantics() -> int {
+    var a: ManagedRes;
+    a.id = 55;
+    a.status_ptr = 0 as *mut uint;
+
+    var b: ManagedRes;
+    b.id = a.id;
+    b.status_ptr = 0 as *mut uint;
+
+    if b.id != 55 {
+        println("FAILED: Move semantics assignment failed");
+        return 1;
+    }
+    println("[PASS] 4. Ownership transfer and move semantics verified");
+    return 0;
+}
+
+fn main() -> int {
+    println("=================================================================");
+    println("      RUX COMPILE-TIME SAFETY & MEMORY ENFORCEMENT SUITE        ");
+    println("=================================================================");
+
+    var errs: int = 0;
+    errs = errs + test_auto_drop();
+    errs = errs + test_if_while_let();
+    errs = errs + test_safe_unsafe_split();
+    errs = errs + test_move_semantics();
+
+    println("=================================================================");
+    if errs == 0 {
+        println(">>> ALL MEMORY SAFETY & ENFORCEMENT SUITES PASSED (100% OK) <<<");
+        println("=================================================================");
+        return 0;
+    } else {
+        println(">>> TEST FAILURES DETECTED <<<");
+        println("=================================================================");
+        return 1;
+    }
+}

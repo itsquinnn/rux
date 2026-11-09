@@ -1,0 +1,236 @@
+fn c_out_str(dst: *mut u8, di: *mut u64, max: u64, s: *u8) {
+    var i: u64 = 0;
+    var cur: u64 = *di;
+    while s[i] != 0 && cur < max {
+        dst[cur] = s[i];
+        cur = cur + 1;
+        i = i + 1;
+    }
+    *di = cur;
+}
+
+fn c_out_slice(dst: *mut u8, di: *mut u64, max: u64, src: *u8, s: u64, e: u64) {
+    var i: u64 = s;
+    var cur: u64 = *di;
+    while i < e && cur < max {
+        dst[cur] = src[i];
+        cur = cur + 1;
+        i = i + 1;
+    }
+    *di = cur;
+}
+
+fn c_is_id(c: u8) -> u32 {
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 { return 1; }
+    return 0;
+}
+
+fn c_emit_mapped_type(src: *u8, ts: u64, te: u64, dst: *mut u8, di: *mut u64, max: u64) {
+    var i: u64 = ts;
+    var has_ptr: u32 = 0;
+    var is_uns: u32 = 0;
+    var last_w_s: u64 = ts;
+    var last_w_e: u64 = ts;
+    while i < te {
+        while i < te && (src[i] == 32 || src[i] == 9) { i = i + 1; }
+        if i < te && src[i] == 42 { has_ptr = 1; i = i + 1; }
+        else if i < te && c_is_id(src[i]) == 1 {
+            let ws: u64 = i;
+            while i < te && c_is_id(src[i]) == 1 { i = i + 1; }
+            let wh: u64 = hash_identifier(src + ws, (i - ws) as u32);
+            if wh == 7334518323283222324 || wh == 14058172984575203104 {
+            } else if wh == 13236544317732455142 {
+                is_uns = 1;
+            } else {
+                last_w_s = ws;
+                last_w_e = i;
+            }
+        } else {
+            i = i + 1;
+        }
+    }
+    if has_ptr == 1 {
+        c_out_str(dst, di, max, "*mut ");
+    }
+    let bh: u64 = hash_identifier(src + last_w_s, (last_w_e - last_w_s) as u32);
+    if bh == 3563412735833858527 {
+        if has_ptr == 1 { c_out_str(dst, di, max, "u8"); } else { c_out_str(dst, di, max, "void"); }
+    } else if bh == 17483980429552467645 || bh == 15005296328258265096 {
+        c_out_str(dst, di, max, "u8");
+    } else if bh == 17310059529683861209 {
+        c_out_str(dst, di, max, "i8");
+    } else if bh == 961374662186071129 {
+        c_out_str(dst, di, max, "u16");
+    } else if bh == 17767075776831802709 || bh == 14744319174272252858 {
+        c_out_str(dst, di, max, "i16");
+    } else if bh == 3641210030741959495 {
+        c_out_str(dst, di, max, "u32");
+    } else if bh == 13162007526343852444 {
+        c_out_str(dst, di, max, "i32");
+    } else if bh == 4677963912691041392 || bh == 9980100151909013719 {
+        c_out_str(dst, di, max, "u64");
+    } else if bh == 14660098537731927855 || bh == 14837330719131395891 || bh == 10325726541928606072 {
+        if is_uns == 1 { c_out_str(dst, di, max, "u64"); } else { c_out_str(dst, di, max, "i64"); }
+    } else if bh == 3143511548502526014 {
+        if is_uns == 1 { c_out_str(dst, di, max, "u32"); } else { c_out_str(dst, di, max, "int"); }
+    } else if last_w_e > last_w_s {
+        c_out_slice(dst, di, max, src, last_w_s, last_w_e);
+    } else {
+        c_out_str(dst, di, max, "u64");
+    }
+}
+
+fn c_emit_struct_fields(src: *u8, b_start: u64, b_end: u64, dst: *mut u8, di: *mut u64, max: u64) {
+    var i: u64 = b_start;
+    while i < b_end {
+        while i < b_end && (src[i] == 32 || src[i] == 9 || src[i] == 10 || src[i] == 13 || src[i] == 59) { i = i + 1; }
+        if i >= b_end { return; }
+        var semi: u64 = i;
+        while semi < b_end && src[semi] != 59 { semi = semi + 1; }
+        if semi > i {
+            var f_end: u64 = semi;
+            while f_end > i && (src[f_end - 1] == 32 || src[f_end - 1] == 9) { f_end = f_end - 1; }
+            var f_start: u64 = f_end;
+            while f_start > i && c_is_id(src[f_start - 1]) == 1 { f_start = f_start - 1; }
+            if f_start > i && f_end > f_start {
+                c_out_str(dst, di, max, "    ");
+                c_out_slice(dst, di, max, src, f_start, f_end);
+                c_out_str(dst, di, max, ": ");
+                c_emit_mapped_type(src, i, f_start, dst, di, max);
+                c_out_str(dst, di, max, ",\n");
+            }
+        }
+        i = semi + 1;
+    }
+}
+
+fn translate_c_header_to_rux(src: *u8, len: u64, dst: *mut u8, max: u64) -> u64 {
+    var di_slot: [u64; 1];
+    di_slot[0] = 0;
+    var i: u64 = 0;
+    while i < len {
+        while i < len && (src[i] == 32 || src[i] == 9 || src[i] == 10 || src[i] == 13) {
+            if src[i] == 10 { c_out_str(dst, &mut di_slot[0], max, "\n"); }
+            i = i + 1;
+        }
+        if i >= len { break; }
+        if (i + 1) < len && src[i] == 47 && src[i + 1] == 47 {
+            while i < len && src[i] != 10 { i = i + 1; }
+        } else if (i + 1) < len && src[i] == 47 && src[i + 1] == 42 {
+            i = i + 2;
+            while (i + 1) < len && !(src[i] == 42 && src[i + 1] == 47) { i = i + 1; }
+            i = i + 2;
+        } else if src[i] == 35 {
+            let ls: u64 = i;
+            while i < len && src[i] != 10 { i = i + 1; }
+            c_out_slice(dst, &mut di_slot[0], max, src, ls, i);
+            c_out_str(dst, &mut di_slot[0], max, "\n");
+        } else {
+            let kw_s: u64 = i;
+            while i < len && c_is_id(src[i]) == 1 { i = i + 1; }
+            let kw_h: u64 = hash_identifier(src + kw_s, (i - kw_s) as u32);
+            while i < len && (src[i] == 32 || src[i] == 9) { i = i + 1; }
+
+            if kw_h == 16509985740318510052 {
+                let nw_s: u64 = i;
+                while i < len && c_is_id(src[i]) == 1 { i = i + 1; }
+                let nw_h: u64 = hash_identifier(src + nw_s, (i - nw_s) as u32);
+                if nw_h == 14058172984575203104 {
+                    while i < len && src[i] != 123 { i = i + 1; }
+                    let b_s: u64 = i + 1;
+                    while i < len && src[i] != 125 { i = i + 1; }
+                    let b_e: u64 = i;
+                    if i < len { i = i + 1; }
+                    while i < len && (src[i] == 32 || src[i] == 9) { i = i + 1; }
+                    let tn_s: u64 = i;
+                    while i < len && c_is_id(src[i]) == 1 { i = i + 1; }
+                    let tn_e: u64 = i;
+                    while i < len && src[i] != 59 { i = i + 1; }
+                    if i < len { i = i + 1; }
+                    c_out_str(dst, &mut di_slot[0], max, "struct ");
+                    c_out_slice(dst, &mut di_slot[0], max, src, tn_s, tn_e);
+                    c_out_str(dst, &mut di_slot[0], max, " {\n");
+                    c_emit_struct_fields(src, b_s, b_e, dst, &mut di_slot[0], max);
+                    c_out_str(dst, &mut di_slot[0], max, "}\n");
+                } else {
+                    var semi: u64 = i;
+                    while semi < len && src[semi] != 59 { semi = semi + 1; }
+                    var ne: u64 = semi;
+                    while ne > nw_s && (src[ne - 1] == 32 || src[ne - 1] == 9) { ne = ne - 1; }
+                    var ns: u64 = ne;
+                    while ns > nw_s && c_is_id(src[ns - 1]) == 1 { ns = ns - 1; }
+                    if ns > nw_s && ne > ns {
+                        c_out_str(dst, &mut di_slot[0], max, "type ");
+                        c_out_slice(dst, &mut di_slot[0], max, src, ns, ne);
+                        c_out_str(dst, &mut di_slot[0], max, " = ");
+                        c_emit_mapped_type(src, nw_s, ns, dst, &mut di_slot[0], max);
+                        c_out_str(dst, &mut di_slot[0], max, ";\n");
+                    }
+                    i = semi + 1;
+                }
+            } else if kw_h == 14058172984575203104 {
+                let sn_s: u64 = i;
+                while i < len && c_is_id(src[i]) == 1 { i = i + 1; }
+                let sn_e: u64 = i;
+                while i < len && src[i] != 123 && src[i] != 59 { i = i + 1; }
+                if i < len && src[i] == 123 {
+                    let b_s: u64 = i + 1;
+                    while i < len && src[i] != 125 { i = i + 1; }
+                    let b_e: u64 = i;
+                    while i < len && src[i] != 59 { i = i + 1; }
+                    if i < len { i = i + 1; }
+                    c_out_str(dst, &mut di_slot[0], max, "struct ");
+                    c_out_slice(dst, &mut di_slot[0], max, src, sn_s, sn_e);
+                    c_out_str(dst, &mut di_slot[0], max, " {\n");
+                    c_emit_struct_fields(src, b_s, b_e, dst, &mut di_slot[0], max);
+                    c_out_str(dst, &mut di_slot[0], max, "}\n");
+                } else {
+                    if i < len { i = i + 1; }
+                }
+            } else {
+                var semi: u64 = i;
+                var lparen: u64 = 0;
+                var rparen: u64 = 0;
+                while semi < len && src[semi] != 59 {
+                    if src[semi] == 40 && lparen == 0 { lparen = semi; }
+                    if src[semi] == 41 { rparen = semi; }
+                    semi = semi + 1;
+                }
+                if lparen > kw_s && rparen > lparen {
+                    var fn_e: u64 = lparen;
+                    while fn_e > kw_s && (src[fn_e - 1] == 32 || src[fn_e - 1] == 9) { fn_e = fn_e - 1; }
+                    var fn_s: u64 = fn_e;
+                    while fn_s > kw_s && c_is_id(src[fn_s - 1]) == 1 { fn_s = fn_s - 1; }
+                    var rt_s: u64 = kw_s;
+                    if kw_h == 417800907370030071 { rt_s = i; }
+                    c_out_str(dst, &mut di_slot[0], max, "extern fn ");
+                    c_out_slice(dst, &mut di_slot[0], max, src, fn_s, fn_e);
+                    c_out_str(dst, &mut di_slot[0], max, "(");
+                    var p_cur: u64 = lparen + 1;
+                    var p_idx: u32 = 0;
+                    while p_cur < rparen {
+                        var p_comma: u64 = p_cur;
+                        while p_comma < rparen && src[p_comma] != 44 { p_comma = p_comma + 1; }
+                        var pe: u64 = p_comma;
+                        while pe > p_cur && (src[pe - 1] == 32 || src[pe - 1] == 9) { pe = pe - 1; }
+                        var ps: u64 = pe;
+                        while ps > p_cur && c_is_id(src[ps - 1]) == 1 { ps = ps - 1; }
+                        if ps > p_cur && pe > ps {
+                            if p_idx > 0 { c_out_str(dst, &mut di_slot[0], max, ", "); }
+                            c_out_slice(dst, &mut di_slot[0], max, src, ps, pe);
+                            c_out_str(dst, &mut di_slot[0], max, ": ");
+                            c_emit_mapped_type(src, p_cur, ps, dst, &mut di_slot[0], max);
+                            p_idx = p_idx + 1;
+                        }
+                        p_cur = p_comma + 1;
+                    }
+                    c_out_str(dst, &mut di_slot[0], max, ") -> ");
+                    c_emit_mapped_type(src, rt_s, fn_s, dst, &mut di_slot[0], max);
+                    c_out_str(dst, &mut di_slot[0], max, ";\n");
+                }
+                i = semi + 1;
+            }
+        }
+    }
+    return di_slot[0];
+}

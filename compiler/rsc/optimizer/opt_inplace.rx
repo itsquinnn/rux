@@ -1,0 +1,86 @@
+fn cg_eval_binary_operands_fast(cg: *mut CodeGen, lhs: *mut AstNode, rhs: *mut AstNode) {
+    if rhs != (0 as *mut AstNode) {
+        if rhs.kind == 116 {
+            compile_expr(cg, lhs);
+            let v: u64 = rhs.val;
+            if v == 0 {
+                cg_emit8(cg, 49); cg_emit8(cg, 219);
+            } else if v <= 2147483647 {
+                cg_emit8(cg, 187); cg_emit32(cg, v as u32);
+            } else {
+                cg_emit8(cg, 72); cg_emit8(cg, 187); cg_emit64(cg, v);
+            }
+            return;
+        }
+        if rhs.kind == 117 && cg.has_lambdas == 0 {
+            let rlv: *mut LocalVar = cg_find_local(cg, rhs.hash);
+            if rlv != (0 as *mut LocalVar) && rlv.is_struct_val != 1 {
+                compile_expr(cg, lhs);
+                cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 157);
+                cg_emit32(cg, 0 - (rlv.rbp_offset as u32));
+                return;
+            }
+        }
+    }
+    compile_expr(cg, lhs);
+    cg_emit8(cg, 80);
+    compile_expr(cg, rhs);
+    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 195);
+    cg_emit8(cg, 88);
+}
+
+fn opt_try_emit_inplace_assign(cg: *mut CodeGen, lv: *mut LocalVar, lhs_hash: u64, rhs: *mut AstNode) -> u32 {
+    if lv == (0 as *mut LocalVar) || rhs == (0 as *mut AstNode) { return 0; }
+    if lv.is_struct_val == 1 || cg.has_lambdas != 0 { return 0; }
+    if rhs.kind != 106 { return 0; }
+
+    let rl: *mut AstNode = rhs.child1;
+    let rr: *mut AstNode = rhs.child2;
+    if rl == (0 as *mut AstNode) || rr == (0 as *mut AstNode) { return 0; }
+    if rl.kind != 117 || rl.hash != lhs_hash { return 0; }
+
+    let op: u32 = rhs.val as u32;
+    let disp: u32 = 0 - (lv.rbp_offset as u32);
+
+    if op == 30 {
+        if rr.kind == 116 {
+            if rr.val == 1 {
+                cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 133);
+                cg_emit32(cg, disp);
+                return 1;
+            }
+            if rr.val <= 2147483647 {
+                cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 133);
+                cg_emit32(cg, disp);
+                cg_emit32(cg, rr.val as u32);
+                return 1;
+            }
+        }
+        compile_expr(cg, rr);
+        cg_emit8(cg, 72); cg_emit8(cg, 1); cg_emit8(cg, 133);
+        cg_emit32(cg, disp);
+        return 1;
+    }
+
+    if op == 31 {
+        if rr.kind == 116 {
+            if rr.val == 1 {
+                cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 141);
+                cg_emit32(cg, disp);
+                return 1;
+            }
+            if rr.val <= 2147483647 {
+                cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 173);
+                cg_emit32(cg, disp);
+                cg_emit32(cg, rr.val as u32);
+                return 1;
+            }
+        }
+        compile_expr(cg, rr);
+        cg_emit8(cg, 72); cg_emit8(cg, 41); cg_emit8(cg, 133);
+        cg_emit32(cg, disp);
+        return 1;
+    }
+    return 0;
+}
+

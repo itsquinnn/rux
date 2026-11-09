@@ -1,0 +1,24 @@
+include "lib/core/types.rx";
+include "lib/os/os.rx";
+
+fn print_rxd_help() {
+    let msg1: str = "RXD - Sovereign Dual-Continuum Data Processor (SPEC-RUX-RXD-001)";
+    os_println(msg1 as *const byte);
+    let msg2: str = "Usage: rxd <command> [arguments...]  OR  rux rxd <command> [arguments...]";
+    os_println(msg2 as *const byte);
+    let msg3: str = "";
+    os_println(msg3 as *const byte);
+    let msg4: str = "Commands:";
+    os_println(msg4 as *const byte);
+    let msg5: str = "  vitrify     <in.rxd>  [-o <out.rxdb>]  Compile .rxd text into 64-byte aligned plate";
+    os_println(msg5 as *const byte);
+    let msg6: str = "  materialize <in.rxdb> [-o <out.rxd>]   Decompile .rxdb plate into clean .rxd text";
+    os_println(msg6 as *const byte);
+    let msg7: str = "  inspect     <in.rxdb>                  Dump cacheline 0 header & slot table";
+    os_println(msg7 as *const byte);
+    let msg8: str = "  validate    <in.rxd>                   Check syntax, unit literals & type rules";
+    os_println(msg8 as *const byte);
+    let msg9: str = "  codegen     <in.rxd>  [-o <out.rx>]    Generate type-safe Rux struct bindings";
+    os_println(msg9 as *const byte);
+}
+
