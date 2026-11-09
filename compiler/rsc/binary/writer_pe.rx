@@ -188,7 +188,7 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         let idata_sec: u64 = sec_base + 80;
         file_buf[idata_sec + 0] = 46; file_buf[idata_sec + 1] = 105; file_buf[idata_sec + 2] = 100; file_buf[idata_sec + 3] = 97;
         file_buf[idata_sec + 4] = 116; file_buf[idata_sec + 5] = 97;
-        file_buf[idata_sec + 8] = 1024; file_buf[idata_sec + 9] = 0;
+        file_buf[idata_sec + 8] = 0; file_buf[idata_sec + 9] = 16;
         file_buf[idata_sec + 12] = (idata_offset & 255) as u8;
         file_buf[idata_sec + 13] = ((idata_offset >> 8) & 255) as u8;
         file_buf[idata_sec + 14] = ((idata_offset >> 16) & 255) as u8;
