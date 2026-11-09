@@ -1,9 +1,9 @@
 # Rux Windows PowerShell Universal Installer
-# Run with: irm https://raw.githubusercontent.com/bishwaxyz/ru/main/install.ps1 | iex
+# Run with: irm https://raw.githubusercontent.com/itsquinnn/rux/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
-$Repo = "bishwaxyz/ru"
+$Repo = "itsquinnn/rux"
 $Version = "v1.0.0"
 $InstallDir = "$env:USERPROFILE\.rux"
 $BinDir = "$InstallDir\bin"

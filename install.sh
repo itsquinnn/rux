@@ -4,7 +4,7 @@ set -euo pipefail
 # Rux Multi-Platform Universal Installer
 # Compatible with Linux (x86_64, aarch64), macOS (Intel, Apple Silicon)
 
-REPO="bishwaxyz/ru"
+REPO="itsquinnn/rux"
 VERSION="v1.0.0"
 PREFIX="${RUX_INSTALL:-$HOME/.rux}"
 MODIFY_PATH=true
