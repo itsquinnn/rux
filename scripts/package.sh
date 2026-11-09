@@ -38,14 +38,22 @@ create_tar_package() {
 
 create_zip_package() {
     local target="$1"
-    local bin_source="$2"
     local pkg_name="rux-${VERSION}-${target}"
     local staging="${DIST_DIR}/${pkg_name}"
     
-    echo "  -> Building package: ${pkg_name}.zip"
+    echo "  -> Building package: ${pkg_name}.zip with native Windows PE32+ binary"
     mkdir -p "${staging}/bin"
-    cp "${bin_source}" "${staging}/bin/rux.exe"
     
+    # Compile real native PE32+ Windows executable
+    "${ROOT_DIR}/bin/rux" build "${ROOT_DIR}/tools/rux/main.rx" -o "${staging}/bin/rux.exe" --target=win64
+    chmod +x "${staging}/bin/rux.exe"
+    
+    # Create companion cmd script for CMD/PowerShell convenience
+    cat << 'EOF' > "${staging}/bin/rux.cmd"
+@echo off
+"%~dp0rux.exe" %*
+EOF
+
     if [ -d "${ROOT_DIR}/lib" ]; then
         cp -r "${ROOT_DIR}/lib" "${staging}/"
     fi
@@ -69,8 +77,8 @@ create_tar_package "x86_64-apple-darwin" "${ROOT_DIR}/bin/rux"
 # 4. macOS aarch64 (Apple Silicon)
 create_tar_package "aarch64-apple-darwin" "${ROOT_DIR}/bin/rux"
 
-# 5. Windows x86_64
-create_zip_package "x86_64-pc-windows-msvc" "${ROOT_DIR}/bin/rux"
+# 5. Windows x86_64 (Native PE32+)
+create_zip_package "x86_64-pc-windows-msvc"
 
 # 6. Generate SHA256 checksums
 echo "  -> Generating SHA256 checksums..."

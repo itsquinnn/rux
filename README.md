@@ -41,26 +41,21 @@ Install Rux on your system with a single command (similar to Node.js, Bun, or Ru
 curl -fsSL https://raw.githubusercontent.com/itsquinnn/rux/main/install.sh | bash
 ```
 
-### Windows (via WSL2 / Ubuntu)
+### Windows (PowerShell)
 
-Rux uses a freestanding, zero-libc direct-syscall architecture. On Windows, it runs at full native speed inside **WSL2** (Windows Subsystem for Linux):
+Install natively on Windows without needing WSL:
 
-1. Open PowerShell and launch WSL:
-   ```powershell
-   wsl
-   ```
-   *(If you don't have WSL installed yet, run `wsl --install` in PowerShell first).*
+```powershell
+irm https://raw.githubusercontent.com/itsquinnn/rux/main/install.ps1 | iex
+```
 
-2. Inside WSL, run the one-line installer:
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/itsquinnn/rux/main/install.sh | bash
-   ```
+### Windows (Git Bash / MSYS2 / WSL)
 
-3. Verify:
-   ```bash
-   rux --help
-   rux -e 'println("Hello from Rux!");'
-   ```
+If you use Git Bash, MSYS2, or WSL on Windows:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itsquinnn/rux/main/install.sh | bash
+```
 
 ### Precompiled Standalone Binaries
 
