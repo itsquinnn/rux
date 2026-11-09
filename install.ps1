@@ -66,3 +66,4 @@ Write-Host "Rux successfully installed!" -ForegroundColor Green
 Write-Host "Verify installation by opening a new PowerShell window and running:"
 Write-Host "  rux --help" -ForegroundColor White
 Write-Host "  rux -e 'println(\"Hello, Rux!\");'" -ForegroundColor White
+

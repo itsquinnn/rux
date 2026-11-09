@@ -84,3 +84,4 @@ fi
 echo "==> Successfully generated distribution packages in ${DIST_DIR}:"
 ls -lh "${DIST_DIR}"
 cat "${DIST_DIR}/SHA256SUMS.txt"
+
