@@ -33,7 +33,8 @@ jobs:
           ./hello_bin
 
       - name: Test Inline Code Evaluation
-        run: ./bin/rux -e 'println("CI inline evaluation: OK");'
+        run: |
+          ./bin/rux -e 'println("CI inline evaluation: OK");'
 
       - name: Test Multi-Target Cross-Compilation
         run: |
@@ -61,3 +62,31 @@ jobs:
           ./install.sh --local --prefix /tmp/rux_ci_install --no-modify-path
           /tmp/rux_ci_install/bin/rux --help
           /tmp/rux_ci_install/bin/rux -e 'println("Installed rux runs cleanly!");'
+
+  test-windows-x86_64:
+    name: Test & Verify (Windows x64 Native)
+    runs-on: windows-latest
+    needs: test-linux-x86_64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download release package from GitHub Release
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/itsquinnn/rux/releases/download/v1.0.0/rux-v1.0.0-x86_64-pc-windows-msvc.zip" -OutFile "rux_win.zip"
+          Expand-Archive -Path "rux_win.zip" -DestinationPath "rux_installed"
+          $binDir = Resolve-Path "rux_installed\rux-v1.0.0-x86_64-pc-windows-msvc\bin"
+          Add-Content $env:GITHUB_PATH $binDir
+
+      - name: Test Windows Native Executable (CLI help and version)
+        shell: pwsh
+        run: |
+          rux.exe --help
+          rux.exe --version
+
+      - name: Test Running Rux Program on Windows Native
+        shell: pwsh
+        run: |
+          rux.exe build hello.rx -o hello_win.exe --target=win64
+          .\hello_win.exe
