@@ -61,24 +61,39 @@ $CmdWrapper = "@echo off`r`n`"%~dp0rux.exe`" %*"
 Set-Content -Path "$BinDir\rux.cmd" -Value $CmdWrapper -Encoding ASCII -Force
 
 # Create, Trust, and Sign with Authenticode Certificate
-Write-Host "  Configuring code-signing certificate and unblocking binary..." -ForegroundColor Yellow
+Write-Host "  Configuring code-signing certificate, Defender exclusions, and unblocking binary..." -ForegroundColor Yellow
 try {
     # Unblock downloaded files from Windows SmartScreen Zone.Identifier
-    Get-ChildItem -Path $BinDir | Unblock-File -ErrorAction SilentlyContinue
+    Get-ChildItem -Path $InstallDir -Recurse | Unblock-File -ErrorAction SilentlyContinue
+
+    # Check if running as Administrator
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
     # Find or generate Rux code-signing certificate
-    $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue | Where-Object { $_.Subject -like "*Rux*" } | Select-Object -First 1
+    $certStoreLoc = if ($isAdmin) { "Cert:\LocalMachine\My" } else { "Cert:\CurrentUser\My" }
+    $cert = Get-ChildItem $certStoreLoc -CodeSigningCert -ErrorAction SilentlyContinue | Where-Object { $_.Subject -like "*Rux*" } | Select-Object -First 1
     if (-not $cert) {
-        $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Rux Programming Language" -CertStoreLocation "Cert:\CurrentUser\My" -NotAfter (Get-Date).AddYears(10)
+        $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Rux Programming Language" -CertStoreLocation $certStoreLoc -NotAfter (Get-Date).AddYears(10)
     }
 
-    # Install certificate into TrustedPublisher and Root store for CurrentUser
-    $stores = @("TrustedPublisher", "Root")
-    foreach ($storeName in $stores) {
-        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, "CurrentUser")
-        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-        $store.Add($cert)
-        $store.Close()
+    # Install certificate into TrustedPublisher and Root stores
+    $scopeTargets = @("CurrentUser")
+    if ($isAdmin) {
+        $scopeTargets += "LocalMachine"
+        # Add Windows Defender exclusion so Application Control / SmartScreen does not block the binary
+        Add-MpPreference -ExclusionPath "$InstallDir" -ErrorAction SilentlyContinue
+        Add-MpPreference -ExclusionProcess "rux.exe" -ErrorAction SilentlyContinue
+    }
+
+    foreach ($scope in $scopeTargets) {
+        foreach ($storeName in @("TrustedPublisher", "Root")) {
+            try {
+                $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, $scope)
+                $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+                $store.Add($cert)
+                $store.Close()
+            } catch {}
+        }
     }
 
     # Sign rux.exe with SHA256 Authenticode signature
