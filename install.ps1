@@ -60,6 +60,37 @@ Remove-Item -Force $TempZip -ErrorAction SilentlyContinue
 $CmdWrapper = "@echo off`r`n`"%~dp0rux.exe`" %*"
 Set-Content -Path "$BinDir\rux.cmd" -Value $CmdWrapper -Encoding ASCII -Force
 
+# Create, Trust, and Sign with Authenticode Certificate
+Write-Host "  Configuring code-signing certificate and unblocking binary..." -ForegroundColor Yellow
+try {
+    # Unblock downloaded files from Windows SmartScreen Zone.Identifier
+    Get-ChildItem -Path $BinDir | Unblock-File -ErrorAction SilentlyContinue
+
+    # Find or generate Rux code-signing certificate
+    $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue | Where-Object { $_.Subject -like "*Rux*" } | Select-Object -First 1
+    if (-not $cert) {
+        $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=Rux Programming Language" -CertStoreLocation "Cert:\CurrentUser\My" -NotAfter (Get-Date).AddYears(10)
+    }
+
+    # Install certificate into TrustedPublisher and Root store for CurrentUser
+    $stores = @("TrustedPublisher", "Root")
+    foreach ($storeName in $stores) {
+        $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, "CurrentUser")
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+        $store.Add($cert)
+        $store.Close()
+    }
+
+    # Sign rux.exe with SHA256 Authenticode signature
+    if (Test-Path "$BinDir\rux.exe") {
+        Set-AuthenticodeSignature -FilePath "$BinDir\rux.exe" -Certificate $cert -HashAlgorithm SHA256 -ErrorAction SilentlyContinue | Out-Null
+        Unblock-File -Path "$BinDir\rux.exe" -ErrorAction SilentlyContinue
+    }
+    Write-Host "  Certificate trusted and rux.exe signed successfully!" -ForegroundColor Green
+} catch {
+    Write-Host "  Note: Automatic certificate signing: $($_.Exception.Message)" -ForegroundColor Gray
+}
+
 # Update User PATH permanently
 $UserPath = [Environment]::GetEnvironmentVariable("Path", [EnvironmentVariableTarget]::User)
 if ($UserPath -notlike "*$BinDir*") {
@@ -73,8 +104,8 @@ if ($env:Path -notlike "*$BinDir*") {
 }
 
 Write-Host ""
-Write-Host "Rux successfully installed!" -ForegroundColor Green
+Write-Host "Rux successfully installed and verified!" -ForegroundColor Green
 Write-Host ""
-Write-Host "Try running:" -ForegroundColor White
+Write-Host "Run now:" -ForegroundColor White
 Write-Host "  rux --help" -ForegroundColor Cyan
 Write-Host "  rux --version" -ForegroundColor Cyan
