@@ -1,0 +1,16 @@
+include "lib/core/types.rx";
+include "lib/os/raiq.rx";
+include "lib/os/rpi.rx";
+
+const RPAL_PLATFORM_LINUX: uint     = 1;
+const RPAL_PLATFORM_WINDOWS: uint   = 2;
+const RPAL_PLATFORM_MACOS: uint     = 3;
+const RPAL_PLATFORM_BAREMETAL: uint = 4;
+
+fn rpal_detect_platform() -> uint {
+    return RPAL_PLATFORM_LINUX;
+}
+
+fn rpal_dispatch_host(sqe: *const RaiqSubmissionEntry64) -> int {
+    return rpi_host_dispatch(sqe);
+}

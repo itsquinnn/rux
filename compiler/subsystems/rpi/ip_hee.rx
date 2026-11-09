@@ -1,0 +1,71 @@
+include "lib/core/types.rx";
+include "lib/core/memory.rx";
+
+struct IpHeeEngine {
+    exec_page: *mut byte,
+    page_size: uint,
+    main_offset: uint,
+    entry_point: *mut byte,
+    is_active: bool,
+    execution_count: uint,
+    last_cycles: uint,
+}
+
+fn ip_hee_init(engine: *mut IpHeeEngine, capacity: uint) -> int {
+    let aligned_cap: uint = align_forward(capacity, 4096);
+    let page: *mut byte = @os.mmap(0 as *mut byte, aligned_cap, 7, 34, -1, 0);
+    if (page as int) <= 0 {
+        return -1;
+    }
+
+    engine.exec_page = page;
+    engine.page_size = aligned_cap;
+    engine.main_offset = 0;
+    engine.entry_point = page;
+    engine.is_active = true;
+    engine.execution_count = 0;
+    engine.last_cycles = 0;
+    return 0;
+}
+
+fn ip_hee_load_machine_code(
+    engine: *mut IpHeeEngine,
+    code: *const byte,
+    code_len: uint,
+    main_offset: uint
+) -> uint {
+    if !engine.is_active || code_len > engine.page_size {
+        return 0;
+    }
+
+    copy_memory(engine.exec_page, code, code_len);
+    engine.main_offset = main_offset;
+    engine.entry_point = (engine.exec_page as uint + main_offset) as *mut byte;
+
+    @silicon.mfence();
+    return code_len;
+}
+
+fn ip_hee_execute(engine: *mut IpHeeEngine, arg1: uint, arg2: uint) -> int {
+    if !engine.is_active {
+        return -1;
+    }
+
+    let fn_target: fn(a: uint, b: uint) -> int = engine.entry_point as fn(a: uint, b: uint) -> int;
+
+    let t0: uint = @silicon.rdtsc();
+    let res: int = fn_target(arg1, arg2);
+    let t1: uint = @silicon.rdtsc();
+
+    engine.execution_count = engine.execution_count + 1;
+    engine.last_cycles = t1 - t0;
+    return res;
+}
+
+fn ip_hee_shutdown(engine: *mut IpHeeEngine) {
+    if engine.is_active && (engine.exec_page as int) > 0 {
+        @os.munmap(engine.exec_page, engine.page_size);
+        engine.exec_page = 0 as *mut byte;
+        engine.is_active = false;
+    }
+}

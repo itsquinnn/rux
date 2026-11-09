@@ -45,8 +45,10 @@ create_zip_package() {
     mkdir -p "${staging}/bin"
     
     # Compile real native PE32+ Windows executable
-    "${ROOT_DIR}/bin/rux" build "${ROOT_DIR}/tools/rux/main.rx" -o "${staging}/bin/rux.exe" --target=win64
+    "${ROOT_DIR}/bin/rux" build "${ROOT_DIR}/compiler/rux.rx" -o "${staging}/bin/rux.exe" --target=win64
     chmod +x "${staging}/bin/rux.exe"
+    "${ROOT_DIR}/bin/rux" build "${ROOT_DIR}/compiler/rux.rx" -o "${staging}/bin/ruxc.exe" --target=win64
+    chmod +x "${staging}/bin/ruxc.exe"
     
     # Create companion cmd script for CMD/PowerShell convenience
     cat << 'EOF' > "${staging}/bin/rux.cmd"

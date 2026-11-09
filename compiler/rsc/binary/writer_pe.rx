@@ -1,3 +1,22 @@
+fn copy_cstr_to_buf(buf: *mut u8, off: u64, s: *u8, len: u64) {
+    var i: u64 = 0;
+    while i < len {
+        buf[off + i] = s[i];
+        i = i + 1;
+    }
+}
+
+fn patch_pe_iat_hole(file_buf: *mut u8, text_offset: u64, hole: u64, iat_target_rva: u64) {
+    if hole != 0 {
+        let disp: u32 = ((iat_target_rva as i64) - ((text_offset + hole + 4) as i64)) as u32;
+        let p: u64 = text_offset + hole;
+        file_buf[p + 0] = (disp & 255) as u8;
+        file_buf[p + 1] = ((disp >> 8) & 255) as u8;
+        file_buf[p + 2] = ((disp >> 16) & 255) as u8;
+        file_buf[p + 3] = ((disp >> 24) & 255) as u8;
+    }
+}
+
 fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
     let align: u64 = 4096;
     var text_aligned: u64 = ((cg.text_size as u64) + align - 1) & (0 - align);
@@ -112,12 +131,12 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         file_buf[opt_base + 122] = ((idata_offset >> 16) & 255) as u8;
         file_buf[opt_base + 123] = ((idata_offset >> 24) & 255) as u8;
         file_buf[opt_base + 124] = 40;
-        let iat_dir_rva: u64 = idata_offset + 80;
+        let iat_dir_rva: u64 = idata_offset + 128;
         file_buf[opt_base + 208] = (iat_dir_rva & 255) as u8;
         file_buf[opt_base + 209] = ((iat_dir_rva >> 8) & 255) as u8;
         file_buf[opt_base + 210] = ((iat_dir_rva >> 16) & 255) as u8;
         file_buf[opt_base + 211] = ((iat_dir_rva >> 24) & 255) as u8;
-        file_buf[opt_base + 212] = 40;
+        file_buf[opt_base + 212] = 88;
     }
 
     let sec_base: u64 = opt_base + 240;
@@ -169,7 +188,7 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         let idata_sec: u64 = sec_base + 80;
         file_buf[idata_sec + 0] = 46; file_buf[idata_sec + 1] = 105; file_buf[idata_sec + 2] = 100; file_buf[idata_sec + 3] = 97;
         file_buf[idata_sec + 4] = 116; file_buf[idata_sec + 5] = 97;
-        file_buf[idata_sec + 8] = 256; file_buf[idata_sec + 9] = 0;
+        file_buf[idata_sec + 8] = 1024; file_buf[idata_sec + 9] = 0;
         file_buf[idata_sec + 12] = (idata_offset & 255) as u8;
         file_buf[idata_sec + 13] = ((idata_offset >> 8) & 255) as u8;
         file_buf[idata_sec + 14] = ((idata_offset >> 16) & 255) as u8;
@@ -185,12 +204,18 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         file_buf[idata_sec + 36] = 64; file_buf[idata_sec + 39] = 192;
 
         let ilt_rva: u64 = idata_offset + 40;
-        let iat_rva: u64 = idata_offset + 80;
-        let dll_rva: u64 = idata_offset + 120;
-        let hn_exit: u64 = idata_offset + 136;
-        let hn_gstd: u64 = idata_offset + 150;
-        let hn_wrfl: u64 = idata_offset + 166;
-        let hn_valc: u64 = idata_offset + 178;
+        let iat_rva: u64 = idata_offset + 128;
+        let dll_rva: u64 = idata_offset + 220;
+        let hn_exit: u64 = idata_offset + 240;
+        let hn_gstd: u64 = idata_offset + 256;
+        let hn_wrfl: u64 = idata_offset + 272;
+        let hn_valc: u64 = idata_offset + 284;
+        let hn_crfl: u64 = idata_offset + 300;
+        let hn_rdfl: u64 = idata_offset + 314;
+        let hn_clsh: u64 = idata_offset + 326;
+        let hn_vfre: u64 = idata_offset + 340;
+        let hn_cmdl: u64 = idata_offset + 354;
+        let hn_slep: u64 = idata_offset + 372;
 
         set_u32(file_buf + idata_offset, 0, ilt_rva as u32);
         set_u32(file_buf + idata_offset, 3, dll_rva as u32);
@@ -200,27 +225,35 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         set_u32(file_buf + ilt_rva, 2, hn_gstd as u32);
         set_u32(file_buf + ilt_rva, 4, hn_wrfl as u32);
         set_u32(file_buf + ilt_rva, 6, hn_valc as u32);
+        set_u32(file_buf + ilt_rva, 8, hn_crfl as u32);
+        set_u32(file_buf + ilt_rva, 10, hn_rdfl as u32);
+        set_u32(file_buf + ilt_rva, 12, hn_clsh as u32);
+        set_u32(file_buf + ilt_rva, 14, hn_vfre as u32);
+        set_u32(file_buf + ilt_rva, 16, hn_cmdl as u32);
+        set_u32(file_buf + ilt_rva, 18, hn_slep as u32);
 
         set_u32(file_buf + iat_rva, 0, hn_exit as u32);
         set_u32(file_buf + iat_rva, 2, hn_gstd as u32);
         set_u32(file_buf + iat_rva, 4, hn_wrfl as u32);
         set_u32(file_buf + iat_rva, 6, hn_valc as u32);
+        set_u32(file_buf + iat_rva, 8, hn_crfl as u32);
+        set_u32(file_buf + iat_rva, 10, hn_rdfl as u32);
+        set_u32(file_buf + iat_rva, 12, hn_clsh as u32);
+        set_u32(file_buf + iat_rva, 14, hn_vfre as u32);
+        set_u32(file_buf + iat_rva, 16, hn_cmdl as u32);
+        set_u32(file_buf + iat_rva, 18, hn_slep as u32);
 
-        let kdll: *u8 = "KERNEL32.dll";
-        var ki: u64 = 0;
-        while ki < 12 { file_buf[dll_rva + ki] = kdll[ki]; ki = ki + 1; }
-        let s_exit: *u8 = "ExitProcess";
-        ki = 0;
-        while ki < 11 { file_buf[hn_exit + 2 + ki] = s_exit[ki]; ki = ki + 1; }
-        let s_gstd: *u8 = "GetStdHandle";
-        ki = 0;
-        while ki < 12 { file_buf[hn_gstd + 2 + ki] = s_gstd[ki]; ki = ki + 1; }
-        let s_wrfl: *u8 = "WriteFile";
-        ki = 0;
-        while ki < 9 { file_buf[hn_wrfl + 2 + ki] = s_wrfl[ki]; ki = ki + 1; }
-        let s_valc: *u8 = "VirtualAlloc";
-        ki = 0;
-        while ki < 12 { file_buf[hn_valc + 2 + ki] = s_valc[ki]; ki = ki + 1; }
+        copy_cstr_to_buf(file_buf, dll_rva, "KERNEL32.dll", 12);
+        copy_cstr_to_buf(file_buf, hn_exit + 2, "ExitProcess", 11);
+        copy_cstr_to_buf(file_buf, hn_gstd + 2, "GetStdHandle", 12);
+        copy_cstr_to_buf(file_buf, hn_wrfl + 2, "WriteFile", 9);
+        copy_cstr_to_buf(file_buf, hn_valc + 2, "VirtualAlloc", 12);
+        copy_cstr_to_buf(file_buf, hn_crfl + 2, "CreateFileA", 11);
+        copy_cstr_to_buf(file_buf, hn_rdfl + 2, "ReadFile", 8);
+        copy_cstr_to_buf(file_buf, hn_clsh + 2, "CloseHandle", 11);
+        copy_cstr_to_buf(file_buf, hn_vfre + 2, "VirtualFree", 11);
+        copy_cstr_to_buf(file_buf, hn_cmdl + 2, "GetCommandLineA", 15);
+        copy_cstr_to_buf(file_buf, hn_slep + 2, "Sleep", 5);
     }
 
     var i: u64 = 0;
@@ -271,30 +304,18 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
     }
 
     if is_uefi == 0 {
-        if cg.pe_exit_iat_hole != 0 {
-            let d0: u32 = (((idata_offset + 80) as i64) - ((text_offset + cg.pe_exit_iat_hole + 4) as i64)) as u32;
-            let p0: u64 = text_offset + cg.pe_exit_iat_hole;
-            file_buf[p0] = (d0 & 255) as u8; file_buf[p0 + 1] = ((d0 >> 8) & 255) as u8;
-            file_buf[p0 + 2] = ((d0 >> 16) & 255) as u8; file_buf[p0 + 3] = ((d0 >> 24) & 255) as u8;
-        }
-        if cg.pe_getstd_iat_hole != 0 {
-            let d1: u32 = (((idata_offset + 88) as i64) - ((text_offset + cg.pe_getstd_iat_hole + 4) as i64)) as u32;
-            let p1: u64 = text_offset + cg.pe_getstd_iat_hole;
-            file_buf[p1] = (d1 & 255) as u8; file_buf[p1 + 1] = ((d1 >> 8) & 255) as u8;
-            file_buf[p1 + 2] = ((d1 >> 16) & 255) as u8; file_buf[p1 + 3] = ((d1 >> 24) & 255) as u8;
-        }
-        if cg.pe_writefile_iat_hole != 0 {
-            let d2: u32 = (((idata_offset + 96) as i64) - ((text_offset + cg.pe_writefile_iat_hole + 4) as i64)) as u32;
-            let p2: u64 = text_offset + cg.pe_writefile_iat_hole;
-            file_buf[p2] = (d2 & 255) as u8; file_buf[p2 + 1] = ((d2 >> 8) & 255) as u8;
-            file_buf[p2 + 2] = ((d2 >> 16) & 255) as u8; file_buf[p2 + 3] = ((d2 >> 24) & 255) as u8;
-        }
-        if cg.pe_valloc_iat_hole != 0 {
-            let d3: u32 = (((idata_offset + 104) as i64) - ((text_offset + cg.pe_valloc_iat_hole + 4) as i64)) as u32;
-            let p3: u64 = text_offset + cg.pe_valloc_iat_hole;
-            file_buf[p3] = (d3 & 255) as u8; file_buf[p3 + 1] = ((d3 >> 8) & 255) as u8;
-            file_buf[p3 + 2] = ((d3 >> 16) & 255) as u8; file_buf[p3 + 3] = ((d3 >> 24) & 255) as u8;
-        }
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_exit_iat_hole, idata_offset + 128);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_exit_iat_hole2, idata_offset + 128);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_getstd_iat_hole, idata_offset + 136);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_getstd_iat_hole2, idata_offset + 136);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_writefile_iat_hole, idata_offset + 144);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_valloc_iat_hole, idata_offset + 152);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_createfile_iat_hole, idata_offset + 160);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_readfile_iat_hole, idata_offset + 168);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_closehandle_iat_hole, idata_offset + 176);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_vfree_iat_hole, idata_offset + 184);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_getcmdline_iat_hole, idata_offset + 192);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_sleep_iat_hole, idata_offset + 200);
     }
 
     i = 0;

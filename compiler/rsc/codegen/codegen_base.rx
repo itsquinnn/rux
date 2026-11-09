@@ -83,11 +83,24 @@ struct CodeGen {
     defer_nodes: *mut u64,
     defer_count: u64,
     pe_exit_iat_hole: u64,
+    pe_exit_iat_hole2: u64,
     pe_getstd_iat_hole: u64,
+    pe_getstd_iat_hole2: u64,
     pe_writefile_iat_hole: u64,
     pe_valloc_iat_hole: u64,
+    pe_createfile_iat_hole: u64,
+    pe_readfile_iat_hole: u64,
+    pe_closehandle_iat_hole: u64,
+    pe_vfree_iat_hole: u64,
+    pe_getcmdline_iat_hole: u64,
+    pe_sleep_iat_hole: u64,
     pe_write_helper_off: u64,
     pe_valloc_helper_off: u64,
+    pe_createfile_helper_off: u64,
+    pe_readfile_helper_off: u64,
+    pe_closehandle_helper_off: u64,
+    pe_vfree_helper_off: u64,
+    pe_sleep_helper_off: u64,
     is_freestanding: u64,
     strict_safety: u64,
     unsafe_depth: u64,
@@ -107,6 +120,28 @@ struct CodeGen {
     sym_checks: *mut ConstEntry,
     sym_check_count: u64,
     skip_ir_opt: u64,
+}
+
+fn cg_init_pe(cg: *mut CodeGen) {
+    cg.pe_exit_iat_hole = 0;
+    cg.pe_exit_iat_hole2 = 0;
+    cg.pe_getstd_iat_hole = 0;
+    cg.pe_getstd_iat_hole2 = 0;
+    cg.pe_writefile_iat_hole = 0;
+    cg.pe_valloc_iat_hole = 0;
+    cg.pe_createfile_iat_hole = 0;
+    cg.pe_readfile_iat_hole = 0;
+    cg.pe_closehandle_iat_hole = 0;
+    cg.pe_vfree_iat_hole = 0;
+    cg.pe_getcmdline_iat_hole = 0;
+    cg.pe_sleep_iat_hole = 0;
+    cg.pe_write_helper_off = 0;
+    cg.pe_valloc_helper_off = 0;
+    cg.pe_createfile_helper_off = 0;
+    cg.pe_readfile_helper_off = 0;
+    cg.pe_closehandle_helper_off = 0;
+    cg.pe_vfree_helper_off = 0;
+    cg.pe_sleep_helper_off = 0;
 }
 
 fn cg_emit8(cg: *mut CodeGen, b: u8) {
@@ -420,62 +455,134 @@ fn emit_start_stub(cg: *mut CodeGen) {
         return;
     }
     if cg.target_arch == 6 {
-        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 40);
-        cg_emit8(cg, 72); cg_emit8(cg, 49); cg_emit8(cg, 192);
-        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 32);
-        cg_emit8(cg, 49); cg_emit8(cg, 255);
-        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 116); cg_emit8(cg, 36); cg_emit8(cg, 32);
-        cg_emit8(cg, 232);
-        cg.call_main_hole = cg.text_size;
-        cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 236); cg_emit32(cg, 1080);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_getcmdline_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 198);
+        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 188); cg_emit8(cg, 36); cg_emit32(cg, 544);
+        cg_emit8(cg, 49); cg_emit8(cg, 210);
+        cg_emit8(cg, 138); cg_emit8(cg, 4); cg_emit8(cg, 22); cg_emit8(cg, 136); cg_emit8(cg, 4); cg_emit8(cg, 23);
+        cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 194); cg_emit8(cg, 132); cg_emit8(cg, 192); cg_emit8(cg, 116); cg_emit8(cg, 13);
+        cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 250); cg_emit32(cg, 500); cg_emit8(cg, 114); cg_emit8(cg, 234);
+        cg_emit8(cg, 198); cg_emit8(cg, 4); cg_emit8(cg, 23); cg_emit8(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 254); cg_emit8(cg, 49); cg_emit8(cg, 255);
+        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 76); cg_emit8(cg, 36); cg_emit8(cg, 32);
+        cg_emit8(cg, 138); cg_emit8(cg, 6); cg_emit8(cg, 132); cg_emit8(cg, 192); cg_emit8(cg, 116); cg_emit8(cg, 80);
+        cg_emit8(cg, 60); cg_emit8(cg, 32); cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 198); cg_emit8(cg, 235); cg_emit8(cg, 241);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 52); cg_emit8(cg, 249);
+        cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 199);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 255); cg_emit8(cg, 63); cg_emit8(cg, 125); cg_emit8(cg, 58);
+        cg_emit8(cg, 60); cg_emit8(cg, 34); cg_emit8(cg, 116); cg_emit8(cg, 15);
+        cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 198); cg_emit8(cg, 138); cg_emit8(cg, 6);
+        cg_emit8(cg, 132); cg_emit8(cg, 192); cg_emit8(cg, 116); cg_emit8(cg, 45);
+        cg_emit8(cg, 60); cg_emit8(cg, 32); cg_emit8(cg, 116); cg_emit8(cg, 33); cg_emit8(cg, 235); cg_emit8(cg, 241);
+        cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 198);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 116); cg_emit8(cg, 249); cg_emit8(cg, 248);
+        cg_emit8(cg, 138); cg_emit8(cg, 6); cg_emit8(cg, 132); cg_emit8(cg, 192); cg_emit8(cg, 116); cg_emit8(cg, 25);
+        cg_emit8(cg, 60); cg_emit8(cg, 34); cg_emit8(cg, 116); cg_emit8(cg, 5);
+        cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 198); cg_emit8(cg, 235); cg_emit8(cg, 241);
+        cg_emit8(cg, 198); cg_emit8(cg, 6); cg_emit8(cg, 0); cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 198); cg_emit8(cg, 235); cg_emit8(cg, 178);
+        cg_emit8(cg, 198); cg_emit8(cg, 6); cg_emit8(cg, 0); cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 198); cg_emit8(cg, 235); cg_emit8(cg, 170);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 4); cg_emit8(cg, 249); cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 206);
+        cg_emit8(cg, 232); cg.call_main_hole = cg.text_size; cg_emit32(cg, 0);
         cg_emit8(cg, 137); cg_emit8(cg, 193);
-        cg_emit8(cg, 255); cg_emit8(cg, 21);
-        cg.pe_exit_iat_hole = cg.text_size;
-        cg_emit32(cg, 0);
-        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 196); cg_emit8(cg, 40);
-        cg_emit8(cg, 195);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_exit_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 196); cg_emit32(cg, 1080); cg_emit8(cg, 195);
 
         cg.pe_write_helper_off = cg.text_size;
-        cg_emit8(cg, 85);
-        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 85); cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 64);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 117); cg_emit8(cg, 248);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 85); cg_emit8(cg, 240);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 255); cg_emit8(cg, 2); cg_emit8(cg, 119); cg_emit8(cg, 27);
         cg_emit8(cg, 185); cg_emit32(cg, 4294967285);
-        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 255); cg_emit8(cg, 2);
-        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 255); cg_emit8(cg, 2); cg_emit8(cg, 117); cg_emit8(cg, 5);
         cg_emit8(cg, 185); cg_emit32(cg, 4294967284);
-        cg_emit8(cg, 255); cg_emit8(cg, 21);
-        cg.pe_getstd_iat_hole = cg.text_size;
-        cg_emit32(cg, 0);
-        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 193);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_getstd_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 193); cg_emit8(cg, 235); cg_emit8(cg, 3);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 249);
         cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 85); cg_emit8(cg, 248);
         cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 69); cg_emit8(cg, 240);
         cg_emit8(cg, 76); cg_emit8(cg, 141); cg_emit8(cg, 77); cg_emit8(cg, 232);
         cg_emit8(cg, 49); cg_emit8(cg, 192);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 32);
-        cg_emit8(cg, 255); cg_emit8(cg, 21);
-        cg.pe_writefile_iat_hole = cg.text_size;
-        cg_emit32(cg, 0);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_writefile_iat_hole = cg.text_size; cg_emit32(cg, 0);
         cg_emit8(cg, 139); cg_emit8(cg, 69); cg_emit8(cg, 232);
-        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236);
-        cg_emit8(cg, 93);
-        cg_emit8(cg, 195);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
+
+        cg.pe_readfile_helper_off = cg.text_size;
+        cg_emit8(cg, 85); cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 64);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 117); cg_emit8(cg, 248);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 85); cg_emit8(cg, 240);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 69); cg_emit8(cg, 232); cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 255); cg_emit8(cg, 117); cg_emit8(cg, 16);
+        cg_emit8(cg, 185); cg_emit32(cg, 4294967286);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_getstd_iat_hole2 = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 193); cg_emit8(cg, 235); cg_emit8(cg, 3);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 249);
+        cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 85); cg_emit8(cg, 248);
+        cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 69); cg_emit8(cg, 240);
+        cg_emit8(cg, 76); cg_emit8(cg, 141); cg_emit8(cg, 77); cg_emit8(cg, 232);
+        cg_emit8(cg, 49); cg_emit8(cg, 192);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 32);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_readfile_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 139); cg_emit8(cg, 69); cg_emit8(cg, 232);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
+
+        cg.pe_createfile_helper_off = cg.text_size;
+        cg_emit8(cg, 85); cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 64);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 249);
+        cg_emit8(cg, 186); cg_emit32(cg, 2147483648);
+        cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 246); cg_emit8(cg, 116); cg_emit8(cg, 5);
+        cg_emit8(cg, 186); cg_emit32(cg, 3221225472);
+        cg_emit8(cg, 65); cg_emit8(cg, 184); cg_emit32(cg, 3);
+        cg_emit8(cg, 69); cg_emit8(cg, 49); cg_emit8(cg, 201);
+        cg_emit8(cg, 184); cg_emit32(cg, 3);
+        cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 246); cg_emit8(cg, 116); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 2);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 32);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 40); cg_emit32(cg, 128);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 68); cg_emit8(cg, 36); cg_emit8(cg, 48); cg_emit32(cg, 0);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_createfile_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
+
+        cg.pe_closehandle_helper_off = cg.text_size;
+        cg_emit8(cg, 85); cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 32);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 249);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_closehandle_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 49); cg_emit8(cg, 192);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
 
         cg.pe_valloc_helper_off = cg.text_size;
-        cg_emit8(cg, 85);
-        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 85); cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 32);
-        cg_emit8(cg, 49); cg_emit8(cg, 201);
-        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 242);
+        cg_emit8(cg, 49); cg_emit8(cg, 201); cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 242);
         cg_emit8(cg, 65); cg_emit8(cg, 184); cg_emit32(cg, 12288);
         cg_emit8(cg, 65); cg_emit8(cg, 185); cg_emit32(cg, 64);
-        cg_emit8(cg, 255); cg_emit8(cg, 21);
-        cg.pe_valloc_iat_hole = cg.text_size;
-        cg_emit32(cg, 0);
-        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236);
-        cg_emit8(cg, 93);
-        cg_emit8(cg, 195);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_valloc_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
+
+        cg.pe_vfree_helper_off = cg.text_size;
+        cg_emit8(cg, 85); cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 32);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 249);
+        cg_emit8(cg, 49); cg_emit8(cg, 210); cg_emit8(cg, 65); cg_emit8(cg, 184); cg_emit32(cg, 32768);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_vfree_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 49); cg_emit8(cg, 192);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
+
+        cg.pe_sleep_helper_off = cg.text_size;
+        cg_emit8(cg, 85); cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 229);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 32);
+        cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 7);
+        cg_emit8(cg, 72); cg_emit8(cg, 105); cg_emit8(cg, 200); cg_emit32(cg, 1000);
+        cg_emit8(cg, 255); cg_emit8(cg, 21); cg.pe_sleep_iat_hole = cg.text_size; cg_emit32(cg, 0);
+        cg_emit8(cg, 49); cg_emit8(cg, 192);
+        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236); cg_emit8(cg, 93); cg_emit8(cg, 195);
         return;
     }
     if cg.target_arch == 7 {

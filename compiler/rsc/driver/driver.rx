@@ -527,12 +527,7 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
     cg.loop_break_counts = arena_alloc(&mut cg_arena, 1024) as *mut u64;
     cg.defer_nodes = arena_alloc(&mut cg_arena, 1024) as *mut u64;
     cg.defer_count = 0;
-    cg.pe_exit_iat_hole = 0;
-    cg.pe_getstd_iat_hole = 0;
-    cg.pe_writefile_iat_hole = 0;
-    cg.pe_valloc_iat_hole = 0;
-    cg.pe_write_helper_off = 0;
-    cg.pe_valloc_helper_off = 0;
+    cg_init_pe(&mut cg);
     cg.is_freestanding = is_freestanding;
     cg.strict_safety = strict_safety as u64;
     cg.unsafe_depth = 0;

@@ -1,4 +1,5 @@
 include "lib/core/types.rx";
+include "lib/os/rpi.rx";
 include "lib/os/uses_substrate.rx";
 
 const OS_STDIN: int  = 0;
@@ -12,25 +13,23 @@ const OS_O_CREAT: uint  = 64;
 const OS_O_TRUNC: uint  = 512;
 
 fn os_write(fd: int, data: *const byte, len: uint) -> int {
-    return uses_substrate_write(fd as uint, data, len);
+    return rpi_write(fd as uint, data, len);
 }
 
 fn os_read(fd: int, buf: *mut byte, max_len: uint) -> int {
-    return uses_substrate_read(fd as uint, buf, max_len);
+    return rpi_read(fd as uint, buf, max_len);
 }
 
 fn os_open(path: *const byte, flags: uint, mode: uint) -> int {
-    return uses_substrate_open(path, flags, mode);
+    return rpi_open(path, flags, mode);
 }
 
 fn os_close(fd: int) -> int {
-    return uses_substrate_close(fd as uint);
+    return rpi_close(fd as uint);
 }
 
 fn os_exit(code: int) {
-    var sqe: AcrqSubmissionEntry64;
-    acrq_prepare_sqe(&mut sqe, 7, code as uint, 0, 0, 99);
-    uses_host_port_dispatch(&sqe);
+    rpi_exit(code as uint);
 }
 
 fn os_print(s: *const byte) -> int {
@@ -49,13 +48,13 @@ fn os_println(s: *const byte) -> int {
 }
 
 fn os_read_file(path: *const byte, dst: *mut u8, max_len: uint) -> int {
-    return uses_substrate_read_file(path, dst, max_len);
+    return rpi_read_file(path, dst, max_len);
 }
 
 fn os_write_file(path: *const byte, buf: *const u8, len: uint) -> int {
-    return uses_substrate_write_file(path, buf, len);
+    return rpi_write_file(path, buf, len);
 }
 
 fn os_map_file(path: *const byte, max_len: uint) -> *mut u8 {
-    return uses_substrate_map_plate(path, max_len);
+    return rpi_map_plate(path, max_len);
 }

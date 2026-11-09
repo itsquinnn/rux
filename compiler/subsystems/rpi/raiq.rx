@@ -1,0 +1,152 @@
+include "lib/core/types.rx";
+include "lib/core/memory.rx";
+
+struct RaiqSubmissionEntry64 {
+    opcode: uint,
+    flags: uint,
+    capability_tag: uint,
+    capability_proof: uint,
+    source_addr: uint,
+    dest_addr: uint,
+    length: uint,
+    user_tag: uint,
+}
+
+struct RaiqCompletionEntry32 {
+    user_tag: uint,
+    status: uint,
+    transferred_bytes: uint,
+    timestamp_cycles: uint,
+}
+
+struct RaiqActiveDriver {
+    sq_entries: *mut RaiqSubmissionEntry64,
+    cq_entries: *mut RaiqCompletionEntry32,
+    sq_head: uint,
+    sq_tail: uint,
+    cq_head: uint,
+    cq_tail: uint,
+    ring_size: uint,
+    ring_mask: uint,
+    dma_buf: *mut byte,
+    dma_buf_size: uint,
+    submissions_processed: uint,
+    completions_generated: uint,
+    bytes_transferred: uint,
+    cap_faults: uint,
+}
+
+fn raiq_driver_init(drv: *mut RaiqActiveDriver, capacity: uint, dma_bytes: uint) -> int {
+    drv.ring_size = capacity;
+    drv.ring_mask = capacity - 1;
+    drv.sq_head = 0;
+    drv.sq_tail = 0;
+    drv.cq_head = 0;
+    drv.cq_tail = 0;
+    drv.submissions_processed = 0;
+    drv.completions_generated = 0;
+    drv.bytes_transferred = 0;
+    drv.cap_faults = 0;
+
+    let sq_total: uint = capacity * 64;
+    let cq_total: uint = capacity * 32;
+
+    drv.sq_entries = @os.mmap(0 as *mut byte, sq_total, 3, 34, -1, 0) as *mut RaiqSubmissionEntry64;
+    drv.cq_entries = @os.mmap(0 as *mut byte, cq_total, 3, 34, -1, 0) as *mut RaiqCompletionEntry32;
+    drv.dma_buf = @os.mmap(0 as *mut byte, dma_bytes, 3, 34, -1, 0);
+    drv.dma_buf_size = dma_bytes;
+
+    if (drv.sq_entries as int) <= 0 || (drv.cq_entries as int) <= 0 || (drv.dma_buf as int) <= 0 {
+        return -1;
+    }
+    return 0;
+}
+
+fn raiq_init_sqe(
+    entry: *mut RaiqSubmissionEntry64,
+    opcode: uint,
+    cap_tag: uint,
+    src: uint,
+    dst: uint,
+    len: uint
+) {
+    entry.opcode = opcode;
+    entry.flags = 0;
+    entry.capability_tag = cap_tag;
+    entry.capability_proof = 1;
+    entry.source_addr = src;
+    entry.dest_addr = dst;
+    entry.length = len;
+    entry.user_tag = 0;
+}
+
+fn raiq_driver_submit(drv: *mut RaiqActiveDriver, entry: *const RaiqSubmissionEntry64) -> int {
+    let next_tail: uint = (drv.sq_tail + 1) & drv.ring_mask;
+    if next_tail == drv.sq_head {
+        return -1;
+    }
+
+    let slot: *mut RaiqSubmissionEntry64 = &mut drv.sq_entries[drv.sq_tail & drv.ring_mask];
+    *slot = *entry;
+
+    @silicon.mfence();
+    drv.sq_tail = next_tail;
+    return 0;
+}
+
+fn raiq_driver_process_entries(drv: *mut RaiqActiveDriver) -> uint {
+    var processed: uint = 0;
+
+    while drv.sq_head != drv.sq_tail {
+        let sqe: *mut RaiqSubmissionEntry64 = &mut drv.sq_entries[drv.sq_head & drv.ring_mask];
+
+        let op: uint = sqe.opcode;
+        let cap_tag: uint = sqe.capability_tag;
+        let cap_proof: uint = sqe.capability_proof;
+        let src: uint = sqe.source_addr;
+        let dst: uint = sqe.dest_addr;
+        let len: uint = sqe.length;
+        let tag: uint = sqe.user_tag;
+
+        var status: uint = 0;
+        var xfer: uint = 0;
+
+        if cap_tag == 0 || cap_proof == 0 {
+            status = 1;
+            drv.cap_faults = drv.cap_faults + 1;
+        } else if op == 1 || op == 3 {
+            copy_memory(dst as *mut byte, src as *const byte, len);
+            xfer = len;
+            drv.bytes_transferred = drv.bytes_transferred + len;
+        } else if op == 2 {
+            copy_memory(dst as *mut byte, src as *const byte, len);
+            xfer = len;
+            drv.bytes_transferred = drv.bytes_transferred + len;
+        }
+
+        let cqe: *mut RaiqCompletionEntry32 = &mut drv.cq_entries[drv.cq_tail & drv.ring_mask];
+        cqe.user_tag = tag;
+        cqe.status = status;
+        cqe.transferred_bytes = xfer;
+        cqe.timestamp_cycles = @silicon.rdtsc();
+
+        drv.cq_tail = (drv.cq_tail + 1) & drv.ring_mask;
+        drv.sq_head = (drv.sq_head + 1) & drv.ring_mask;
+
+        processed = processed + 1;
+        drv.submissions_processed = drv.submissions_processed + 1;
+        drv.completions_generated = drv.completions_generated + 1;
+    }
+
+    return processed;
+}
+
+fn raiq_driver_poll_completion(drv: *mut RaiqActiveDriver, out_cqe: *mut RaiqCompletionEntry32) -> bool {
+    if drv.cq_head == drv.cq_tail {
+        return false;
+    }
+
+    *out_cqe = drv.cq_entries[drv.cq_head & drv.ring_mask];
+    drv.cq_head = (drv.cq_head + 1) & drv.ring_mask;
+    return true;
+}

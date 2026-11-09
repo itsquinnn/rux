@@ -1,21 +1,25 @@
-const USES_OP_READ: uint      = 1;
-const USES_OP_WRITE: uint     = 2;
-const USES_OP_DMA_COPY: uint  = 3;
-const USES_OP_MAP: uint       = 4;
-const USES_OP_FS_OPEN: uint   = 5;
-const USES_OP_FS_CLOSE: uint  = 6;
-const USES_OP_EXIT: uint      = 7;
-const USES_OP_UNMAP: uint     = 8;
-const USES_OP_EPOLL: uint     = 9;
-const USES_OP_UNLINK: uint    = 10;
-const USES_OP_SOCKET: uint    = 11;
-const USES_OP_CONNECT: uint   = 12;
-const USES_OP_BIND: uint      = 13;
-const USES_OP_LISTEN: uint    = 14;
-const USES_OP_ACCEPT: uint    = 15;
+include "lib/core/types.rx";
+include "lib/os/raiq.rx";
+include "lib/os/rpi.rx";
 
-const USES_CAP_TAG_SOVEREIGN: uint = 14786561;
-const USES_CAP_PROOF_ROOT: uint    = 2416041645;
+const USES_OP_READ: uint      = RPI_OP_READ;
+const USES_OP_WRITE: uint     = RPI_OP_WRITE;
+const USES_OP_DMA_COPY: uint  = RPI_OP_DMA_COPY;
+const USES_OP_MAP: uint       = RPI_OP_MAP;
+const USES_OP_FS_OPEN: uint   = RPI_OP_OPEN;
+const USES_OP_FS_CLOSE: uint  = RPI_OP_CLOSE;
+const USES_OP_EXIT: uint      = RPI_OP_EXIT;
+const USES_OP_UNMAP: uint     = RPI_OP_UNMAP;
+const USES_OP_EPOLL: uint     = RPI_OP_EPOLL;
+const USES_OP_UNLINK: uint    = RPI_OP_DELETE;
+const USES_OP_SOCKET: uint    = RPI_OP_SOCKET;
+const USES_OP_CONNECT: uint   = RPI_OP_CONNECT;
+const USES_OP_BIND: uint      = RPI_OP_BIND;
+const USES_OP_LISTEN: uint    = RPI_OP_LISTEN;
+const USES_OP_ACCEPT: uint    = RPI_OP_ACCEPT;
+
+const USES_CAP_TAG_SOVEREIGN: uint = RPI_CAP_TAG_SOVEREIGN;
+const USES_CAP_PROOF_ROOT: uint    = RPI_CAP_PROOF_ROOT;
 
 struct AcrqSubmissionEntry64 {
     opcode: uint,
@@ -54,162 +58,50 @@ fn acrq_prepare_sqe(
 }
 
 fn uses_host_port_dispatch(sqe: *const AcrqSubmissionEntry64) -> int {
-    @silicon.sfence();
-    let op: uint = sqe.opcode;
-    let src: uint = sqe.source_addr;
-    let dst: uint = sqe.dest_addr;
-    let len: uint = sqe.length;
-
-    if op == 2 {
-        let fd: uint = dst;
-        let buf_ptr: uint = src;
-        return @os.write(fd, buf_ptr, len);
-    } else if op == 1 {
-        let fd: uint = src;
-        let buf_ptr: uint = dst;
-        return @os.read(fd, buf_ptr, len);
-    } else if op == 5 {
-        let path_ptr: uint = src;
-        let flags: uint = dst;
-        let mode: uint = len;
-        return @os.open(path_ptr, flags, mode);
-    } else if op == 6 {
-        let fd: uint = src;
-        return @os.close(fd);
-    } else if op == 4 {
-        let fd: uint = src;
-        let map_len: uint = len;
-        if fd == (0 - 1) || dst == 1 {
-            return @os.mmap(0, map_len, 7, 34, 0 - 1, 0);
-        } else {
-            return @os.mmap(0, map_len, 7, 1, fd, 0);
-        }
-    } else if op == 7 {
-        let code: uint = src;
-        @os.exit(code);
-        return 0;
-    } else if op == 8 {
-        return @os.munmap(src, len);
-    } else if op == 9 {
-        return @os.epoll_create1(src);
-    } else if op == 10 {
-        return @os.unlink(src);
-    } else if op == 11 {
-        return @os.socket(src, dst, len);
-    } else if op == 12 {
-        return @os.connect(src, dst, len);
-    } else if op == 13 {
-        return @os.bind(src, dst, len);
-    } else if op == 14 {
-        return @os.listen(src, dst);
-    } else if op == 15 {
-        return @os.accept(src, dst, len);
-    }
-    return 0;
+    let rsqe: *const RaiqSubmissionEntry64 = sqe as *const RaiqSubmissionEntry64;
+    return rpi_host_dispatch(rsqe);
 }
 
 fn uses_substrate_alloc(bytes: uint) -> *mut u8 {
-    let aligned: uint = ((bytes + 4095) / 4096) * 4096;
-    var sqe: AcrqSubmissionEntry64;
-    acrq_prepare_sqe(&mut sqe, 4, 0 - 1, 1, aligned, 10);
-    let ptr: int = uses_host_port_dispatch(&sqe);
-    let uptr: uint = ptr as uint;
-    if uptr == 0 || uptr > 18446744000000000000 {
-        return 0 as *mut u8;
-    }
-    return ptr as *mut u8;
+    return rpi_alloc(bytes);
 }
 
 fn uses_substrate_free(ptr: *mut u8, bytes: uint) {
-    if (ptr as int) > 0 {
-        let aligned: uint = ((bytes + 4095) / 4096) * 4096;
-        var sqe: AcrqSubmissionEntry64;
-        acrq_prepare_sqe(&mut sqe, 8, ptr as uint, 0, aligned, 11);
-        uses_host_port_dispatch(&sqe);
-    }
+    rpi_free(ptr, bytes);
 }
 
 fn uses_substrate_epoll_create(flags: uint) -> int {
-    var sqe: AcrqSubmissionEntry64;
-    acrq_prepare_sqe(&mut sqe, 9, flags, 0, 0, 12);
-    return uses_host_port_dispatch(&sqe);
+    return rpi_epoll_create(flags);
 }
 
 fn uses_substrate_unlink(path: *const byte) -> int {
-    var sqe: AcrqSubmissionEntry64;
-    acrq_prepare_sqe(&mut sqe, 10, path as uint, 0, 0, 13);
-    return uses_host_port_dispatch(&sqe);
+    return rpi_unlink(path);
 }
 
 fn uses_substrate_write(channel: uint, buf: *const byte, len: uint) -> int {
-    var sqe: AcrqSubmissionEntry64;
-    acrq_prepare_sqe(&mut sqe, 2, buf as uint, channel, len, 1);
-    return uses_host_port_dispatch(&sqe);
+    return rpi_write(channel, buf, len);
 }
 
 fn uses_substrate_read(channel: uint, buf: *mut byte, max_len: uint) -> int {
-    var sqe: AcrqSubmissionEntry64;
-    acrq_prepare_sqe(&mut sqe, 1, channel, buf as uint, max_len, 2);
-    return uses_host_port_dispatch(&sqe);
+    return rpi_read(channel, buf, max_len);
 }
 
 fn uses_substrate_open(path: *const byte, flags: uint, mode: uint) -> int {
-    var sqe: AcrqSubmissionEntry64;
-    acrq_prepare_sqe(&mut sqe, 5, path as uint, flags, mode, 3);
-    return uses_host_port_dispatch(&sqe);
+    return rpi_open(path, flags, mode);
 }
 
 fn uses_substrate_close(channel: uint) -> int {
-    var sqe: AcrqSubmissionEntry64;
-    acrq_prepare_sqe(&mut sqe, 6, channel, 0, 0, 4);
-    return uses_host_port_dispatch(&sqe);
+    return rpi_close(channel);
 }
 
 fn uses_substrate_write_file(filepath: *const byte, buf: *const u8, len: uint) -> int {
-    let flags: uint = 577;
-    let mode: uint = 493;
-    let fd: int = uses_substrate_open(filepath, flags, mode);
-    if fd < 0 {
-        return -1;
-    }
-
-    var written: uint = 0;
-    while written < len {
-        let chunk: uint = len - written;
-        let buf_ptr: *const byte = (buf + written) as *const byte;
-        let n: int = uses_substrate_write(fd as uint, buf_ptr, chunk);
-        if n <= 0 {
-            uses_substrate_close(fd as uint);
-            return -2;
-        }
-        written = written + (n as uint);
-    }
-
-    uses_substrate_close(fd as uint);
-    return written as int;
+    return rpi_write_file(filepath, buf, len);
 }
 
 fn uses_substrate_read_file(filepath: *const byte, dst: *mut u8, max_len: uint) -> int {
-    let fd: int = uses_substrate_open(filepath, 0, 0);
-    if fd < 0 {
-        return -1;
-    }
-    let nread: int = uses_substrate_read(fd as uint, dst as *mut byte, max_len);
-    uses_substrate_close(fd as uint);
-    return nread;
+    return rpi_read_file(filepath, dst, max_len);
 }
 
 fn uses_substrate_map_plate(filepath: *const byte, max_size: uint) -> *mut u8 {
-    let fd: int = uses_substrate_open(filepath, 0, 0);
-    if fd < 0 {
-        return 0 as *mut u8;
-    }
-    var sqe: AcrqSubmissionEntry64;
-    acrq_prepare_sqe(&mut sqe, 4, fd as uint, 0, max_size, 5);
-    let ptr: int = uses_host_port_dispatch(&sqe);
-    uses_substrate_close(fd as uint);
-    if ptr <= 0 {
-        return 0 as *mut u8;
-    }
-    return ptr as *mut u8;
+    return rpi_map_plate(filepath, max_size);
 }

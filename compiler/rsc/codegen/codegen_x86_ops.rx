@@ -24,27 +24,67 @@ fn compile_expr_os_port(cg: *mut CodeGen, node: *mut AstNode) {
     }
 
     if cg.target_arch == 6 {
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 0);
+        cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 232);
+        let rd_disp: i32 = (cg.pe_readfile_helper_off as i32) - ((cg.text_size + 4) as i32);
+        cg_emit32(cg, rd_disp as u32);
+        cg_emit8(cg, 235); cg_emit8(cg, 107);
+
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 1);
         cg_emit8(cg, 117); cg_emit8(cg, 7);
         cg_emit8(cg, 232);
         let sw_disp: i32 = (cg.pe_write_helper_off as i32) - ((cg.text_size + 4) as i32);
         cg_emit32(cg, sw_disp as u32);
-        cg_emit8(cg, 235); cg_emit8(cg, 38);
+        cg_emit8(cg, 235); cg_emit8(cg, 94);
+
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 2);
+        cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 232);
+        let cf_disp: i32 = (cg.pe_createfile_helper_off as i32) - ((cg.text_size + 4) as i32);
+        cg_emit32(cg, cf_disp as u32);
+        cg_emit8(cg, 235); cg_emit8(cg, 81);
+
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 3);
+        cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 232);
+        let cl_disp: i32 = (cg.pe_closehandle_helper_off as i32) - ((cg.text_size + 4) as i32);
+        cg_emit32(cg, cl_disp as u32);
+        cg_emit8(cg, 235); cg_emit8(cg, 68);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 9);
         cg_emit8(cg, 117); cg_emit8(cg, 7);
         cg_emit8(cg, 232);
         let va_disp: i32 = (cg.pe_valloc_helper_off as i32) - ((cg.text_size + 4) as i32);
         cg_emit32(cg, va_disp as u32);
-        cg_emit8(cg, 235); cg_emit8(cg, 23);
+        cg_emit8(cg, 235); cg_emit8(cg, 55);
+
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 11);
+        cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 232);
+        let vf_disp: i32 = (cg.pe_vfree_helper_off as i32) - ((cg.text_size + 4) as i32);
+        cg_emit32(cg, vf_disp as u32);
+        cg_emit8(cg, 235); cg_emit8(cg, 42);
+
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 35);
+        cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 232);
+        let sl_disp: i32 = (cg.pe_sleep_helper_off as i32) - ((cg.text_size + 4) as i32);
+        cg_emit32(cg, sl_disp as u32);
+        cg_emit8(cg, 235); cg_emit8(cg, 29);
+
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 39);
+        cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 184); cg_emit32(cg, 1000);
+        cg_emit8(cg, 235); cg_emit8(cg, 16);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 60);
-        cg_emit8(cg, 117); cg_emit8(cg, 14);
-        cg_emit8(cg, 137); cg_emit8(cg, 248);
-        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 236); cg_emit8(cg, 40);
-        cg_emit8(cg, 233);
-        let ex_target: i32 = ((cg.pe_exit_iat_hole as i32) - 4) - ((cg.text_size + 4) as i32);
-        cg_emit32(cg, ex_target as u32);
+        cg_emit8(cg, 117); cg_emit8(cg, 8);
+        cg_emit8(cg, 137); cg_emit8(cg, 249);
+        cg_emit8(cg, 255); cg_emit8(cg, 21);
+        cg.pe_exit_iat_hole2 = cg.text_size;
+        cg_emit32(cg, 0);
+
         cg_emit8(cg, 49); cg_emit8(cg, 192);
         return;
     }
