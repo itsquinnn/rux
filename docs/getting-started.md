@@ -1,26 +1,47 @@
 # Getting Started with Rux
 
-Rux is a self-hosting systems programming language that compiles to native binaries
-without external linkers. It targets Linux, Windows, macOS, Android, iOS, WebAssembly,
-UEFI, and bare metal from a single codebase.
+Rux is a self-hosting systems programming language that compiles to standalone native binaries
+without external linkers or libc dependencies. It targets Linux (`x86_64`, `aarch64`, `riscv64`),
+Windows (`x86_64`), macOS (`Intel`, `Apple Silicon`), WebAssembly (WASI), UEFI, and bare metal
+from a single codebase.
 
-## Install
+## Quick Install
 
-Rux is self-hosting. Bootstrap the compiler from source:
+### Linux & macOS
+```bash
+curl -fsSL https://raw.githubusercontent.com/itsquinnn/rux/main/install.sh | bash
+```
+
+### Windows (PowerShell)
+```powershell
+irm https://raw.githubusercontent.com/itsquinnn/rux/main/install.ps1 | iex
+```
+
+### Windows (Git Bash / MSYS2 / WSL)
+```bash
+curl -fsSL https://raw.githubusercontent.com/itsquinnn/rux/main/install.sh | bash
+```
+
+Verify your installation:
+```bash
+rux --version
+rux -e 'println("Hello, Rux!");'
+```
+
+## Build from Source
 
 ```bash
-# Clone the repository
-git clone <rux-repo>
-cd ru
+git clone https://github.com/itsquinnn/rux.git
+cd rux
 
-# Run the Stage-0 bootstrap seed (requires Python 3)
-python3 bootstrap/stage0/bootstrap_host.rx bootstrap/stage0/stage0_seed.rx build_stages/stage0_bin
-
-# Run Stage-0 to build Stage-1
-./build_stages/stage0_bin
-
-# The compiler is now at bin/rux
+# Verify self-hosting compiler and test suites
 ./bin/rux --version
+./bin/rux test
+./bin/rux verify
+./bin/rux eia
+
+# Install locally to ~/.rux
+./install.sh --local
 ```
 
 ## Hello World
@@ -37,46 +58,43 @@ fn main() -> int {
 Compile and run:
 
 ```bash
-./bin/rux build hello.rx -o hello
+rux build hello.rx -o hello
 ./hello
 ```
 
 Or compile and execute immediately:
 
 ```bash
-./bin/rux run hello.rx
+rux run hello.rx
 ```
 
 ## Cross-Compile
 
 ```bash
-# Linux x86_64 (default)
-./bin/rux build hello.rx -o hello
+# Linux x86_64 / ARM64 / RISC-V 64
+rux build hello.rx -o hello
+rux build hello.rx --target=arm64 -o hello_arm64
+rux build hello.rx --target=riscv64 -o hello_rv64
 
-# Windows PE32+
-./bin/rux build hello.rx --target=win64 -o hello.exe
+# Windows PE32+ (.exe)
+rux build hello.rx --target=win64 -o hello.exe
 
-# macOS Mach-O
-./bin/rux build hello.rx --target=macos -o hello
+# macOS Mach-O (Apple Silicon & Intel, ad-hoc signed)
+rux build hello.rx --target=macos-arm64 -o hello_mac_arm64
+rux build hello.rx --target=macos -o hello_mac_x64
 
-# Android (ARM64 ELF)
-./bin/rux build hello.rx --target=android -o hello
+# WebAssembly (WASI)
+rux build hello.rx --wasm -o hello.wasm
 
-# iOS (ARM64 Mach-O)
-./bin/rux build hello.rx --target=ios -o hello
-
-# WebAssembly
-./bin/rux build hello.rx --target=wasm -o hello.wasm
-
-# UEFI
-./bin/rux build hello.rx --target=uefi -o hello.efi
-
-# Freestanding bare-metal (~174 byte ELF)
-./bin/rux build hello.rx --target=baremetal --freestanding -o hello
+# UEFI & Freestanding bare-metal
+rux build hello.rx --target=uefi -o hello.efi
+rux build hello.rx --target=baremetal --freestanding -o hello_bare
 ```
 
 ## Next Steps
 
 - Read the [Language Specification](./language-spec.md)
+- Review [Supported Targets](./targets.md)
 - Browse the [Standard Library](./stdlib.md)
 - Check the [CLI Reference](./cli.md)
+- Explore the [EIA Specification](./eia-spec.md)

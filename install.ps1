@@ -1,28 +1,11 @@
 # Rux Windows PowerShell Universal Installer
 # Run with: irm https://raw.githubusercontent.com/itsquinnn/rux/main/install.ps1 | iex
 
-param(
-    [string]$Version = "",
-    [string]$InstallDir = ""
-)
-
 $ErrorActionPreference = "Stop"
 
 $Repo = "itsquinnn/rux"
-if ([string]::IsNullOrWhiteSpace($Version)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:RUX_VERSION)) {
-        $Version = $env:RUX_VERSION
-    } else {
-        $Version = "latest"
-    }
-}
-if ([string]::IsNullOrWhiteSpace($InstallDir)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:RUX_INSTALL)) {
-        $InstallDir = $env:RUX_INSTALL
-    } else {
-        $InstallDir = "$env:USERPROFILE\.rux"
-    }
-}
+$Version = if (-not [string]::IsNullOrWhiteSpace($env:RUX_VERSION)) { $env:RUX_VERSION } else { "latest" }
+$InstallDir = if (-not [string]::IsNullOrWhiteSpace($env:RUX_INSTALL)) { $env:RUX_INSTALL } else { "$env:USERPROFILE\.rux" }
 
 $BinDir = "$InstallDir\bin"
 $LibDir = "$InstallDir\lib"
