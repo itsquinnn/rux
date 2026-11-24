@@ -7,9 +7,17 @@ set -euo pipefail
 
 REPO="itsquinnn/rux"
 VERSION="${RUX_VERSION:-latest}"
-PREFIX="${RUX_INSTALL:-$HOME/.rux}"
+EXPLICIT_PREFIX=false
+if [ -n "${RUX_INSTALL:-}" ]; then
+    PREFIX="${RUX_INSTALL}"
+    EXPLICIT_PREFIX=true
+else
+    PREFIX="$HOME/.rux"
+fi
 MODIFY_PATH=true
 LOCAL_MODE=false
+IMMEDIATE_PATH=false
+UPDATED_RC_FILE=""
 
 BOLD="\033[1m"
 GREEN="\033[32m"
@@ -53,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --prefix)
             PREFIX="$2"
+            EXPLICIT_PREFIX=true
             shift 2
             ;;
         --version)
@@ -170,6 +179,7 @@ update_shell_profile() {
                     } >> "${fish_cfg}"
                     echo -e "  ${GREEN}✓${RESET} Updated ${CYAN}${fish_cfg}${RESET}"
                 fi
+                UPDATED_RC_FILE="${fish_cfg}"
                 return
                 ;;
         esac
@@ -193,6 +203,7 @@ update_shell_profile() {
                 } >> "${cfg}"
                 echo -e "  ${GREEN}✓${RESET} Updated ${CYAN}${cfg}${RESET}"
             fi
+            UPDATED_RC_FILE="${cfg}"
             updated=true
             break
         fi
@@ -206,7 +217,39 @@ update_shell_profile() {
             echo "${env_line}"
         } >> "$HOME/.profile"
         echo -e "  ${GREEN}✓${RESET} Configured ${CYAN}$HOME/.profile${RESET}"
+        UPDATED_RC_FILE="$HOME/.profile"
     fi
+}
+
+link_into_existing_path() {
+    case ":${PATH}:" in
+        *":${PREFIX}/bin:"*)
+            IMMEDIATE_PATH=true
+            return
+            ;;
+    esac
+
+    if [ "${IS_WINDOWS}" = true ]; then
+        return
+    fi
+
+    local candidates=("$HOME/.local/bin" "$HOME/bin" "/usr/local/bin" "/opt/homebrew/bin")
+    local d
+    for d in "${candidates[@]}"; do
+        case ":${PATH}:" in
+            *":${d}:"*)
+                if [ -d "${d}" ] && [ -w "${d}" ]; then
+                    ln -sf "${PREFIX}/bin/rux" "${d}/rux"
+                    if [ -f "${PREFIX}/bin/ruxc" ]; then
+                        ln -sf "${PREFIX}/bin/ruxc" "${d}/ruxc"
+                    fi
+                    echo -e "  ${GREEN}✓${RESET} Linked ${CYAN}${d}/rux${RESET} (ready immediately)"
+                    IMMEDIATE_PATH=true
+                    return
+                fi
+                ;;
+        esac
+    done
 }
 
 install_from_dir() {
@@ -244,6 +287,12 @@ EOF
 main() {
     print_banner
     detect_platform
+
+    # When invoked with sudo/root and no custom prefix, install system-wide into /usr/local
+    if [ "${EXPLICIT_PREFIX}" = false ] && [ "${IS_WINDOWS}" = false ] && [ "$(id -u)" -eq 0 ]; then
+        PREFIX="/usr/local"
+        MODIFY_PATH=false
+    fi
 
     echo -e "${BOLD}Installing Rux (${CYAN}${VERSION}${RESET}${BOLD}) for ${GREEN}${PLATFORM}${RESET}${BOLD}...${RESET}"
     echo -e "  Target directory: ${CYAN}${PREFIX}${RESET}"
@@ -297,6 +346,9 @@ main() {
         xattr -cr "${PREFIX}" 2>/dev/null || true
     fi
 
+    # Symlink into an already-active writable PATH dir when possible
+    link_into_existing_path
+
     # Update shell path
     if [ "${MODIFY_PATH}" = true ]; then
         echo -e "  Configuring PATH environment..."
@@ -309,9 +361,16 @@ main() {
         echo -e "  Version: ${CYAN}$("${PREFIX}/bin/rux" --version)${RESET}"
     fi
     echo ""
-    echo -e "To get started right away in your current terminal session, run:"
-    echo -e "  ${BOLD}${CYAN}export RUX_HOME=\"${PREFIX}\"${RESET}"
-    echo -e "  ${BOLD}${CYAN}export PATH=\"\$RUX_HOME/bin:\$PATH\"${RESET}"
+    if [ "${IMMEDIATE_PATH}" = true ]; then
+        echo -e "${GREEN}rux is ready to use immediately in this terminal!${RESET}"
+    else
+        echo -e "Activate in this terminal right now (or open a new terminal):"
+        if [ -n "${UPDATED_RC_FILE}" ]; then
+            echo -e "  ${BOLD}${CYAN}source ${UPDATED_RC_FILE}${RESET}"
+        else
+            echo -e "  ${BOLD}${CYAN}export PATH=\"${PREFIX}/bin:\$PATH\"${RESET}"
+        fi
+    fi
     echo ""
     echo -e "Verify installation:"
     echo -e "  ${BOLD}rux --version${RESET}"

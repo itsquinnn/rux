@@ -37,8 +37,16 @@ Install Rux on your system with a single command (similar to Node.js, Bun, or Ru
 
 ### Linux (`x86_64`, `aarch64`, `riscv64`) & macOS (`Intel`, `Apple Silicon`)
 
+Install for your user (updates `~/.bashrc` / `~/.zshrc`; open a new terminal or run `source ~/.bashrc`):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/itsquinnn/rux/main/install.sh | bash
+```
+
+Or install system-wide into `/usr/local/bin` (available immediately in your current terminal):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/itsquinnn/rux/main/install.sh | sudo bash
 ```
 
 ### Windows (PowerShell)
