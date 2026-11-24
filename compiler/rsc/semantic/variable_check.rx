@@ -5,11 +5,13 @@ struct VarSymbol {
     scope_depth: u32,
     is_ptr: u32,
     line: u32,
+    pad_u32: u32,
 }
 
 struct VarCheckContext {
-    vars: [VarSymbol; 256],
+    vars: *mut VarSymbol,
     var_count: u32,
+    var_cap: u32,
     scope_depth: u32,
     shadow_mode: u32,
     error_count: u32,
@@ -17,13 +19,34 @@ struct VarCheckContext {
     parser: *mut Parser,
 }
 
+fn var_check_copy_bytes(dst: *mut u8, src: *mut u8, n: u64) {
+    var i: u64 = 0;
+    while i < n {
+        dst[i] = src[i];
+        i = i + 1;
+    }
+}
+
+fn var_check_sym_at(ctx: *mut VarCheckContext, idx: u32) -> *mut VarSymbol {
+    return ((ctx.vars as *mut u8) + ((idx as u64) * 32)) as *mut VarSymbol;
+}
+
 fn var_check_init(ctx: *mut VarCheckContext, p: *mut Parser, shadow_mode: u32) {
+    ctx.var_cap = 256;
+    ctx.vars = uses_alloc((ctx.var_cap as u64) * 32) as *mut VarSymbol;
     ctx.var_count = 0;
     ctx.scope_depth = 0;
     ctx.shadow_mode = shadow_mode;
     ctx.error_count = 0;
     ctx.warn_count = 0;
     ctx.parser = p;
+}
+
+fn var_check_free(ctx: *mut VarCheckContext) {
+    if ctx.vars != (0 as *mut VarSymbol) {
+        uses_free(ctx.vars as *mut u8, (ctx.var_cap as u64) * 32);
+        ctx.vars = 0 as *mut VarSymbol;
+    }
 }
 
 fn var_check_enter_scope(ctx: *mut VarCheckContext) {
@@ -34,7 +57,7 @@ fn var_check_exit_scope(ctx: *mut VarCheckContext) {
     var i: u32 = ctx.var_count;
     while i > 0 {
         i = i - 1;
-        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        let v: *mut VarSymbol = var_check_sym_at(ctx, i);
         if v.scope_depth == ctx.scope_depth {
             v.name_hash = 0;
         }
@@ -48,7 +71,7 @@ fn var_check_find_symbol(ctx: *mut VarCheckContext, name_hash: u64) -> *mut VarS
     var i: u32 = ctx.var_count;
     while i > 0 {
         i = i - 1;
-        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        let v: *mut VarSymbol = var_check_sym_at(ctx, i);
         if v.name_hash == name_hash {
             return v;
         }
@@ -60,7 +83,7 @@ fn var_check_find_in_current_scope(ctx: *mut VarCheckContext, name_hash: u64) ->
     var i: u32 = ctx.var_count;
     while i > 0 {
         i = i - 1;
-        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        let v: *mut VarSymbol = var_check_sym_at(ctx, i);
         if v.name_hash == name_hash && v.scope_depth == ctx.scope_depth {
             return v;
         }
@@ -87,14 +110,23 @@ fn var_check_register(ctx: *mut VarCheckContext, name_hash: u64, decl_kind: u32,
             ctx.warn_count = ctx.warn_count + 1;
         }
     }
-    if ctx.var_count >= 256 { return; }
-    let v: *mut VarSymbol = (&mut ctx.vars[ctx.var_count as u64]) as *mut VarSymbol;
+    if ctx.var_count >= ctx.var_cap {
+        let old_bytes: u64 = (ctx.var_cap as u64) * 32;
+        let new_cap: u32 = ctx.var_cap * 2;
+        let new_buf: *mut u8 = uses_alloc((new_cap as u64) * 32);
+        var_check_copy_bytes(new_buf, ctx.vars as *mut u8, old_bytes);
+        uses_free(ctx.vars as *mut u8, old_bytes);
+        ctx.vars = new_buf as *mut VarSymbol;
+        ctx.var_cap = new_cap;
+    }
+    let v: *mut VarSymbol = var_check_sym_at(ctx, ctx.var_count);
     v.name_hash = name_hash;
     v.decl_kind = decl_kind;
     v.init_state = init_state;
     v.scope_depth = ctx.scope_depth;
     v.is_ptr = is_ptr;
     v.line = line;
+    v.pad_u32 = 0;
     ctx.var_count = ctx.var_count + 1;
 }
 
@@ -180,7 +212,7 @@ fn var_check_handle_assignment(ctx: *mut VarCheckContext, stmt: *mut AstNode) {
 fn var_check_snapshot_states(ctx: *mut VarCheckContext, out_states: *mut u32, max_count: u32) {
     var i: u32 = 0;
     while i < ctx.var_count && i < max_count {
-        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        let v: *mut VarSymbol = var_check_sym_at(ctx, i);
         let p_state: *mut u32 = (out_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
         *p_state = v.init_state;
         i = i + 1;
@@ -190,7 +222,7 @@ fn var_check_snapshot_states(ctx: *mut VarCheckContext, out_states: *mut u32, ma
 fn var_check_restore_states(ctx: *mut VarCheckContext, in_states: *mut u32, max_count: u32) {
     var i: u32 = 0;
     while i < ctx.var_count && i < max_count {
-        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        let v: *mut VarSymbol = var_check_sym_at(ctx, i);
         let p_state: *mut u32 = (in_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
         v.init_state = *p_state;
         i = i + 1;
@@ -200,7 +232,7 @@ fn var_check_restore_states(ctx: *mut VarCheckContext, in_states: *mut u32, max_
 fn var_check_join_states(ctx: *mut VarCheckContext, orig_states: *mut u32, then_states: *mut u32, else_states: *mut u32, has_else: u32, max_count: u32) {
     var i: u32 = 0;
     while i < ctx.var_count && i < max_count {
-        let v: *mut VarSymbol = (&mut ctx.vars[i as u64]) as *mut VarSymbol;
+        let v: *mut VarSymbol = var_check_sym_at(ctx, i);
         let p_orig: *mut u32 = (orig_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
         let p_then: *mut u32 = (then_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
         let p_else: *mut u32 = (else_states as *mut u8 + ((i as u64) * 4)) as *mut u32;
@@ -245,36 +277,45 @@ fn var_check_walk_stmt(ctx: *mut VarCheckContext, stmt: *mut AstNode) {
         var_check_handle_assignment(ctx, stmt);
     } else if stmt.kind == 107 {
         var_check_walk_expr(ctx, stmt.child1);
-        var orig_states: [u32; 256];
-        var then_states: [u32; 256];
-        var else_states: [u32; 256];
-        var_check_snapshot_states(ctx, &mut orig_states[0], 256);
+        var snap_cnt: u32 = ctx.var_count;
+        if snap_cnt == 0 { snap_cnt = 1; }
+        let snap_bytes: u64 = (snap_cnt as u64) * 4;
+        let orig_states: *mut u32 = uses_alloc(snap_bytes) as *mut u32;
+        let then_states: *mut u32 = uses_alloc(snap_bytes) as *mut u32;
+        let else_states: *mut u32 = uses_alloc(snap_bytes) as *mut u32;
+        var_check_snapshot_states(ctx, orig_states, snap_cnt);
         var_check_enter_scope(ctx);
         var bs: *mut AstNode = stmt.child2;
         while bs != (0 as *mut AstNode) {
             var_check_walk_stmt(ctx, bs);
             bs = bs.next;
         }
-        var_check_snapshot_states(ctx, &mut then_states[0], 256);
+        var_check_snapshot_states(ctx, then_states, snap_cnt);
         var_check_exit_scope(ctx);
         var has_else: u32 = 0;
         if stmt.child3 != (0 as *mut AstNode) {
             has_else = 1;
-            var_check_restore_states(ctx, &mut orig_states[0], 256);
+            var_check_restore_states(ctx, orig_states, snap_cnt);
             var_check_enter_scope(ctx);
             var ebs: *mut AstNode = stmt.child3;
             while ebs != (0 as *mut AstNode) {
                 var_check_walk_stmt(ctx, ebs);
                 ebs = ebs.next;
             }
-            var_check_snapshot_states(ctx, &mut else_states[0], 256);
+            var_check_snapshot_states(ctx, else_states, snap_cnt);
             var_check_exit_scope(ctx);
         }
-        var_check_join_states(ctx, &mut orig_states[0], &mut then_states[0], &mut else_states[0], has_else, 256);
+        var_check_join_states(ctx, orig_states, then_states, else_states, has_else, snap_cnt);
+        uses_free(orig_states as *mut u8, snap_bytes);
+        uses_free(then_states as *mut u8, snap_bytes);
+        uses_free(else_states as *mut u8, snap_bytes);
     } else if stmt.kind == 108 {
         var_check_walk_expr(ctx, stmt.child1);
-        var loop_orig: [u32; 256];
-        var_check_snapshot_states(ctx, &mut loop_orig[0], 256);
+        var snap_cnt: u32 = ctx.var_count;
+        if snap_cnt == 0 { snap_cnt = 1; }
+        let snap_bytes: u64 = (snap_cnt as u64) * 4;
+        let loop_orig: *mut u32 = uses_alloc(snap_bytes) as *mut u32;
+        var_check_snapshot_states(ctx, loop_orig, snap_cnt);
         var_check_enter_scope(ctx);
         var wbs: *mut AstNode = stmt.child2;
         while wbs != (0 as *mut AstNode) {
@@ -283,9 +324,10 @@ fn var_check_walk_stmt(ctx: *mut VarCheckContext, stmt: *mut AstNode) {
         }
         var_check_exit_scope(ctx);
         var k: u32 = 0;
-        while k < ctx.var_count && k < 256 {
-            let vk: *mut VarSymbol = (&mut ctx.vars[k as u64]) as *mut VarSymbol;
-            let o_st: u32 = loop_orig[k as u64];
+        while k < ctx.var_count && k < snap_cnt {
+            let vk: *mut VarSymbol = var_check_sym_at(ctx, k);
+            let p_orig: *mut u32 = ((loop_orig as *mut u8) + ((k as u64) * 4)) as *mut u32;
+            let o_st: u32 = *p_orig;
             if o_st == 0 && vk.init_state == 1 {
                 vk.init_state = 2;
             } else if o_st == 1 {
@@ -293,6 +335,7 @@ fn var_check_walk_stmt(ctx: *mut VarCheckContext, stmt: *mut AstNode) {
             }
             k = k + 1;
         }
+        uses_free(loop_orig as *mut u8, snap_bytes);
     } else if stmt.kind == 129 {
         var_check_walk_expr(ctx, stmt.child1);
         var marm: *mut AstNode = stmt.child2;
@@ -346,7 +389,9 @@ fn var_check_verify_fn(p: *mut Parser, fnode: *mut AstNode, shadow_mode: u32) ->
         st = st.next;
     }
     var_check_exit_scope(&mut ctx);
-    return ctx.error_count;
+    let err_cnt: u32 = ctx.error_count;
+    var_check_free(&mut ctx);
+    return err_cnt;
 }
 
 fn var_check_verify_top(p: *mut Parser, head: *mut AstNode, shadow_mode: u32) -> u32 {
@@ -359,5 +404,7 @@ fn var_check_verify_top(p: *mut Parser, head: *mut AstNode, shadow_mode: u32) ->
         cur = cur.next;
     }
     var_check_exit_scope(&mut ctx);
-    return ctx.error_count;
+    let err_cnt: u32 = ctx.error_count;
+    var_check_free(&mut ctx);
+    return err_cnt;
 }

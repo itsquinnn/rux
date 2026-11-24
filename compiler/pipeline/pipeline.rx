@@ -7,8 +7,7 @@ include "bootstrap/emitter/codegen.rx";
 include "bootstrap/binary/writer.rx";
 include "compiler/pipeline/preprocessor.rx";
 
-include "compiler/subsystems/eia/header.rx";
-include "compiler/subsystems/eia/contracts.rx";
+include "compiler/subsystems/eia/patcher.rx";
 include "compiler/subsystems/ccns/cap.rx";
 include "compiler/subsystems/hsns/streamer.rx";
 include "compiler/subsystems/lcvs/vitrify.rx";
@@ -66,12 +65,114 @@ fn pipeline_free_mmap(ptr: *mut byte, bytes: uint) {
     }
 }
 
+fn pipeline_grow_mmap(old_ptr: *mut u8, old_bytes: uint, new_bytes: uint) -> *mut u8 {
+    let new_ptr: *mut u8 = pipeline_alloc_mmap(new_bytes) as *mut u8;
+    if (new_ptr as int) <= 0 {
+        return 0 as *mut u8;
+    }
+    if (old_ptr as int) > 0 && old_bytes > 0 {
+        var i: uint = 0;
+        while i < old_bytes {
+            new_ptr[i] = old_ptr[i];
+            i = i + 1;
+        }
+        pipeline_free_mmap(old_ptr as *mut byte, old_bytes);
+    }
+    return new_ptr;
+}
+
+fn pipeline_put_u32_le(buf: *mut u8, off: uint, val: u32) {
+    buf[off + 0] = (val & 255) as u8;
+    buf[off + 1] = ((val >> 8) & 255) as u8;
+    buf[off + 2] = ((val >> 16) & 255) as u8;
+    buf[off + 3] = ((val >> 24) & 255) as u8;
+}
+
+fn pipeline_put_u64_le(buf: *mut u8, off: uint, val: u64) {
+    var i: uint = 0;
+    while i < 8 {
+        buf[off + i] = ((val >> (i * 8)) & 255) as u8;
+        i = i + 1;
+    }
+}
+
+fn pipeline_compute_sig_hash(fn_node: *const AstNode, out_err: *mut bool) -> uint {
+    *out_err = false;
+    var p_cnt: uint = 0;
+    var p_cur: *mut AstNode = fn_node.child2;
+    while p_cur != (0 as *mut AstNode) {
+        p_cnt = p_cnt + 1;
+        p_cur = p_cur.next;
+    }
+
+    let total_len: uint = 32 + (p_cnt * 16);
+    var stack_buf: [u8; 1056];
+    var buf: *mut u8 = &mut stack_buf[0];
+    var used_mmap: uint = 0;
+    if total_len > 1056 {
+        buf = pipeline_alloc_mmap(total_len) as *mut u8;
+        if (buf as int) <= 0 {
+            *out_err = true;
+            return 0;
+        }
+        used_mmap = total_len;
+    }
+
+    var zi: uint = 0;
+    while zi < total_len {
+        buf[zi] = 0;
+        zi = zi + 1;
+    }
+
+    // Match compute_canonical_sig_hash_ex "EIA_SIG2" layout cleanly.
+    buf[0] = 69; buf[1] = 73; buf[2] = 65; buf[3] = 95;
+    buf[4] = 83; buf[5] = 73; buf[6] = 71; buf[7] = 50;
+    pipeline_put_u32_le(buf, 8, p_cnt as u32);
+    pipeline_put_u32_le(buf, 12, 0);
+    pipeline_put_u64_le(buf, 16, fn_node.value as u64);
+    pipeline_put_u64_le(buf, 24, ((fn_node.is_mut >> 8) & 7) as u64);
+
+    p_cur = fn_node.child2;
+    var pi: uint = 0;
+    while p_cur != (0 as *mut AstNode) && pi < p_cnt {
+        let base: uint = 32 + (pi * 16);
+        pipeline_put_u64_le(buf, base, p_cur.value as u64);
+        pipeline_put_u64_le(buf, base + 8, p_cur.is_mut as u64);
+        pi = pi + 1;
+        p_cur = p_cur.next;
+    }
+
+    let sig_digest: uint = blake3_hash64(buf as *const u8, total_len);
+    if used_mmap > 0 {
+        pipeline_free_mmap(buf as *mut byte, used_mmap);
+    }
+    return sig_digest;
+}
+
 fn pipeline_cleanup(sb: *mut byte, eb: *mut byte, ps: *mut byte, ab: *mut byte, mb: *mut byte) {
     pipeline_free_mmap(sb, 524288);
     pipeline_free_mmap(eb, 1048576);
     pipeline_free_mmap(ps, 65536);
     pipeline_free_mmap(ab, 2097152);
     pipeline_free_mmap(mb, 65536);
+}
+
+fn pipeline_cleanup_all(
+    sb: *mut byte,
+    eb: *mut byte,
+    ps: *mut byte,
+    ab: *mut byte,
+    mb: *mut byte,
+    st: *mut PipelineShapeTable,
+    tg_buf: *mut u8,
+    tg_bytes: uint,
+    c_buf: *mut u8,
+    c_bytes: uint
+) {
+    shape_table_free(st);
+    pipeline_free_mmap(tg_buf as *mut byte, tg_bytes);
+    pipeline_free_mmap(c_buf as *mut byte, c_bytes);
+    pipeline_cleanup(sb, eb, ps, ab, mb);
 }
 
 fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
@@ -148,17 +249,31 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
     }
 
     var codon_stream: CodonStream;
-    osla_codon_stream_init(&mut codon_stream, expanded_buffer, expanded_len);
+    osla_codon_stream_init(&mut codon_stream, expanded_buffer as *const byte, expanded_len);
+    if expanded_len >= 3 && osla_codon_proofread(expanded_buffer as *const byte) {
+        codon_stream.cursor = 3;
+        codon_stream.codons_read = 1;
+    }
 
     var simd_stream: SimdTokenStream;
-    hsns_simd_stream_init(&mut simd_stream, expanded_buffer, expanded_len);
-    let _delim_mask: uint = hsns_simd_scan_delimiters_64(&mut simd_stream);
+    hsns_simd_stream_init(&mut simd_stream, expanded_buffer as *const byte, expanded_len);
+    var simd_chunks_with_delims: uint = 0;
+    while (simd_stream.cursor + 64) <= simd_stream.length {
+        let delim_mask: uint = hsns_simd_scan_delimiters_64(&mut simd_stream);
+        if delim_mask != 0 {
+            simd_chunks_with_delims = simd_chunks_with_delims + 1;
+        }
+    }
+    if simd_chunks_with_delims > 0 || codon_stream.codons_read > 0 {
+        lnga_dispatch_spike(&mut event_bus, 2, simd_stream.delimiters_found);
+    }
 
     var plate: RseSpacetimePlate;
     rse_plate_init(&mut plate, plate_storage);
+    plate.sector_capacities[0] = 32768;
 
     var ramc: RamcArena;
-    zwns_ramc_init(&mut ramc, plate_storage, 65536);
+    zwns_ramc_init(&mut ramc, (plate_storage as uint + 32768) as *mut byte, 32768);
 
     var arena: MemoryArena;
     allocator_init(&mut arena, arena_buffer, 2097152);
@@ -172,10 +287,28 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
     parser.node_id_counter = 0;
     scan_next_token(&mut reader, &mut parser.current_token);
 
-    var shapes: [ShapeContract; 32];
-    let ast_root: *mut AstNode = parse_program(&mut parser, &shapes[0], 32);
+    var shape_table: PipelineShapeTable;
+    shape_table_init(&mut shape_table);
+    var tg_cap: uint = 0;
+    var tg_buf: *mut u8 = 0 as *mut u8;
+    var contracts_cap: uint = 0;
+    var contracts_buf: *mut u8 = 0 as *mut u8;
 
-    if ast_root == (0 as *mut AstNode) {
+    if shape_table.had_error != 0 {
+        report_diagnostic(
+            Severity.FATAL,
+            ctx.opts.input_path,
+            1,
+            1,
+            "Failed to allocate dynamic shape contract table"
+        );
+        pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
+        return PipelineStatus.EMISSION_FAILED;
+    }
+
+    let ast_root: *mut AstNode = parse_program_dynamic(&mut parser, &mut shape_table);
+
+    if ast_root == (0 as *mut AstNode) || shape_table.had_error != 0 {
         report_diagnostic(
             Severity.ERROR,
             ctx.opts.input_path,
@@ -183,23 +316,42 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
             1,
             "Syntax parsing failed to construct valid AST"
         );
-        pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+        pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
         return PipelineStatus.SYNTAX_ERROR;
     }
 
     ctx.telemetry.ast_nodes_created = parser.node_id_counter;
-    ctx.telemetry.total_tokens = reader.position;
+    ctx.telemetry.total_tokens = reader.cursor;
 
     if ctx.opts.is_verbose {
         @terminal.print_line("[ruxc] Stage 3: Verifying canonical types & shape contracts...");
     }
 
+    tg_cap = 256;
+    tg_buf = pipeline_alloc_mmap(tg_cap * 24) as *mut u8;
+    if (tg_buf as int) <= 0 {
+        tg_buf = 0 as *mut u8;
+        tg_cap = 0;
+        report_diagnostic(
+            Severity.FATAL,
+            ctx.opts.input_path,
+            1,
+            1,
+            "Failed to allocate dynamic EIA type graph table"
+        );
+        pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
+        return PipelineStatus.EMISSION_FAILED;
+    }
+
+    var tg_count: uint = 0;
     var s_idx: uint = 0;
-    while s_idx < 32 {
-        if shapes[s_idx].field_count > 0 {
-    var f_idx: uint = 0;
-            while f_idx < shapes[s_idx].field_count {
-                let f_hash: uint = shapes[s_idx].field_type_hashes[f_idx];
+    while s_idx < shape_table.shape_count {
+        let se: *const DynShapeEntry = ((shape_table.shapes as uint) + (s_idx * 32)) as *const DynShapeEntry;
+        if se.field_count > 0 {
+            var f_idx: uint = 0;
+            while f_idx < se.field_count {
+                let fe: *const DynShapeField = ((shape_table.fields as uint) + ((se.field_start + f_idx) * 40)) as *const DynShapeField;
+                let f_hash: uint = fe.type_hash;
                 if f_hash == 0 {
                     report_diagnostic(
                         Severity.ERROR,
@@ -208,9 +360,35 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
                         1,
                         "Shape field contains unresolved type specification"
                     );
-                    pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+                    pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
                     return PipelineStatus.TYPE_CHECK_FAILED;
                 }
+                if tg_count >= tg_cap {
+                    let new_tg_cap: uint = tg_cap * 2;
+                    let grown_tg: *mut u8 = pipeline_grow_mmap(tg_buf, tg_cap * 24, new_tg_cap * 24);
+                    if (grown_tg as int) <= 0 {
+                        report_diagnostic(
+                            Severity.FATAL,
+                            ctx.opts.output_path,
+                            0,
+                            0,
+                            "OOM growing EIA type graph table"
+                        );
+                        pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
+                        return PipelineStatus.EMISSION_FAILED;
+                    }
+                    tg_buf = grown_tg;
+                    tg_cap = new_tg_cap;
+                }
+                let tg_dst: *mut EiaTypeGraphEntry = ((tg_buf as uint) + (tg_count * 24)) as *mut EiaTypeGraphEntry;
+                eia_type_graph_entry_init(
+                    tg_dst,
+                    se.name_hash,
+                    fe.name_hash,
+                    fe.byte_offset as u32,
+                    fe.field_size as u32
+                );
+                tg_count = tg_count + 1;
                 f_idx = f_idx + 1;
             }
         }
@@ -225,6 +403,24 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
     codegen_init(&mut cg, machine_code_buffer, 65536);
     compile_node(&mut cg, ast_root);
 
+    if ctx.opts.is_freestanding && cg.stream.length == 0 {
+        // Minimal x86_64 exit(0) syscall stub so empty freestanding units still emit a valid executable code span + sealed EIA hologram.
+        let stub: *mut u8 = (&mut cg.stream.buffer[0]) as *mut u8;
+        stub[0] = 0xB8; stub[1] = 0x3C; stub[2] = 0x00; stub[3] = 0x00; stub[4] = 0x00;
+        stub[5] = 0x31; stub[6] = 0xFF;
+        stub[7] = 0x0F; stub[8] = 0x05;
+        if (stub as uint) != (machine_code_buffer as uint) {
+            let mb: *mut u8 = machine_code_buffer as *mut u8;
+            var si: uint = 0;
+            while si < 9 {
+                mb[si] = stub[si];
+                si = si + 1;
+            }
+        }
+        cg.stream.length = 9;
+        cg.entry_point_offset = 0;
+    }
+
     ctx.telemetry.bytes_emitted = cg.stream.length;
     ctx.telemetry.stencils_spliced = cg.stream.length / 4;
 
@@ -232,16 +428,136 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
         @terminal.print_line("[ruxc] Stage 5: Sealing EIA Universal Hologram & Contracts...");
     }
 
+    var code_len_for_hash: uint = cg.stream.length;
+    if code_len_for_hash == 0 {
+        code_len_for_hash = 1;
+    }
+    let code_b3: uint = blake3_hash64(machine_code_buffer as *const u8, code_len_for_hash);
+
+    contracts_cap = 128;
+    contracts_buf = pipeline_alloc_mmap(contracts_cap * 48) as *mut u8;
+    if (contracts_buf as int) <= 0 {
+        contracts_buf = 0 as *mut u8;
+        contracts_cap = 0;
+        report_diagnostic(
+            Severity.FATAL,
+            ctx.opts.output_path,
+            0,
+            0,
+            "Failed to allocate dynamic EIA contracts table"
+        );
+        pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
+        return PipelineStatus.EMISSION_FAILED;
+    }
+
+    var contracts_count: uint = 0;
+    var cur_ast: *mut AstNode = ast_root.child1;
+    while cur_ast != (0 as *mut AstNode) {
+        if cur_ast.kind == NODE_FN {
+            if contracts_count >= contracts_cap {
+                let new_c_cap: uint = contracts_cap * 2;
+                let grown_c: *mut u8 = pipeline_grow_mmap(contracts_buf, contracts_cap * 48, new_c_cap * 48);
+                if (grown_c as int) <= 0 {
+                    report_diagnostic(
+                        Severity.FATAL,
+                        ctx.opts.output_path,
+                        0,
+                        0,
+                        "OOM growing EIA contracts table"
+                    );
+                    pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
+                    return PipelineStatus.EMISSION_FAILED;
+                }
+                contracts_buf = grown_c;
+                contracts_cap = new_c_cap;
+            }
+
+            var sig_err: bool = false;
+            let sig_hash: uint = pipeline_compute_sig_hash(cur_ast as *const AstNode, &mut sig_err);
+            if sig_err {
+                report_diagnostic(
+                    Severity.FATAL,
+                    ctx.opts.output_path,
+                    0,
+                    0,
+                    "OOM computing canonical function signature hash"
+                );
+                pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
+                return PipelineStatus.EMISSION_FAILED;
+            }
+
+            var fn_vaddr: uint = 0;
+            var fn_csize: uint = 0;
+            var sym_flags: u32 = EIA_SYM_DEFINED;
+            if (cur_ast.is_mut & 2) != 0 {
+                sym_flags = EIA_SYM_IMPORT;
+            } else if (cur_ast.is_mut & 4) != 0 {
+                let fn_span: uint = cur_ast.id as uint;
+                fn_vaddr = 4259840 + (fn_span >> 32);
+                fn_csize = fn_span & 0xFFFFFFFF;
+            } else {
+                report_diagnostic(
+                    Severity.FATAL,
+                    ctx.opts.output_path,
+                    0,
+                    0,
+                    "Missing exact EIA code span metadata for non-import function"
+                );
+                pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
+                return PipelineStatus.EMISSION_FAILED;
+            }
+            if (cur_ast.is_mut & 1) != 0 {
+                sym_flags = sym_flags | EIA_SYM_PUBLIC;
+            }
+
+            let sc_dst: *mut SymbolContract = ((contracts_buf as uint) + (contracts_count * 48)) as *mut SymbolContract;
+            eia_contract_init_ex(
+                sc_dst,
+                cur_ast.name_hash,
+                sig_hash,
+                fn_vaddr,
+                fn_csize,
+                sym_flags,
+                0,
+                0
+            );
+            contracts_count = contracts_count + 1;
+        }
+        cur_ast = cur_ast.next;
+    }
+    if contracts_count == 0 {
+        var in_len: uint = 0;
+        let ip: *const u8 = ctx.opts.input_path as *const u8;
+        while ip[in_len] != 0 { in_len = in_len + 1; }
+        if in_len == 0 { in_len = 1; }
+        let mod_sym: uint = blake3_hash64(ip, in_len);
+        let sc0: *mut SymbolContract = contracts_buf as *mut SymbolContract;
+        eia_contract_init_ex(
+            sc0,
+            mod_sym,
+            code_b3,
+            4259840 + cg.entry_point_offset,
+            cg.stream.length,
+            EIA_SYM_DEFINED,
+            0,
+            0
+        );
+        contracts_count = 1;
+    }
+
     var hologram_hdr: UniversalHologramHeader;
     eia_hologram_init(&mut hologram_hdr, 1);
-    hologram_hdr.contracts_count = 1;
-    hologram_hdr.blake3_root = @crypto.blake3_64(machine_code_buffer as uint, cg.stream.length);
-
-    var contract: SymbolContract;
-    eia_contract_init(&mut contract, 0x1234, 0x5678, cg.entry_point_offset, cg.stream.length, hologram_hdr.blake3_root);
+    hologram_hdr.contracts_offset = contracts_buf as uint;
+    hologram_hdr.contracts_count = contracts_count;
+    if tg_count > 0 {
+        hologram_hdr.type_graph_offset = tg_buf as uint;
+        hologram_hdr.type_graph_size = tg_count * 24;
+    }
+    hologram_hdr.blake3_root = code_b3;
+    hologram_hdr.flags = EIA_FLAG_SEALED | EIA_FLAG_HAS_CODE_HASH;
 
     if !eia_hologram_validate(&hologram_hdr) {
-        pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+        pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
         return PipelineStatus.HOLOGRAM_SEAL_FAILED;
     }
 
@@ -251,21 +567,34 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
 
     saes_fence_instruction_stream();
 
+    let contracts_src: *const SymbolContract = contracts_buf as *const SymbolContract;
+    var tg_src: *const EiaTypeGraphEntry = 0 as *const EiaTypeGraphEntry;
+    if tg_count > 0 {
+        tg_src = tg_buf as *const EiaTypeGraphEntry;
+    }
+
     if ctx.opts.is_freestanding {
         if ctx.opts.is_verbose {
-            @terminal.print_line("[ruxc] Stage 6: Emitting freestanding 174-byte direct-syscall binary (ZWNS)...");
+            @terminal.print_line("[ruxc] Stage 6: Emitting freestanding ELF64 vessel with sealed EIA hologram...");
         }
-        var free_buf: [byte; 256];
-        let free_sz: uint = zwns_emit_freestanding_elf174(&mut free_buf[0], "Rux Freestanding", 0);
-
-        let flags: uint = 577;
-        let out_fd: int = @os.open(ctx.opts.output_path as *byte, flags, 493);
-        if out_fd < 0 {
-            pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+        var fv: ExecutableVessel;
+        fv.code_ptr = &cg.stream.buffer[0];
+        fv.code_len = cg.stream.length;
+        fv.entry_offset = cg.entry_point_offset;
+        let fs_res: int = write_vessel_elf_with_eia(
+            &fv,
+            ctx.opts.output_path as *byte,
+            contracts_src,
+            contracts_count,
+            0 as *const EiaRelocHole,
+            0,
+            tg_src,
+            tg_count
+        );
+        if fs_res <= 0 {
+            pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
             return PipelineStatus.EMISSION_FAILED;
         }
-        @os.write(out_fd, &free_buf[0], free_sz);
-        @os.close(out_fd);
     } else {
         if ctx.opts.is_verbose {
             @terminal.print_line("[ruxc] Stage 6: Emitting multi-OS executable vessel (EIA Target)...");
@@ -276,7 +605,17 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
         } else if ctx.opts.target_env == TARGET_ENV_MACOS_MACHO {
             target_os_code = TARGET_OS_MACOS;
         }
-        let write_res: int = write_executable_binary_target(&mut cg, ctx.opts.output_path as *byte, target_os_code);
+        let write_res: int = write_executable_binary_target_eia(
+            &mut cg,
+            ctx.opts.output_path as *byte,
+            target_os_code,
+            contracts_src,
+            contracts_count,
+            0 as *const EiaRelocHole,
+            0,
+            tg_src,
+            tg_count
+        );
         if write_res <= 0 {
             report_diagnostic(
                 Severity.FATAL,
@@ -285,7 +624,7 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
                 0,
                 "Failed to write output binary to target path"
             );
-            pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+            pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
             return PipelineStatus.EMISSION_FAILED;
         }
     }
@@ -310,6 +649,14 @@ fn pipeline_execute(ctx: *mut PipelineContext) -> PipelineStatus {
     ctx.telemetry.elapsed_nanoseconds = (t1 - t0) / 3;
 
     lnga_dispatch_spike(&mut event_bus, 1, 0x2000);
-    pipeline_cleanup(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer);
+    var drained_spikes: uint = 0;
+    while event_bus.tail != event_bus.head {
+        event_bus.tail = (event_bus.tail + 1) % event_bus.capacity;
+        drained_spikes = drained_spikes + 1;
+    }
+    if ctx.opts.is_verbose && drained_spikes > 0 {
+        @terminal.print_line("[ruxc] Stage 5: Drained LNGA pipeline telemetry spikes.");
+    }
+    pipeline_cleanup_all(source_buffer, expanded_buffer, plate_storage, arena_buffer, machine_code_buffer, &mut shape_table, tg_buf, tg_cap * 24, contracts_buf, contracts_cap * 48);
     return PipelineStatus.SUCCESS;
 }

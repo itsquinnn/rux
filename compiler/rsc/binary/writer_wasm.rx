@@ -35,6 +35,17 @@ fn wasm_buf_sleb(buf: *mut u8, pos: *mut u64, val: i64) {
     }
 }
 
+fn wasm_buf_put_str(buf: *mut u8, pos: *mut u64, s: *u8) {
+    var n: u64 = 0;
+    while s[n] != 0 { n = n + 1; }
+    wasm_buf_uleb(buf, pos, n);
+    var i: u64 = 0;
+    while i < n {
+        wasm_buf_put8(buf, pos, s[i]);
+        i = i + 1;
+    }
+}
+
 fn wasm_append_section(out: *mut u8, out_pos: *mut u64, sec_id: u8, sec_buf: *u8, sec_len: u64) {
     wasm_buf_put8(out, out_pos, sec_id);
     wasm_buf_uleb(out, out_pos, sec_len);
@@ -46,10 +57,20 @@ fn wasm_append_section(out: *mut u8, out_pos: *mut u64, sec_id: u8, sec_buf: *u8
 }
 
 fn write_wasm_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
-    let cap: u64 = (cg.text_size as u64) + (cg.rodata_size as u64) + 131072;
+    if cg.reloc_count > 0 {
+        return -3;
+    }
+    let w_contracts_sz: u64 = (cg.contract_count as u64) * 48;
+    let w_relocs_sz: u64 = (cg.reloc_count as u64) * 24;
+    let w_tg_sz: u64 = (cg.tg_count as u64) * 24;
+    let w_eia_body_sz: u64 = 4 + 96 + w_contracts_sz + w_relocs_sz + w_tg_sz;
+    let cap: u64 = (cg.text_size as u64) + (cg.rodata_size as u64) + w_eia_body_sz + 131072;
     let file_buf: *mut u8 = uses_alloc(cap);
     let sec_buf: *mut u8 = uses_alloc(cap);
-    if (file_buf as i64) <= 0 || (sec_buf as i64) <= 0 {
+    let fcnt: u64 = cg.fn_entry_count;
+    let fn_sec_offs: *mut u64 = uses_alloc((fcnt + 1) * 8) as *mut u64;
+    let fn_body_lens: *mut u64 = uses_alloc((fcnt + 1) * 8) as *mut u64;
+    if (file_buf as i64) <= 0 || (sec_buf as i64) <= 0 || (fn_sec_offs as i64) <= 0 || (fn_body_lens as i64) <= 0 {
         return -1;
     }
 
@@ -66,10 +87,10 @@ fn write_wasm_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
     wasm_buf_put8(file_buf, &mut pos[0], 0);
     wasm_buf_put8(file_buf, &mut pos[0], 0);
 
-    let fcnt: u64 = cg.fn_entry_count;
-
     spos[0] = 0;
-    wasm_buf_uleb(sec_buf, &mut spos[0], fcnt);
+    var type_cnt: u64 = fcnt;
+    if fcnt > 0 { type_cnt = fcnt + 2; }
+    wasm_buf_uleb(sec_buf, &mut spos[0], type_cnt);
     var fi: u64 = 0;
     var main_idx: u64 = 0;
     while fi < fcnt {
@@ -89,14 +110,43 @@ fn write_wasm_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
         wasm_buf_put8(sec_buf, &mut spos[0], 126);
         fi = fi + 1;
     }
+    if fcnt > 0 {
+        wasm_buf_put8(sec_buf, &mut spos[0], 96);
+        wasm_buf_uleb(sec_buf, &mut spos[0], 4);
+        wasm_buf_put8(sec_buf, &mut spos[0], 127);
+        wasm_buf_put8(sec_buf, &mut spos[0], 127);
+        wasm_buf_put8(sec_buf, &mut spos[0], 127);
+        wasm_buf_put8(sec_buf, &mut spos[0], 127);
+        wasm_buf_uleb(sec_buf, &mut spos[0], 1);
+        wasm_buf_put8(sec_buf, &mut spos[0], 127);
+
+        wasm_buf_put8(sec_buf, &mut spos[0], 96);
+        wasm_buf_uleb(sec_buf, &mut spos[0], 0);
+        wasm_buf_uleb(sec_buf, &mut spos[0], 0);
+    }
     wasm_append_section(file_buf, &mut pos[0], 1, sec_buf, spos[0]);
 
+    if fcnt > 0 {
+        spos[0] = 0;
+        wasm_buf_uleb(sec_buf, &mut spos[0], 1);
+        wasm_buf_put_str(sec_buf, &mut spos[0], "wasi_snapshot_preview1");
+        wasm_buf_put_str(sec_buf, &mut spos[0], "fd_write");
+        wasm_buf_put8(sec_buf, &mut spos[0], 0);
+        wasm_buf_uleb(sec_buf, &mut spos[0], fcnt);
+        wasm_append_section(file_buf, &mut pos[0], 2, sec_buf, spos[0]);
+    }
+
     spos[0] = 0;
-    wasm_buf_uleb(sec_buf, &mut spos[0], fcnt);
+    var def_cnt: u64 = fcnt;
+    if fcnt > 0 { def_cnt = fcnt + 1; }
+    wasm_buf_uleb(sec_buf, &mut spos[0], def_cnt);
     fi = 0;
     while fi < fcnt {
         wasm_buf_uleb(sec_buf, &mut spos[0], fi);
         fi = fi + 1;
+    }
+    if fcnt > 0 {
+        wasm_buf_uleb(sec_buf, &mut spos[0], fcnt + 1);
     }
     wasm_append_section(file_buf, &mut pos[0], 3, sec_buf, spos[0]);
 
@@ -108,32 +158,26 @@ fn write_wasm_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
 
     spos[0] = 0;
     if fcnt > 0 {
-        wasm_buf_uleb(sec_buf, &mut spos[0], 2);
+        wasm_buf_uleb(sec_buf, &mut spos[0], 3);
     } else {
         wasm_buf_uleb(sec_buf, &mut spos[0], 1);
     }
-    wasm_buf_uleb(sec_buf, &mut spos[0], 6);
-    wasm_buf_put8(sec_buf, &mut spos[0], 109);
-    wasm_buf_put8(sec_buf, &mut spos[0], 101);
-    wasm_buf_put8(sec_buf, &mut spos[0], 109);
-    wasm_buf_put8(sec_buf, &mut spos[0], 111);
-    wasm_buf_put8(sec_buf, &mut spos[0], 114);
-    wasm_buf_put8(sec_buf, &mut spos[0], 121);
+    wasm_buf_put_str(sec_buf, &mut spos[0], "memory");
     wasm_buf_put8(sec_buf, &mut spos[0], 2);
     wasm_buf_uleb(sec_buf, &mut spos[0], 0);
     if fcnt > 0 {
-        wasm_buf_uleb(sec_buf, &mut spos[0], 4);
-        wasm_buf_put8(sec_buf, &mut spos[0], 109);
-        wasm_buf_put8(sec_buf, &mut spos[0], 97);
-        wasm_buf_put8(sec_buf, &mut spos[0], 105);
-        wasm_buf_put8(sec_buf, &mut spos[0], 110);
+        wasm_buf_put_str(sec_buf, &mut spos[0], "main");
         wasm_buf_put8(sec_buf, &mut spos[0], 0);
-        wasm_buf_uleb(sec_buf, &mut spos[0], main_idx);
+        wasm_buf_uleb(sec_buf, &mut spos[0], main_idx + 1);
+
+        wasm_buf_put_str(sec_buf, &mut spos[0], "_start");
+        wasm_buf_put8(sec_buf, &mut spos[0], 0);
+        wasm_buf_uleb(sec_buf, &mut spos[0], fcnt + 1);
     }
     wasm_append_section(file_buf, &mut pos[0], 7, sec_buf, spos[0]);
 
     spos[0] = 0;
-    wasm_buf_uleb(sec_buf, &mut spos[0], fcnt);
+    wasm_buf_uleb(sec_buf, &mut spos[0], def_cnt);
     fi = 0;
     while fi < fcnt {
         let fe_c: *mut FnEntry = ((cg.fn_entries as *mut u8) + (fi * 16)) as *mut FnEntry;
@@ -144,6 +188,8 @@ fn write_wasm_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
         let b3: u64 = cg.text_buf[off + 4] as u64;
         let blen: u64 = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
         wasm_buf_uleb(sec_buf, &mut spos[0], blen);
+        fn_sec_offs[fi] = spos[0];
+        fn_body_lens[fi] = blen;
         var bi: u64 = 0;
         while bi < blen {
             wasm_buf_put8(sec_buf, &mut spos[0], cg.text_buf[off + 5 + bi]);
@@ -151,8 +197,41 @@ fn write_wasm_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
         }
         fi = fi + 1;
     }
-    wasm_append_section(file_buf, &mut pos[0], 10, sec_buf, spos[0]);
+    if fcnt > 0 {
+        let fe_main: *mut FnEntry = ((cg.fn_entries as *mut u8) + (main_idx * 16)) as *mut FnEntry;
+        let main_pcnt: u64 = cg.text_buf[fe_main.text_offset] as u64;
+        var st_buf: [u8; 64];
+        var st_pos: u64 = 0;
+        wasm_buf_put8(&mut st_buf[0], &mut st_pos, 0);
+        wasm_buf_put8(&mut st_buf[0], &mut st_pos, 65);
+        wasm_buf_sleb(&mut st_buf[0], &mut st_pos, 24);
+        wasm_buf_put8(&mut st_buf[0], &mut st_pos, 66);
+        wasm_buf_sleb(&mut st_buf[0], &mut st_pos, 524288);
+        wasm_buf_put8(&mut st_buf[0], &mut st_pos, 55);
+        wasm_buf_put8(&mut st_buf[0], &mut st_pos, 3);
+        wasm_buf_put8(&mut st_buf[0], &mut st_pos, 0);
+        var mp: u64 = 0;
+        while mp < main_pcnt && mp < 16 {
+            wasm_buf_put8(&mut st_buf[0], &mut st_pos, 66);
+            wasm_buf_sleb(&mut st_buf[0], &mut st_pos, 0);
+            mp = mp + 1;
+        }
+        wasm_buf_put8(&mut st_buf[0], &mut st_pos, 16);
+        wasm_buf_uleb(&mut st_buf[0], &mut st_pos, main_idx + 1);
+        wasm_buf_put8(&mut st_buf[0], &mut st_pos, 26);
+        wasm_buf_put8(&mut st_buf[0], &mut st_pos, 11);
+        wasm_buf_uleb(sec_buf, &mut spos[0], st_pos);
+        var si_w: u64 = 0;
+        while si_w < st_pos {
+            wasm_buf_put8(sec_buf, &mut spos[0], st_buf[si_w]);
+            si_w = si_w + 1;
+        }
+    }
+    let wcode_sec_len: u64 = spos[0];
+    wasm_append_section(file_buf, &mut pos[0], 10, sec_buf, wcode_sec_len);
+    let wcode_payload_off: u64 = pos[0] - wcode_sec_len;
 
+    var wdata_payload_off: u64 = 0;
     if cg.rodata_size > 0 {
         spos[0] = 0;
         wasm_buf_uleb(sec_buf, &mut spos[0], 1);
@@ -166,10 +245,72 @@ fn write_wasm_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
             wasm_buf_put8(sec_buf, &mut spos[0], cg.rodata_buf[ri]);
             ri = ri + 1;
         }
-        wasm_append_section(file_buf, &mut pos[0], 11, sec_buf, spos[0]);
+        let wdata_sec_len: u64 = spos[0];
+        wasm_append_section(file_buf, &mut pos[0], 11, sec_buf, wdata_sec_len);
+        wdata_payload_off = pos[0] - wdata_sec_len;
+    }
+
+    var wci: u64 = 0;
+    while wci < (cg.contract_count as u64) {
+        let wsc: *mut SymbolContract = ((cg.contracts as uint) + (wci * 48)) as *mut SymbolContract;
+        if (wsc.flags & EIA_SYM_DEFINED) != 0 {
+            var wfi: u64 = 0;
+            while wfi < fcnt {
+                let fe_w: *mut FnEntry = ((cg.fn_entries as *mut u8) + (wfi * 16)) as *mut FnEntry;
+                if fe_w.fn_hash == wsc.symbol_hash {
+                    wsc.vaddr = (wcode_payload_off + fn_sec_offs[wfi]) as uint;
+                    wsc.code_size = fn_body_lens[wfi] as uint;
+                    wfi = fcnt;
+                }
+                wfi = wfi + 1;
+            }
+        }
+        wci = wci + 1;
+    }
+
+    wasm_buf_put8(file_buf, &mut pos[0], 0);
+    wasm_buf_uleb(file_buf, &mut pos[0], w_eia_body_sz);
+    wasm_buf_put8(file_buf, &mut pos[0], 3);
+    wasm_buf_put8(file_buf, &mut pos[0], 101);
+    wasm_buf_put8(file_buf, &mut pos[0], 105);
+    wasm_buf_put8(file_buf, &mut pos[0], 97);
+    let w_holo_off: u64 = pos[0];
+    let w_contracts_off: u64 = w_holo_off + 96;
+    let w_relocs_off: u64 = w_contracts_off + w_contracts_sz;
+    let w_tg_off: u64 = w_relocs_off + w_relocs_sz;
+    var wzi: u64 = 0;
+    while wzi < (w_eia_body_sz - 4) {
+        wasm_buf_put8(file_buf, &mut pos[0], 0);
+        wzi = wzi + 1;
+    }
+    if !eia_populate_and_seal_hologram(
+        file_buf,
+        pos[0] as uint,
+        w_holo_off as uint,
+        w_contracts_off as uint,
+        cg.contracts as *const SymbolContract,
+        cg.contract_count as uint,
+        w_relocs_off as uint,
+        cg.relocs as *const EiaRelocHole,
+        cg.reloc_count as uint,
+        w_tg_off as uint,
+        cg.type_graph as *const EiaTypeGraphEntry,
+        cg.tg_count as uint,
+        1,
+        EIA_FLAG_HAS_CODE_HASH,
+        wcode_payload_off as uint,
+        wdata_payload_off as uint
+    ) {
+        uses_free(fn_sec_offs as *mut u8, (fcnt + 1) * 8);
+        uses_free(fn_body_lens as *mut u8, (fcnt + 1) * 8);
+        uses_free(sec_buf, cap);
+        uses_free(file_buf, cap);
+        return -3;
     }
 
     let wr: i64 = acrq_file_write_bytes(out_path, file_buf, pos[0], 0);
+    uses_free(fn_sec_offs as *mut u8, (fcnt + 1) * 8);
+    uses_free(fn_body_lens as *mut u8, (fcnt + 1) * 8);
     uses_free(sec_buf, cap);
     uses_free(file_buf, cap);
     if wr < 0 {

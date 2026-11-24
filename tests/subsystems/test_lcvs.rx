@@ -32,6 +32,34 @@ fn main() -> int {
         println("[FAIL] LCVS: Online compaction failed");
         return 3;
     }
+
+    var real_buf: [byte; 128];
+    var real_arena: RejuvenatingArena;
+    lcvs_rejuvenate_init(&mut real_arena, &mut real_buf[0], 128);
+    let p_a: *mut byte = lcvs_rejuvenate_alloc(&mut real_arena, 60);
+    let p_b: *mut byte = lcvs_rejuvenate_alloc(&mut real_arena, 40);
+    if (p_a as uint) == 0 || (p_b as uint) == 0 || real_arena.allocated_bytes != 100 || lcvs_check_fragmentation_permille(&mut real_arena) != 0 {
+        println("[FAIL] LCVS: RejuvenatingArena allocation accounting failed");
+        return 4;
+    }
+    var f_i: uint = 0;
+    while f_i < 40 {
+        p_b[f_i] = 0x5A as byte;
+        f_i = f_i + 1;
+    }
+    if lcvs_rejuvenate_free_bytes(&mut real_arena, 200) {
+        println("[FAIL] LCVS: Allowed freeing more bytes than live");
+        return 5;
+    }
+    if !lcvs_rejuvenate_free_bytes(&mut real_arena, 40) || lcvs_check_fragmentation_permille(&mut real_arena) != 400 {
+        println("[FAIL] LCVS: Fragmentation permille calculation failed");
+        return 6;
+    }
+    let rejs2: uint = lcvs_rejuvenate_heap(&mut real_arena);
+    if rejs2 != 1 || real_arena.allocated_bytes != 60 || real_arena.dead_bytes != 0 || real_arena.fragmentation_permille != 0 || real_buf[60] != (0 as byte) || real_buf[99] != (0 as byte) {
+        println("[FAIL] LCVS: Tail scrub compaction failed");
+        return 7;
+    }
     println("[PASS] LCVS: Online memory rejuvenation and compaction verified");
 
     println("ALL LCVS STATE VITRIFICATION TESTS PASSED (100% OK)");

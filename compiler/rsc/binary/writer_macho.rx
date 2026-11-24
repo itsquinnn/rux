@@ -1,3 +1,196 @@
+fn macho_put_u32(buf: *mut u8, off: u64, v: u32) {
+    buf[off + 0] = (v & 255) as u8;
+    buf[off + 1] = ((v >> 8) & 255) as u8;
+    buf[off + 2] = ((v >> 16) & 255) as u8;
+    buf[off + 3] = ((v >> 24) & 255) as u8;
+}
+
+fn macho_put_u64(buf: *mut u8, off: u64, v: u64) {
+    var i: u64 = 0;
+    while i < 8 {
+        buf[off + i] = ((v >> (i * 8)) & 255) as u8;
+        i = i + 1;
+    }
+}
+
+fn macho_put_be32(buf: *mut u8, off: u64, v: u32) {
+    buf[off + 0] = ((v >> 24) & 255) as u8;
+    buf[off + 1] = ((v >> 16) & 255) as u8;
+    buf[off + 2] = ((v >> 8) & 255) as u8;
+    buf[off + 3] = (v & 255) as u8;
+}
+
+fn macho_put_be64(buf: *mut u8, off: u64, v: u64) {
+    macho_put_be32(buf, off, ((v >> 32) & 4294967295) as u32);
+    macho_put_be32(buf, off + 4, (v & 4294967295) as u32);
+}
+
+fn macho_copy_str(buf: *mut u8, off: u64, s: *u8) {
+    var i: u64 = 0;
+    while s[i] != 0 {
+        buf[off + i] = s[i];
+        i = i + 1;
+    }
+}
+
+fn macho_rotr32(x: u32, n: u32) -> u32 {
+    return ((x >> n) | (x << (32 - n))) & 4294967295;
+}
+
+fn macho_sha256_init_k(k: *mut u32) {
+    k[0] = 0x428a2f98; k[1] = 0x71374491; k[2] = 0xb5c0fbcf; k[3] = 0xe9b5dba5;
+    k[4] = 0x3956c25b; k[5] = 0x59f111f1; k[6] = 0x923f82a4; k[7] = 0xab1c5ed5;
+    k[8] = 0xd807aa98; k[9] = 0x12835b01; k[10] = 0x243185be; k[11] = 0x550c7dc3;
+    k[12] = 0x72be5d74; k[13] = 0x80deb1fe; k[14] = 0x9bdc06a7; k[15] = 0xc19bf174;
+    k[16] = 0xe49b69c1; k[17] = 0xefbe4786; k[18] = 0x0fc19dc6; k[19] = 0x240ca1cc;
+    k[20] = 0x2de92c6f; k[21] = 0x4a7484aa; k[22] = 0x5cb0a9dc; k[23] = 0x76f988da;
+    k[24] = 0x983e5152; k[25] = 0xa831c66d; k[26] = 0xb00327c8; k[27] = 0xbf597fc7;
+    k[28] = 0xc6e00bf3; k[29] = 0xd5a79147; k[30] = 0x06ca6351; k[31] = 0x14292967;
+    k[32] = 0x27b70a85; k[33] = 0x2e1b2138; k[34] = 0x4d2c6dfc; k[35] = 0x53380d13;
+    k[36] = 0x650a7354; k[37] = 0x766a0abb; k[38] = 0x81c2c92e; k[39] = 0x92722c85;
+    k[40] = 0xa2bfe8a1; k[41] = 0xa81a664b; k[42] = 0xc24b8b70; k[43] = 0xc76c51a3;
+    k[44] = 0xd192e819; k[45] = 0xd6990624; k[46] = 0xf40e3585; k[47] = 0x106aa070;
+    k[48] = 0x19a4c116; k[49] = 0x1e376c08; k[50] = 0x2748774c; k[51] = 0x34b0bcb5;
+    k[52] = 0x391c0cb3; k[53] = 0x4ed8aa4a; k[54] = 0x5b9cca4f; k[55] = 0x682e6ff3;
+    k[56] = 0x748f82ee; k[57] = 0x78a5636f; k[58] = 0x84c87814; k[59] = 0x8cc70208;
+    k[60] = 0x90befffa; k[61] = 0xa4506ceb; k[62] = 0xbef9a3f7; k[63] = 0xc67178f2;
+}
+
+fn macho_sha256_compress(st: *mut u32, blk: *const u8, k: *const u32) {
+    var w: [u32; 64];
+    var i: u64 = 0;
+    while i < 16 {
+        let b0: u32 = blk[i * 4 + 0] as u32;
+        let b1: u32 = blk[i * 4 + 1] as u32;
+        let b2: u32 = blk[i * 4 + 2] as u32;
+        let b3: u32 = blk[i * 4 + 3] as u32;
+        w[i] = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+        i = i + 1;
+    }
+    while i < 64 {
+        let wm15: u32 = w[i - 15];
+        let wm2: u32 = w[i - 2];
+        let s0: u32 = macho_rotr32(wm15, 7) ^ macho_rotr32(wm15, 18) ^ (wm15 >> 3);
+        let s1: u32 = macho_rotr32(wm2, 17) ^ macho_rotr32(wm2, 19) ^ (wm2 >> 10);
+        w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 4294967295;
+        i = i + 1;
+    }
+    var a: u32 = st[0];
+    var b: u32 = st[1];
+    var c: u32 = st[2];
+    var d: u32 = st[3];
+    var e: u32 = st[4];
+    var f: u32 = st[5];
+    var g: u32 = st[6];
+    var h: u32 = st[7];
+    i = 0;
+    while i < 64 {
+        let S1: u32 = macho_rotr32(e, 6) ^ macho_rotr32(e, 11) ^ macho_rotr32(e, 25);
+        let ch: u32 = (e & f) ^ (((e ^ 4294967295) & 4294967295) & g);
+        let t1: u32 = (h + S1 + ch + k[i] + w[i]) & 4294967295;
+        let S0: u32 = macho_rotr32(a, 2) ^ macho_rotr32(a, 13) ^ macho_rotr32(a, 22);
+        let maj: u32 = (a & b) ^ (a & c) ^ (b & c);
+        let t2: u32 = (S0 + maj) & 4294967295;
+        h = g; g = f; f = e;
+        e = (d + t1) & 4294967295;
+        d = c; c = b; b = a;
+        a = (t1 + t2) & 4294967295;
+        i = i + 1;
+    }
+    st[0] = (st[0] + a) & 4294967295;
+    st[1] = (st[1] + b) & 4294967295;
+    st[2] = (st[2] + c) & 4294967295;
+    st[3] = (st[3] + d) & 4294967295;
+    st[4] = (st[4] + e) & 4294967295;
+    st[5] = (st[5] + f) & 4294967295;
+    st[6] = (st[6] + g) & 4294967295;
+    st[7] = (st[7] + h) & 4294967295;
+}
+
+fn macho_sha256(data: *const u8, len: u64, out32: *mut u8, k: *const u32) {
+    var st: [u32; 8];
+    st[0] = 0x6a09e667; st[1] = 0xbb67ae85; st[2] = 0x3c6ef372; st[3] = 0xa54ff53a;
+    st[4] = 0x510e527f; st[5] = 0x9b05688c; st[6] = 0x1f83d9ab; st[7] = 0x5be0cd19;
+    var off: u64 = 0;
+    while (off + 64) <= len {
+        macho_sha256_compress(&mut st[0], data + off, k);
+        off = off + 64;
+    }
+    var pad: [u8; 128];
+    var zi: u64 = 0;
+    while zi < 128 { pad[zi] = 0; zi = zi + 1; }
+    let rem: u64 = len - off;
+    var ri: u64 = 0;
+    while ri < rem { pad[ri] = data[off + ri]; ri = ri + 1; }
+    pad[rem] = 128;
+    var blk_cnt: u64 = 1;
+    if rem >= 56 { blk_cnt = 2; }
+    let total_pad: u64 = blk_cnt * 64;
+    let bit_len: u64 = len * 8;
+    macho_put_be64(&mut pad[0], total_pad - 8, bit_len);
+    macho_sha256_compress(&mut st[0], (&pad[0]) as *const u8, k);
+    if blk_cnt == 2 {
+        macho_sha256_compress(&mut st[0], ((&pad[0]) as *const u8) + 64, k);
+    }
+    var oi: u64 = 0;
+    while oi < 8 {
+        macho_put_be32(out32, oi * 4, st[oi]);
+        oi = oi + 1;
+    }
+}
+
+fn macho_write_adhoc_codesig(
+    file_buf: *mut u8,
+    cs_off: u64,
+    cs_size: u64,
+    exec_seg_limit: u64
+) {
+    let n_pages: u64 = (cs_off + 4095) / 4096;
+    let cd_size: u64 = 92 + (n_pages * 32);
+    macho_put_be32(file_buf, cs_off + 0, 0xFADE0CC0);
+    macho_put_be32(file_buf, cs_off + 4, cs_size as u32);
+    macho_put_be32(file_buf, cs_off + 8, 1);
+    macho_put_be32(file_buf, cs_off + 12, 0);
+    macho_put_be32(file_buf, cs_off + 16, 20);
+
+    let cd: u64 = cs_off + 20;
+    macho_put_be32(file_buf, cd + 0, 0xFADE0C02);
+    macho_put_be32(file_buf, cd + 4, cd_size as u32);
+    macho_put_be32(file_buf, cd + 8, 0x00020400);
+    macho_put_be32(file_buf, cd + 12, 0x00020002);
+    macho_put_be32(file_buf, cd + 16, 92);
+    macho_put_be32(file_buf, cd + 20, 88);
+    macho_put_be32(file_buf, cd + 24, 0);
+    macho_put_be32(file_buf, cd + 28, n_pages as u32);
+    macho_put_be32(file_buf, cd + 32, cs_off as u32);
+    file_buf[cd + 36] = 32;
+    file_buf[cd + 37] = 2;
+    file_buf[cd + 38] = 0;
+    file_buf[cd + 39] = 12;
+    macho_put_be32(file_buf, cd + 40, 0);
+    macho_put_be32(file_buf, cd + 44, 0);
+    macho_put_be32(file_buf, cd + 48, 0);
+    macho_put_be32(file_buf, cd + 52, 0);
+    macho_put_be64(file_buf, cd + 56, 0);
+    macho_put_be64(file_buf, cd + 64, 0);
+    macho_put_be64(file_buf, cd + 72, exec_seg_limit);
+    macho_put_be64(file_buf, cd + 80, 1);
+    file_buf[cd + 88] = 114; file_buf[cd + 89] = 117; file_buf[cd + 90] = 120; file_buf[cd + 91] = 0;
+
+    var k: [u32; 64];
+    macho_sha256_init_k(&mut k[0]);
+    var p: u64 = 0;
+    while p < n_pages {
+        let p_off: u64 = p * 4096;
+        var p_len: u64 = 4096;
+        if (p_off + p_len) > cs_off {
+            p_len = cs_off - p_off;
+        }
+        macho_sha256((file_buf as *const u8) + p_off, p_len, file_buf + cd + 92 + (p * 32), (&k[0]) as *const u32);
+        p = p + 1;
+    }
+}
+
 fn write_macho_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
     var align: u64 = 4096;
     if cg.target_arch == 10 {
@@ -8,10 +201,27 @@ fn write_macho_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
     var rodata_aligned: u64 = ((cg.rodata_size as u64) + align - 1) & (0 - align);
     if rodata_aligned == 0 { rodata_aligned = align; }
 
+    let m_contracts_sz: u64 = (cg.contract_count as u64) * 48;
+    let m_relocs_sz: u64 = (cg.reloc_count as u64) * 24;
+    let m_tg_sz: u64 = (cg.tg_count as u64) * 24;
+    let m_eia_raw: u64 = 96 + m_contracts_sz + m_relocs_sz + m_tg_sz;
+    var eia_aligned: u64 = (m_eia_raw + align - 1) & (0 - align);
+    if eia_aligned == 0 { eia_aligned = align; }
+
+    let base_va: u64 = 4294967296;
     let headers_size: u64 = align;
     let text_offset: u64 = headers_size;
-    let rodata_offset: u64 = text_offset + text_aligned;
-    let total_file_size: u64 = rodata_offset + rodata_aligned;
+    let text_seg_sz: u64 = text_offset + text_aligned;
+    let rodata_offset: u64 = text_seg_sz;
+    let eia_offset: u64 = rodata_offset + rodata_aligned;
+    let linkedit_offset: u64 = eia_offset + eia_aligned;
+
+    let n_cs_pages: u64 = (linkedit_offset + 4095) / 4096;
+    let codesig_size: u64 = 20 + 92 + (n_cs_pages * 32);
+    let codesig_aligned: u64 = ((codesig_size + 15) / 16) * 16;
+    var linkedit_vmsz: u64 = ((codesig_aligned + align - 1) / align) * align;
+    if linkedit_vmsz == 0 { linkedit_vmsz = align; }
+    let total_file_size: u64 = linkedit_offset + codesig_aligned;
 
     let file_buf: *mut u8 = uses_alloc(total_file_size);
     if (file_buf as i64) <= 0 {
@@ -23,73 +233,148 @@ fn write_macho_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
         z = z + 1;
     }
 
-    file_buf[0] = 207; file_buf[1] = 250; file_buf[2] = 237; file_buf[3] = 254;
+    // mach_header_64 (32 bytes)
+    macho_put_u32(file_buf, 0, 0xFEEDFACF);
     if cg.target_arch == 10 {
-        file_buf[4] = 12; file_buf[5] = 0; file_buf[6] = 0; file_buf[7] = 1;
-        file_buf[8] = 0;  file_buf[9] = 0; file_buf[10] = 0; file_buf[11] = 0;
+        macho_put_u32(file_buf, 4, 0x0100000C);
+        macho_put_u32(file_buf, 8, 0);
     } else {
-        file_buf[4] = 7; file_buf[5] = 0; file_buf[6] = 0; file_buf[7] = 1;
-        file_buf[8] = 3; file_buf[9] = 0; file_buf[10] = 0; file_buf[11] = 128;
+        macho_put_u32(file_buf, 4, 0x01000007);
+        macho_put_u32(file_buf, 8, 0x80000003);
     }
-    file_buf[12] = 2;
-    file_buf[16] = 3;
-    file_buf[20] = 248;
-    file_buf[24] = 133; file_buf[25] = 0; file_buf[26] = 32; file_buf[27] = 0;
+    macho_put_u32(file_buf, 12, 2);
+    macho_put_u32(file_buf, 16, 13);
+    macho_put_u32(file_buf, 20, 824);
+    macho_put_u32(file_buf, 24, 0x00200085);
 
-    let cmd1: u64 = 32;
-    file_buf[cmd1 + 0] = 25;
-    file_buf[cmd1 + 4] = 72;
-    file_buf[cmd1 + 8] = 95; file_buf[cmd1 + 9] = 95; file_buf[cmd1 + 10] = 80; file_buf[cmd1 + 11] = 65;
-    file_buf[cmd1 + 12] = 71; file_buf[cmd1 + 13] = 69; file_buf[cmd1 + 14] = 90; file_buf[cmd1 + 15] = 69;
-    file_buf[cmd1 + 16] = 82; file_buf[cmd1 + 17] = 79;
-    file_buf[cmd1 + 28] = 1;
+    var cmd: u64 = 32;
 
-    let cmd2: u64 = cmd1 + 72;
-    file_buf[cmd2 + 0] = 25;
-    file_buf[cmd2 + 4] = 152;
-    file_buf[cmd2 + 8] = 95; file_buf[cmd2 + 9] = 95; file_buf[cmd2 + 10] = 84; file_buf[cmd2 + 11] = 69;
-    file_buf[cmd2 + 12] = 88; file_buf[cmd2 + 13] = 84;
-    file_buf[cmd2 + 28] = 1;
-    file_buf[cmd2 + 32] = (total_file_size & 255) as u8;
-    file_buf[cmd2 + 33] = ((total_file_size >> 8) & 255) as u8;
-    file_buf[cmd2 + 34] = ((total_file_size >> 16) & 255) as u8;
-    file_buf[cmd2 + 35] = ((total_file_size >> 24) & 255) as u8;
-    file_buf[cmd2 + 48] = (total_file_size & 255) as u8;
-    file_buf[cmd2 + 49] = ((total_file_size >> 8) & 255) as u8;
-    file_buf[cmd2 + 50] = ((total_file_size >> 16) & 255) as u8;
-    file_buf[cmd2 + 51] = ((total_file_size >> 24) & 255) as u8;
-    file_buf[cmd2 + 56] = 7;
-    file_buf[cmd2 + 60] = 7;
-    file_buf[cmd2 + 64] = 1;
+    // 1. __PAGEZERO (72 bytes)
+    macho_put_u32(file_buf, cmd + 0, 25);
+    macho_put_u32(file_buf, cmd + 4, 72);
+    macho_copy_str(file_buf, cmd + 8, "__PAGEZERO");
+    macho_put_u64(file_buf, cmd + 24, 0);
+    macho_put_u64(file_buf, cmd + 32, base_va);
+    cmd = cmd + 72;
 
-    let sect: u64 = cmd2 + 72;
-    file_buf[sect + 0] = 95; file_buf[sect + 1] = 95; file_buf[sect + 2] = 116; file_buf[sect + 3] = 101;
-    file_buf[sect + 4] = 120; file_buf[sect + 5] = 116;
-    file_buf[sect + 16] = 95; file_buf[sect + 17] = 95; file_buf[sect + 18] = 84; file_buf[sect + 19] = 69;
-    file_buf[sect + 20] = 88; file_buf[sect + 21] = 84;
-    file_buf[sect + 32] = (text_offset & 255) as u8;
-    file_buf[sect + 33] = ((text_offset >> 8) & 255) as u8;
-    file_buf[sect + 34] = ((text_offset >> 16) & 255) as u8;
-    file_buf[sect + 35] = ((text_offset >> 24) & 255) as u8;
-    file_buf[sect + 36] = 1;
-    file_buf[sect + 40] = (cg.text_size & 255) as u8;
-    file_buf[sect + 41] = ((cg.text_size >> 8) & 255) as u8;
-    file_buf[sect + 42] = ((cg.text_size >> 16) & 255) as u8;
-    file_buf[sect + 43] = ((cg.text_size >> 24) & 255) as u8;
-    file_buf[sect + 48] = (text_offset & 255) as u8;
-    file_buf[sect + 49] = ((text_offset >> 8) & 255) as u8;
-    file_buf[sect + 50] = ((text_offset >> 16) & 255) as u8;
-    file_buf[sect + 51] = ((text_offset >> 24) & 255) as u8;
-    file_buf[sect + 52] = 4;
-    file_buf[sect + 64] = 0; file_buf[sect + 65] = 4; file_buf[sect + 66] = 0; file_buf[sect + 67] = 128;
+    // 2. __TEXT (152 bytes, strict W^X R|X = 5)
+    macho_put_u32(file_buf, cmd + 0, 25);
+    macho_put_u32(file_buf, cmd + 4, 152);
+    macho_copy_str(file_buf, cmd + 8, "__TEXT");
+    macho_put_u64(file_buf, cmd + 24, base_va);
+    macho_put_u64(file_buf, cmd + 32, text_seg_sz);
+    macho_put_u64(file_buf, cmd + 40, 0);
+    macho_put_u64(file_buf, cmd + 48, text_seg_sz);
+    macho_put_u32(file_buf, cmd + 56, 5);
+    macho_put_u32(file_buf, cmd + 60, 5);
+    macho_put_u32(file_buf, cmd + 64, 1);
+    let tsect: u64 = cmd + 72;
+    macho_copy_str(file_buf, tsect + 0, "__text");
+    macho_copy_str(file_buf, tsect + 16, "__TEXT");
+    macho_put_u64(file_buf, tsect + 32, base_va + text_offset);
+    macho_put_u64(file_buf, tsect + 40, cg.text_size as u64);
+    macho_put_u32(file_buf, tsect + 48, text_offset as u32);
+    macho_put_u32(file_buf, tsect + 52, 4);
+    macho_put_u32(file_buf, tsect + 64, 0x80000400);
+    cmd = cmd + 152;
 
-    let cmd3: u64 = cmd2 + 152;
-    file_buf[cmd3 + 0] = 40; file_buf[cmd3 + 3] = 128;
-    file_buf[cmd3 + 4] = 24;
-    file_buf[cmd3 + 8] = (text_offset & 255) as u8;
-    file_buf[cmd3 + 9] = ((text_offset >> 8) & 255) as u8;
-    file_buf[cmd3 + 10] = ((text_offset >> 16) & 255) as u8;
-    file_buf[cmd3 + 11] = ((text_offset >> 24) & 255) as u8;
+    // 3. __DATA (152 bytes, W^X R|W = 3 for rodata + writable runtime scratch)
+    macho_put_u32(file_buf, cmd + 0, 25);
+    macho_put_u32(file_buf, cmd + 4, 152);
+    macho_copy_str(file_buf, cmd + 8, "__DATA");
+    macho_put_u64(file_buf, cmd + 24, base_va + rodata_offset);
+    macho_put_u64(file_buf, cmd + 32, rodata_aligned);
+    macho_put_u64(file_buf, cmd + 40, rodata_offset);
+    macho_put_u64(file_buf, cmd + 48, rodata_aligned);
+    macho_put_u32(file_buf, cmd + 56, 3);
+    macho_put_u32(file_buf, cmd + 60, 3);
+    macho_put_u32(file_buf, cmd + 64, 1);
+    let dsect: u64 = cmd + 72;
+    macho_copy_str(file_buf, dsect + 0, "__data");
+    macho_copy_str(file_buf, dsect + 16, "__DATA");
+    macho_put_u64(file_buf, dsect + 32, base_va + rodata_offset);
+    macho_put_u64(file_buf, dsect + 40, cg.rodata_size as u64);
+    macho_put_u32(file_buf, dsect + 48, rodata_offset as u32);
+    macho_put_u32(file_buf, dsect + 52, 3);
+    cmd = cmd + 152;
+
+    // 4. __EIA (72 bytes, R = 1)
+    macho_put_u32(file_buf, cmd + 0, 25);
+    macho_put_u32(file_buf, cmd + 4, 72);
+    macho_copy_str(file_buf, cmd + 8, "__EIA");
+    macho_put_u64(file_buf, cmd + 24, base_va + eia_offset);
+    macho_put_u64(file_buf, cmd + 32, eia_aligned);
+    macho_put_u64(file_buf, cmd + 40, eia_offset);
+    macho_put_u64(file_buf, cmd + 48, eia_aligned);
+    macho_put_u32(file_buf, cmd + 56, 1);
+    macho_put_u32(file_buf, cmd + 60, 1);
+    cmd = cmd + 72;
+
+    // 5. __LINKEDIT (72 bytes, R = 1, carries LC_CODE_SIGNATURE)
+    macho_put_u32(file_buf, cmd + 0, 25);
+    macho_put_u32(file_buf, cmd + 4, 72);
+    macho_copy_str(file_buf, cmd + 8, "__LINKEDIT");
+    macho_put_u64(file_buf, cmd + 24, base_va + linkedit_offset);
+    macho_put_u64(file_buf, cmd + 32, linkedit_vmsz);
+    macho_put_u64(file_buf, cmd + 40, linkedit_offset);
+    macho_put_u64(file_buf, cmd + 48, codesig_aligned);
+    macho_put_u32(file_buf, cmd + 56, 1);
+    macho_put_u32(file_buf, cmd + 60, 1);
+    cmd = cmd + 72;
+
+    // 6. LC_DYLD_INFO_ONLY (48 bytes)
+    macho_put_u32(file_buf, cmd + 0, 0x80000022);
+    macho_put_u32(file_buf, cmd + 4, 48);
+    cmd = cmd + 48;
+
+    // 7. LC_SYMTAB (24 bytes)
+    macho_put_u32(file_buf, cmd + 0, 2);
+    macho_put_u32(file_buf, cmd + 4, 24);
+    macho_put_u32(file_buf, cmd + 8, linkedit_offset as u32);
+    macho_put_u32(file_buf, cmd + 16, linkedit_offset as u32);
+    cmd = cmd + 24;
+
+    // 8. LC_DYSYMTAB (80 bytes)
+    macho_put_u32(file_buf, cmd + 0, 11);
+    macho_put_u32(file_buf, cmd + 4, 80);
+    cmd = cmd + 80;
+
+    // 9. LC_LOAD_DYLINKER (32 bytes, /usr/lib/dyld)
+    macho_put_u32(file_buf, cmd + 0, 14);
+    macho_put_u32(file_buf, cmd + 4, 32);
+    macho_put_u32(file_buf, cmd + 8, 12);
+    macho_copy_str(file_buf, cmd + 12, "/usr/lib/dyld");
+    cmd = cmd + 32;
+
+    // 10. LC_BUILD_VERSION (24 bytes, macOS 11.0 / SDK 14.0)
+    macho_put_u32(file_buf, cmd + 0, 50);
+    macho_put_u32(file_buf, cmd + 4, 24);
+    macho_put_u32(file_buf, cmd + 8, 1);
+    macho_put_u32(file_buf, cmd + 12, 0x000B0000);
+    macho_put_u32(file_buf, cmd + 16, 0x000E0000);
+    cmd = cmd + 24;
+
+    // 11. LC_MAIN (24 bytes)
+    macho_put_u32(file_buf, cmd + 0, 0x80000028);
+    macho_put_u32(file_buf, cmd + 4, 24);
+    macho_put_u64(file_buf, cmd + 8, text_offset);
+    cmd = cmd + 24;
+
+    // 12. LC_LOAD_DYLIB (56 bytes, /usr/lib/libSystem.B.dylib)
+    macho_put_u32(file_buf, cmd + 0, 12);
+    macho_put_u32(file_buf, cmd + 4, 56);
+    macho_put_u32(file_buf, cmd + 8, 24);
+    macho_put_u32(file_buf, cmd + 12, 2);
+    macho_put_u32(file_buf, cmd + 16, 0x051F0000);
+    macho_put_u32(file_buf, cmd + 20, 0x00010000);
+    macho_copy_str(file_buf, cmd + 24, "/usr/lib/libSystem.B.dylib");
+    cmd = cmd + 56;
+
+    // 13. LC_CODE_SIGNATURE (16 bytes)
+    macho_put_u32(file_buf, cmd + 0, 29);
+    macho_put_u32(file_buf, cmd + 4, 16);
+    macho_put_u32(file_buf, cmd + 8, linkedit_offset as u32);
+    macho_put_u32(file_buf, cmd + 12, codesig_aligned as u32);
 
     var i: u64 = 0;
     while i < (cg.text_size as u64) {
@@ -97,67 +382,71 @@ fn write_macho_binary(cg: *mut CodeGen, out_path: *u8) -> i64 {
         i = i + 1;
     }
 
-    if cg.target_arch != 10 {
-        var mrfi: u64 = 0;
-        while mrfi < cg.rodata_fixup_count {
-            let mrf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (mrfi * 16)) as *mut RodataFixup;
-            if (mrf.hole_offset + 4) <= (cg.text_size as u64) {
+    var mrfi: u64 = 0;
+    while mrfi < cg.rodata_fixup_count {
+        let mrf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (mrfi * 16)) as *mut RodataFixup;
+        if (mrf.hole_offset + 4) <= (cg.text_size as u64) {
+            let mppos: u64 = text_offset + mrf.hole_offset;
+            if cg.target_arch == 10 {
+                if (mrf.hole_offset + 8) <= (cg.text_size as u64) {
+                    let m_tgt: u64 = rodata_offset + mrf.rodata_off;
+                    let m_pc: u64 = text_offset + mrf.hole_offset;
+                    let m_pgd: i64 = ((m_tgt >> 12) as i64) - ((m_pc >> 12) as i64);
+                    let madrp_op: u32 = 2415919104 | (((m_pgd as u32) & 3) << 29) | ((((m_pgd >> 2) as u32) & 524287) << 5);
+                    let madd_op: u32 = 2432696320 | (((m_tgt & 4095) as u32) << 10);
+                    macho_put_u32(file_buf, mppos, madrp_op);
+                    macho_put_u32(file_buf, mppos + 4, madd_op);
+                }
+            } else {
                 let mtpos: i64 = (rodata_offset + mrf.rodata_off) as i64;
                 let mnip: i64 = (text_offset + mrf.hole_offset + 4) as i64;
                 let mrdsp: u32 = ((mtpos - mnip) as i32) as u32;
-                let mppos: u64 = text_offset + mrf.hole_offset;
-                file_buf[mppos + 0] = (mrdsp & 255) as u8;
-                file_buf[mppos + 1] = ((mrdsp >> 8) & 255) as u8;
-                file_buf[mppos + 2] = ((mrdsp >> 16) & 255) as u8;
-                file_buf[mppos + 3] = ((mrdsp >> 24) & 255) as u8;
-            }
-            mrfi = mrfi + 1;
-        }
-    }
-
-    var mri: u32 = 0;
-    while mri < (cg.reloc_count as u32) {
-        let mhole: *mut EiaRelocHole = ((cg.relocs as *mut u8) + ((mri as u64) * 24)) as *mut EiaRelocHole;
-        let mh_pk: u64 = mhole.patch_kind & 255;
-        let mh_off: u64 = mhole.insn_offset & 4294967295;
-        if mh_pk == 1 && (mh_off + 4) <= (cg.text_size as u64) {
-            var mti: u32 = 0;
-            var mfound: u32 = 0;
-            while mti < (cg.tg_count as u32) && mfound == 0 {
-                let mtge: *mut EiaTypeGraphEntry = ((cg.type_graph as *mut u8) + ((mti as u64) * 24)) as *mut EiaTypeGraphEntry;
-                if mtge.type_sig_hash == mhole.type_sig_hash && mtge.field_hash == mhole.field_or_sym_hash {
-                    let mdisp: u32 = (mtge.byte_offset & 4294967295) as u32;
-                    let mpoff: u64 = text_offset + mh_off;
-                    if cg.target_arch == 10 {
-                        let mmovz: u32 = 3531604000 | ((mdisp & 65535) << 5);
-                        let mmovk: u32 = 4070621216 | (((mdisp >> 16) & 65535) << 5);
-                        file_buf[mpoff + 0] = (mmovz & 255) as u8;
-                        file_buf[mpoff + 1] = ((mmovz >> 8) & 255) as u8;
-                        file_buf[mpoff + 2] = ((mmovz >> 16) & 255) as u8;
-                        file_buf[mpoff + 3] = ((mmovz >> 24) & 255) as u8;
-                        file_buf[mpoff + 4] = (mmovk & 255) as u8;
-                        file_buf[mpoff + 5] = ((mmovk >> 8) & 255) as u8;
-                        file_buf[mpoff + 6] = ((mmovk >> 16) & 255) as u8;
-                        file_buf[mpoff + 7] = ((mmovk >> 24) & 255) as u8;
-                    } else {
-                        file_buf[mpoff + 0] = (mdisp & 255) as u8;
-                        file_buf[mpoff + 1] = ((mdisp >> 8) & 255) as u8;
-                        file_buf[mpoff + 2] = ((mdisp >> 16) & 255) as u8;
-                        file_buf[mpoff + 3] = ((mdisp >> 24) & 255) as u8;
-                    }
-                    mfound = 1;
-                }
-                mti = mti + 1;
+                macho_put_u32(file_buf, mppos, mrdsp);
             }
         }
-        mri = mri + 1;
+        mrfi = mrfi + 1;
     }
 
+    eia_patch_reloc_holes_arch(
+        file_buf + text_offset,
+        cg.target_arch,
+        cg.relocs as *const EiaRelocHole,
+        cg.reloc_count as uint,
+        cg.type_graph as *const EiaTypeGraphEntry,
+        cg.tg_count as uint
+    );
+
+    let m_contracts_off: u64 = eia_offset + 96;
+    let m_relocs_off: u64 = m_contracts_off + m_contracts_sz;
+    let m_tg_off: u64 = m_relocs_off + m_relocs_sz;
     i = 0;
     while i < (cg.rodata_size as u64) {
         file_buf[rodata_offset + i] = cg.rodata_buf[i];
         i = i + 1;
     }
+
+    if !eia_populate_and_seal_hologram(
+        file_buf,
+        total_file_size as uint,
+        eia_offset as uint,
+        m_contracts_off as uint,
+        cg.contracts as *const SymbolContract,
+        cg.contract_count as uint,
+        m_relocs_off as uint,
+        cg.relocs as *const EiaRelocHole,
+        cg.reloc_count as uint,
+        m_tg_off as uint,
+        cg.type_graph as *const EiaTypeGraphEntry,
+        cg.tg_count as uint,
+        1,
+        EIA_FLAG_HAS_CODE_HASH,
+        (base_va + text_offset) as uint,
+        (base_va + rodata_offset) as uint
+    ) {
+        return -3;
+    }
+
+    macho_write_adhoc_codesig(file_buf, linkedit_offset, codesig_size, text_seg_sz);
 
     let wr: i64 = acrq_file_write_bytes(out_path, file_buf, total_file_size, 0);
     if wr < 0 {

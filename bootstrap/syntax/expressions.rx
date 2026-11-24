@@ -28,10 +28,121 @@ fn create_node(p: *mut ParserState, kind: uint) -> *mut AstNode {
     return node;
 }
 
-fn skip_type(p: *mut ParserState) {
-    while p.current_token.kind != TOKEN_EQ && p.current_token.kind != TOKEN_SEMICOLON && p.current_token.kind != TOKEN_COMMA && p.current_token.kind != TOKEN_RPAREN && p.current_token.kind != TOKEN_LBRACE && p.current_token.kind != TOKEN_FAT_ARROW && p.current_token.kind != TOKEN_EOF {
+fn bs_type_size_from_token(tok: *const Token) -> uint {
+    if tok.kind == TOKEN_TYPE_BYTE { return 1; }
+    if tok.kind == TOKEN_TYPE_U32  { return 4; }
+    if tok.kind == TOKEN_TYPE_VOID { return 0; }
+    if tok.kind == TOKEN_TYPE_INT || tok.kind == TOKEN_TYPE_UINT || tok.kind == TOKEN_TYPE_STR { return 8; }
+    let h: uint = tok.name_hash;
+    if h == 627981701265227156 || h == 631772817358541784 || h == 14785269867199075517 || h == 7505435266999523071 {
+        return 1;
+    }
+    if h == 3092775683940386555 || h == 5558799945458185151 {
+        return 2;
+    }
+    if h == 3094732814638223685 || h == 5560783464435099345 || h == 15952682373371409732 {
+        return 4;
+    }
+    if h == 16642968967524131789 {
+        return 16;
+    }
+    if h == 3563412735833858527 {
+        return 0;
+    }
+    return 8;
+}
+
+fn bs_is_type_delim(k: uint) -> bool {
+    return k == TOKEN_EQ || k == TOKEN_SEMICOLON || k == TOKEN_COMMA || k == TOKEN_RPAREN || k == TOKEN_LBRACE || k == TOKEN_RBRACE || k == TOKEN_FAT_ARROW || k == TOKEN_IDENT || k == TOKEN_EOF;
+}
+
+fn parse_type_spec(p: *mut ParserState, out_hash: *mut uint, out_ptr: *mut uint, out_size: *mut uint) {
+    var ptr_flags: uint = 0;
+    var is_ptr: bool = false;
+    var type_hash: uint = 0;
+    var type_size: uint = 8;
+
+    while p.current_token.kind == TOKEN_STAR || (p.current_token.kind == 99 && p.current_token.length > 0 && p.current_token.start[0] == 38) {
+        if p.current_token.kind == TOKEN_STAR {
+            ptr_flags = ptr_flags | 1;
+        } else {
+            ptr_flags = ptr_flags | 4;
+        }
+        is_ptr = true;
+        scan_next_token(p.reader, &mut p.current_token);
+        if p.current_token.kind == TOKEN_MUT {
+            ptr_flags = ptr_flags | 2;
+            scan_next_token(p.reader, &mut p.current_token);
+        } else if p.current_token.kind == TOKEN_CONST {
+            scan_next_token(p.reader, &mut p.current_token);
+        }
+    }
+
+    if p.current_token.kind == 99 && p.current_token.length > 0 && p.current_token.start[0] == 91 {
+        scan_next_token(p.reader, &mut p.current_token);
+        var elem_h: uint = 0;
+        var elem_p: uint = 0;
+        var elem_sz: uint = 8;
+        parse_type_spec(p, &mut elem_h, &mut elem_p, &mut elem_sz);
+        var arr_len: uint = 1;
+        if p.current_token.kind == TOKEN_SEMICOLON {
+            scan_next_token(p.reader, &mut p.current_token);
+            if p.current_token.kind == TOKEN_INT {
+                arr_len = p.current_token.int_value;
+                scan_next_token(p.reader, &mut p.current_token);
+            }
+        }
+        if p.current_token.kind == 99 && p.current_token.length > 0 && p.current_token.start[0] == 93 {
+            scan_next_token(p.reader, &mut p.current_token);
+        }
+        type_hash = elem_h ^ (arr_len * 1099511628211);
+        if is_ptr {
+            type_size = 8;
+        } else {
+            type_size = elem_sz * arr_len;
+        }
+    } else if p.current_token.kind >= TOKEN_TYPE_INT && p.current_token.kind <= TOKEN_TYPE_STR {
+        type_hash = p.current_token.name_hash;
+        type_size = bs_type_size_from_token(&p.current_token);
+        scan_next_token(p.reader, &mut p.current_token);
+    } else if p.current_token.kind == TOKEN_IDENT {
+        type_hash = p.current_token.name_hash;
+        type_size = bs_type_size_from_token(&p.current_token);
+        scan_next_token(p.reader, &mut p.current_token);
+        if p.current_token.kind == 99 && p.current_token.length > 0 && p.current_token.start[0] == 60 {
+            var depth: uint = 1;
+            scan_next_token(p.reader, &mut p.current_token);
+            while depth > 0 && p.current_token.kind != TOKEN_EOF {
+                if p.current_token.kind == 99 && p.current_token.length > 0 && p.current_token.start[0] == 60 {
+                    depth = depth + 1;
+                } else if p.current_token.kind == 99 && p.current_token.length > 0 && p.current_token.start[0] == 62 {
+                    depth = depth - 1;
+                }
+                scan_next_token(p.reader, &mut p.current_token);
+            }
+        }
+    }
+
+    if is_ptr {
+        type_size = 8;
+    }
+    while !bs_is_type_delim(p.current_token.kind) {
+        if p.current_token.kind == TOKEN_ARROW {
+            break;
+        }
         scan_next_token(p.reader, &mut p.current_token);
     }
+
+    if out_hash != (0 as *mut uint) { out_hash[0] = type_hash; }
+    if out_ptr != (0 as *mut uint)  { out_ptr[0] = ptr_flags; }
+    if out_size != (0 as *mut uint) { out_size[0] = type_size; }
+}
+
+fn skip_type(p: *mut ParserState) {
+    var dummy_h: uint = 0;
+    var dummy_p: uint = 0;
+    var dummy_s: uint = 0;
+    parse_type_spec(p, &mut dummy_h, &mut dummy_p, &mut dummy_s);
 }
 
 fn expect_token(p: *mut ParserState, expected_kind: uint) {

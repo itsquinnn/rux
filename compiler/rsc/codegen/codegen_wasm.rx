@@ -37,6 +37,41 @@ fn wasm_patch_uleb5(cg: *mut CodeGen, offset: u32, idx: u32) {
     cg.text_buf[(offset + 4) as u64] = ((idx >> 28) & 15) as u8;
 }
 
+fn wasm_ast_has_addr(node: *mut AstNode, target_hash: u64) -> u32 {
+    if (node as u64) < 4096 || target_hash == 0 { return 0; }
+    if node.kind == 105 {
+        if wasm_ast_has_addr(node.child1, target_hash) == 1 { return 1; }
+        return wasm_ast_has_addr(node.next, target_hash);
+    }
+    if node.kind == 135 || node.kind == 199 {
+        return wasm_ast_has_addr(node.next, target_hash);
+    }
+    if node.kind == 112 && node.val == 50 {
+        var inner: *mut AstNode = node.child1;
+        while (inner as u64) >= 4096 && inner.kind == 131 {
+            inner = inner.child1;
+        }
+        if (inner as u64) >= 4096 && inner.kind == 117 && inner.hash == target_hash {
+            return 1;
+        }
+    }
+    if wasm_ast_has_addr(node.child1, target_hash) == 1 { return 1; }
+    if wasm_ast_has_addr(node.child2, target_hash) == 1 { return 1; }
+    if wasm_ast_has_addr(node.child3, target_hash) == 1 { return 1; }
+    return wasm_ast_has_addr(node.next, target_hash);
+}
+
+fn wasm_emit_alloc_shadow(cg: *mut CodeGen, slot: u64, aligned_w: u64) {
+    cg_emit8(cg, 65); cg_emit8(cg, 24);
+    cg_emit8(cg, 41); cg_emit8(cg, 3); cg_emit8(cg, 0);
+    cg_emit8(cg, 33); wasm_emit_uleb128(cg, slot);
+    cg_emit8(cg, 65); cg_emit8(cg, 24);
+    cg_emit8(cg, 32); wasm_emit_uleb128(cg, slot);
+    cg_emit8(cg, 66); wasm_emit_sleb128(cg, aligned_w as i64);
+    cg_emit8(cg, 124);
+    cg_emit8(cg, 55); cg_emit8(cg, 3); cg_emit8(cg, 0);
+}
+
 fn wasm_find_local_slot(cg: *mut CodeGen, name_hash: u64) -> i32 {
     var i: u64 = cg.local_count;
     while i > 0 {
@@ -52,11 +87,11 @@ fn wasm_find_local_slot(cg: *mut CodeGen, name_hash: u64) -> i32 {
 fn wasm_emit_load_sized(cg: *mut CodeGen, sz: u64) {
     cg_emit8(cg, 167);
     if sz == 1 {
-        cg_emit8(cg, 45); cg_emit8(cg, 0); cg_emit8(cg, 0);
+        cg_emit8(cg, 49); cg_emit8(cg, 0); cg_emit8(cg, 0);
     } else if sz == 2 {
-        cg_emit8(cg, 47); cg_emit8(cg, 1); cg_emit8(cg, 0);
+        cg_emit8(cg, 51); cg_emit8(cg, 1); cg_emit8(cg, 0);
     } else if sz == 4 {
-        cg_emit8(cg, 49); cg_emit8(cg, 2); cg_emit8(cg, 0);
+        cg_emit8(cg, 53); cg_emit8(cg, 2); cg_emit8(cg, 0);
     } else {
         cg_emit8(cg, 41); cg_emit8(cg, 3); cg_emit8(cg, 0);
     }
@@ -64,14 +99,31 @@ fn wasm_emit_load_sized(cg: *mut CodeGen, sz: u64) {
 
 fn wasm_emit_store_sized(cg: *mut CodeGen, sz: u64) {
     if sz == 1 {
-        cg_emit8(cg, 58); cg_emit8(cg, 0); cg_emit8(cg, 0);
+        cg_emit8(cg, 60); cg_emit8(cg, 0); cg_emit8(cg, 0);
     } else if sz == 2 {
-        cg_emit8(cg, 60); cg_emit8(cg, 1); cg_emit8(cg, 0);
+        cg_emit8(cg, 61); cg_emit8(cg, 1); cg_emit8(cg, 0);
     } else if sz == 4 {
         cg_emit8(cg, 62); cg_emit8(cg, 2); cg_emit8(cg, 0);
     } else {
         cg_emit8(cg, 55); cg_emit8(cg, 3); cg_emit8(cg, 0);
     }
+}
+
+fn wasm_emit_fd_write(cg: *mut CodeGen, fd_val: i64) {
+    cg_emit8(cg, 65); cg_emit8(cg, 0);
+    cg_emit8(cg, 32); wasm_emit_uleb128(cg, 58);
+    cg_emit8(cg, 167);
+    cg_emit8(cg, 54); cg_emit8(cg, 2); cg_emit8(cg, 0);
+    cg_emit8(cg, 65); cg_emit8(cg, 4);
+    cg_emit8(cg, 32); wasm_emit_uleb128(cg, 59);
+    cg_emit8(cg, 167);
+    cg_emit8(cg, 54); cg_emit8(cg, 2); cg_emit8(cg, 0);
+    cg_emit8(cg, 65); wasm_emit_sleb128(cg, fd_val);
+    cg_emit8(cg, 65); cg_emit8(cg, 0);
+    cg_emit8(cg, 65); cg_emit8(cg, 1);
+    cg_emit8(cg, 65); cg_emit8(cg, 8);
+    cg_emit8(cg, 16); cg_emit8(cg, 0);
+    cg_emit8(cg, 26);
 }
 
 fn compile_expr_wasm(cg: *mut CodeGen, node: *mut AstNode) {
@@ -114,10 +166,14 @@ fn compile_expr_wasm(cg: *mut CodeGen, node: *mut AstNode) {
         return;
     }
     if node.kind == 117 {
-        let slot: i32 = wasm_find_local_slot(cg, node.hash);
-        if slot >= 0 {
+        let found_lv: *mut LocalVar = cg_find_local(cg, node.hash);
+        if found_lv != (0 as *mut LocalVar) {
             cg_emit8(cg, 32);
-            wasm_emit_uleb128(cg, slot as u64);
+            wasm_emit_uleb128(cg, found_lv.rbp_offset);
+            if found_lv.is_struct_val == 9 {
+                cg_emit8(cg, 167);
+                cg_emit8(cg, 41); cg_emit8(cg, 3); cg_emit8(cg, 0);
+            }
         } else {
             cg_emit8(cg, 66);
             wasm_emit_sleb128(cg, 0);
@@ -154,6 +210,37 @@ fn compile_expr_wasm(cg: *mut CodeGen, node: *mut AstNode) {
             compile_expr_wasm(cg, operand);
             let p_stride: u64 = cg_get_expr_elem_stride(cg, operand);
             wasm_emit_load_sized(cg, p_stride);
+            return;
+        }
+        if node.val == 50 {
+            if operand != (0 as *mut AstNode) {
+                if operand.kind == 115 {
+                    compile_expr_wasm(cg, operand.child1);
+                    compile_expr_wasm(cg, operand.child2);
+                    let astride_w: u64 = cg_get_expr_elem_stride(cg, operand.child1);
+                    cg_emit8(cg, 66);
+                    wasm_emit_sleb128(cg, astride_w as i64);
+                    cg_emit8(cg, 126);
+                    cg_emit8(cg, 124);
+                    return;
+                } else if operand.kind == 114 {
+                    let s_hash_w: u64 = arm64_resolve_struct_hash(cg, operand.child1, operand.hash);
+                    let disp_w: u32 = cg_lookup_field_offset(cg, s_hash_w, operand.hash);
+                    compile_expr_wasm(cg, operand.child1);
+                    cg_emit8(cg, 66);
+                    wasm_emit_sleb128(cg, disp_w as i64);
+                    cg_emit8(cg, 124);
+                    return;
+                } else if operand.kind == 117 {
+                    let lv_a: *mut LocalVar = cg_find_local(cg, operand.hash);
+                    if lv_a != (0 as *mut LocalVar) && lv_a.is_struct_val == 9 {
+                        cg_emit8(cg, 32);
+                        wasm_emit_uleb128(cg, lv_a.rbp_offset);
+                        return;
+                    }
+                }
+            }
+            compile_expr_wasm(cg, operand);
             return;
         }
         compile_expr_wasm(cg, operand);
@@ -207,8 +294,8 @@ fn compile_expr_wasm(cg: *mut CodeGen, node: *mut AstNode) {
         else if op == 32 { cg_emit8(cg, 126); }
         else if op == 33 { cg_emit8(cg, 127); }
         else if op == 34 { cg_emit8(cg, 129); }
-        else if op == 50 { cg_emit8(cg, 131); }
-        else if op == 51 { cg_emit8(cg, 132); }
+        else if op == 50 || op == 49 { cg_emit8(cg, 131); }
+        else if op == 51 || op == 57 { cg_emit8(cg, 132); }
         else if op == 52 { cg_emit8(cg, 133); }
         else if op == 47 { cg_emit8(cg, 134); }
         else if op == 48 { cg_emit8(cg, 135); }
@@ -232,6 +319,9 @@ fn compile_expr_wasm(cg: *mut CodeGen, node: *mut AstNode) {
         fix.hole_offset = cg.text_size;
         fix.callee_hash = node.hash;
         cg.call_fixup_count = cg.call_fixup_count + 1;
+        if node.child1 != (0 as *mut AstNode) && node.child1.kind == 117 && cg_find_local(cg, node.hash) == (0 as *mut LocalVar) {
+            diag_record_sym_check(cg, node.hash, node.child1.val, 1);
+        }
         cg_emit8(cg, 128);
         cg_emit8(cg, 128);
         cg_emit8(cg, 128);
@@ -251,6 +341,105 @@ fn compile_expr_wasm(cg: *mut CodeGen, node: *mut AstNode) {
         cg_emit8(cg, 32); wasm_emit_uleb128(cg, 62);
         return;
     }
+    if node.kind == 120 {
+        var fd_val: i64 = 1;
+        if node.val == 2 { fd_val = 2; }
+        var pa: *mut AstNode = node.child1;
+        while pa != (0 as *mut AstNode) {
+            let ro_before: u32 = cg.rodata_size as u32;
+            compile_expr_wasm(cg, pa);
+            cg_emit8(cg, 33); wasm_emit_uleb128(cg, 58);
+            if node.val != 3 && (pa.kind == 118 || cg_is_string_expr(cg, pa) == 1) {
+                if pa.kind == 118 && (cg.rodata_size as u32) > ro_before {
+                    let slen: i64 = (((cg.rodata_size as u32) - ro_before) - 1) as i64;
+                    cg_emit8(cg, 66); wasm_emit_sleb128(cg, slen);
+                    cg_emit8(cg, 33); wasm_emit_uleb128(cg, 59);
+                } else {
+                    cg_emit8(cg, 66); cg_emit8(cg, 0);
+                    cg_emit8(cg, 33); wasm_emit_uleb128(cg, 59);
+                    cg_emit8(cg, 32); wasm_emit_uleb128(cg, 58);
+                    cg_emit8(cg, 80); cg_emit8(cg, 69);
+                    cg_emit8(cg, 4); cg_emit8(cg, 64);
+                    cg_emit8(cg, 2); cg_emit8(cg, 64);
+                    cg_emit8(cg, 3); cg_emit8(cg, 64);
+                    cg_emit8(cg, 32); wasm_emit_uleb128(cg, 58); cg_emit8(cg, 167);
+                    cg_emit8(cg, 32); wasm_emit_uleb128(cg, 59); cg_emit8(cg, 167);
+                    cg_emit8(cg, 106);
+                    cg_emit8(cg, 45); cg_emit8(cg, 0); cg_emit8(cg, 0);
+                    cg_emit8(cg, 69);
+                    cg_emit8(cg, 13); cg_emit8(cg, 1);
+                    cg_emit8(cg, 32); wasm_emit_uleb128(cg, 59);
+                    cg_emit8(cg, 66); cg_emit8(cg, 1); cg_emit8(cg, 124);
+                    cg_emit8(cg, 33); wasm_emit_uleb128(cg, 59);
+                    cg_emit8(cg, 12); cg_emit8(cg, 0);
+                    cg_emit8(cg, 11); cg_emit8(cg, 11); cg_emit8(cg, 11);
+                }
+                wasm_emit_fd_write(cg, fd_val);
+            } else {
+                cg_emit8(cg, 66); wasm_emit_sleb128(cg, 48);
+                cg_emit8(cg, 33); wasm_emit_uleb128(cg, 60);
+                cg_emit8(cg, 66); cg_emit8(cg, 0);
+                cg_emit8(cg, 33); wasm_emit_uleb128(cg, 61);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 58);
+                cg_emit8(cg, 66); cg_emit8(cg, 0); cg_emit8(cg, 83);
+                cg_emit8(cg, 4); cg_emit8(cg, 64);
+                cg_emit8(cg, 66); cg_emit8(cg, 1);
+                cg_emit8(cg, 33); wasm_emit_uleb128(cg, 61);
+                cg_emit8(cg, 66); cg_emit8(cg, 0);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 58); cg_emit8(cg, 125);
+                cg_emit8(cg, 33); wasm_emit_uleb128(cg, 58);
+                cg_emit8(cg, 11);
+                cg_emit8(cg, 2); cg_emit8(cg, 64);
+                cg_emit8(cg, 3); cg_emit8(cg, 64);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 60);
+                cg_emit8(cg, 66); cg_emit8(cg, 1); cg_emit8(cg, 125);
+                cg_emit8(cg, 33); wasm_emit_uleb128(cg, 60);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 60); cg_emit8(cg, 167);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 58);
+                cg_emit8(cg, 66); cg_emit8(cg, 10); cg_emit8(cg, 130);
+                cg_emit8(cg, 66); wasm_emit_sleb128(cg, 48); cg_emit8(cg, 124);
+                cg_emit8(cg, 167);
+                cg_emit8(cg, 58); cg_emit8(cg, 0); cg_emit8(cg, 0);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 58);
+                cg_emit8(cg, 66); cg_emit8(cg, 10); cg_emit8(cg, 128);
+                cg_emit8(cg, 33); wasm_emit_uleb128(cg, 58);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 58);
+                cg_emit8(cg, 66); cg_emit8(cg, 0); cg_emit8(cg, 82);
+                cg_emit8(cg, 13); cg_emit8(cg, 0);
+                cg_emit8(cg, 11); cg_emit8(cg, 11);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 61);
+                cg_emit8(cg, 66); cg_emit8(cg, 0); cg_emit8(cg, 82);
+                cg_emit8(cg, 4); cg_emit8(cg, 64);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 60);
+                cg_emit8(cg, 66); cg_emit8(cg, 1); cg_emit8(cg, 125);
+                cg_emit8(cg, 33); wasm_emit_uleb128(cg, 60);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 60); cg_emit8(cg, 167);
+                cg_emit8(cg, 65); wasm_emit_sleb128(cg, 45);
+                cg_emit8(cg, 58); cg_emit8(cg, 0); cg_emit8(cg, 0);
+                cg_emit8(cg, 11);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 60);
+                cg_emit8(cg, 33); wasm_emit_uleb128(cg, 58);
+                cg_emit8(cg, 66); wasm_emit_sleb128(cg, 48);
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, 60); cg_emit8(cg, 125);
+                cg_emit8(cg, 33); wasm_emit_uleb128(cg, 59);
+                wasm_emit_fd_write(cg, fd_val);
+            }
+            pa = pa.next;
+        }
+        if node.val == 1 || node.val == 2 {
+            cg_emit8(cg, 65); cg_emit8(cg, 16);
+            cg_emit8(cg, 65); cg_emit8(cg, 10);
+            cg_emit8(cg, 58); cg_emit8(cg, 0); cg_emit8(cg, 0);
+            cg_emit8(cg, 66); cg_emit8(cg, 16);
+            cg_emit8(cg, 33); wasm_emit_uleb128(cg, 58);
+            cg_emit8(cg, 66); cg_emit8(cg, 1);
+            cg_emit8(cg, 33); wasm_emit_uleb128(cg, 59);
+            wasm_emit_fd_write(cg, fd_val);
+        }
+        cg_emit8(cg, 66);
+        wasm_emit_sleb128(cg, 0);
+        return;
+    }
     cg_emit8(cg, 66);
     wasm_emit_sleb128(cg, 0);
 }
@@ -262,15 +451,79 @@ fn compile_stmt_wasm(cg: *mut CodeGen, stmt: *mut AstNode) {
     if stmt.kind == 105 {
         let slot: u64 = cg.current_stack_offset;
         cg.current_stack_offset = cg.current_stack_offset + 1;
+        var var_sz: u64 = 8;
+        var is_ptr: u64 = 0;
+        var is_val: u64 = 0;
+        var s_hash: u64 = stmt.val;
+        if stmt.id == 1 { is_ptr = 1; }
+        if stmt.id == 2 { is_ptr = 2; }
+        if stmt.id == 3 { is_val = 1; }
+        if stmt.id == 10 || stmt.id == 11 {
+            is_val = 1;
+            is_ptr = stmt.id;
+            var_sz = stmt.val;
+        } else if stmt.id == 12 {
+            is_val = 1;
+            is_ptr = 100 + stmt.is_mut;
+            var_sz = stmt.val;
+            s_hash = stmt.child3 as u64;
+        } else if stmt.id == 13 {
+            is_ptr = 11;
+            is_val = 0;
+            var_sz = 8;
+        }
+        let aligned_w: u64 = if var_sz > 0 { ((var_sz + 7) / 8) * 8 } else { 8 };
         let lv: *mut LocalVar = ((cg.locals as *mut u8) + (cg.local_count * 48)) as *mut LocalVar;
         lv.name_hash = stmt.hash;
         lv.rbp_offset = slot;
-        lv.size = 8;
-        lv.is_struct_ptr = stmt.id;
-        lv.is_struct_val = 0;
-        lv.struct_hash = stmt.val;
+        lv.size = aligned_w;
+        lv.is_struct_ptr = is_ptr;
+        lv.is_struct_val = is_val;
+        lv.struct_hash = s_hash;
         cg.local_count = cg.local_count + 1;
-        if stmt.child1 != (0 as *mut AstNode) {
+        if is_val == 1 && (is_ptr == 10 || is_ptr == 11 || is_ptr >= 100) {
+            wasm_emit_alloc_shadow(cg, slot, aligned_w);
+            if stmt.child1 != (0 as *mut AstNode) && stmt.child1.kind == 121 {
+                var el_sz_w: u64 = 8;
+                if is_ptr == 10 { el_sz_w = 1; }
+                else if is_ptr >= 100 { el_sz_w = is_ptr - 100; }
+                if stmt.child1.id == 1 {
+                    let cnt_w: u64 = stmt.child1.child2.val;
+                    var ri_w: u64 = 0;
+                    while ri_w < cnt_w {
+                        cg_emit8(cg, 32); wasm_emit_uleb128(cg, slot);
+                        cg_emit8(cg, 66); wasm_emit_sleb128(cg, (ri_w * el_sz_w) as i64);
+                        cg_emit8(cg, 124);
+                        cg_emit8(cg, 167);
+                        compile_expr_wasm(cg, stmt.child1.child1);
+                        wasm_emit_store_sized(cg, el_sz_w);
+                        ri_w = ri_w + 1;
+                    }
+                } else {
+                    var cur_el_w: *mut AstNode = stmt.child1.child1;
+                    var ei_w: u64 = 0;
+                    while cur_el_w != (0 as *mut AstNode) {
+                        cg_emit8(cg, 32); wasm_emit_uleb128(cg, slot);
+                        cg_emit8(cg, 66); wasm_emit_sleb128(cg, (ei_w * el_sz_w) as i64);
+                        cg_emit8(cg, 124);
+                        cg_emit8(cg, 167);
+                        compile_expr_wasm(cg, cur_el_w);
+                        wasm_emit_store_sized(cg, el_sz_w);
+                        ei_w = ei_w + 1;
+                        cur_el_w = cur_el_w.next;
+                    }
+                }
+            }
+        } else if is_val == 0 && cg.cur_fn_ast != (0 as *mut AstNode) && wasm_ast_has_addr(cg.cur_fn_ast, stmt.hash) == 1 && slot < 56 {
+            lv.is_struct_val = 9;
+            wasm_emit_alloc_shadow(cg, slot, 8);
+            if stmt.child1 != (0 as *mut AstNode) {
+                cg_emit8(cg, 32); wasm_emit_uleb128(cg, slot);
+                cg_emit8(cg, 167);
+                compile_expr_wasm(cg, stmt.child1);
+                cg_emit8(cg, 55); cg_emit8(cg, 3); cg_emit8(cg, 0);
+            }
+        } else if stmt.child1 != (0 as *mut AstNode) {
             compile_expr_wasm(cg, stmt.child1);
             cg_emit8(cg, 33);
             wasm_emit_uleb128(cg, slot);
@@ -280,11 +533,18 @@ fn compile_stmt_wasm(cg: *mut CodeGen, stmt: *mut AstNode) {
     if stmt.kind == 106 {
         let target: *mut AstNode = stmt.child1;
         if target.kind == 117 {
-            let slot: i32 = wasm_find_local_slot(cg, target.hash);
-            if slot >= 0 {
-                compile_expr_wasm(cg, stmt.child2);
-                cg_emit8(cg, 33);
-                wasm_emit_uleb128(cg, slot as u64);
+            let found_lv_s: *mut LocalVar = cg_find_local(cg, target.hash);
+            if found_lv_s != (0 as *mut LocalVar) {
+                if found_lv_s.is_struct_val == 9 {
+                    cg_emit8(cg, 32); wasm_emit_uleb128(cg, found_lv_s.rbp_offset);
+                    cg_emit8(cg, 167);
+                    compile_expr_wasm(cg, stmt.child2);
+                    cg_emit8(cg, 55); cg_emit8(cg, 3); cg_emit8(cg, 0);
+                } else {
+                    compile_expr_wasm(cg, stmt.child2);
+                    cg_emit8(cg, 33);
+                    wasm_emit_uleb128(cg, found_lv_s.rbp_offset);
+                }
             }
             return;
         }
@@ -312,6 +572,14 @@ fn compile_stmt_wasm(cg: *mut CodeGen, stmt: *mut AstNode) {
             cg_emit8(cg, 167);
             compile_expr_wasm(cg, stmt.child2);
             wasm_emit_store_sized(cg, stride);
+            return;
+        }
+        if target.kind == 112 && target.val == 32 {
+            compile_expr_wasm(cg, target.child1);
+            cg_emit8(cg, 167);
+            compile_expr_wasm(cg, stmt.child2);
+            let p_stride: u64 = cg_get_expr_elem_stride(cg, target.child1);
+            wasm_emit_store_sized(cg, p_stride);
             return;
         }
         return;
@@ -369,6 +637,9 @@ fn compile_stmt_wasm(cg: *mut CodeGen, stmt: *mut AstNode) {
         } else {
             cg_emit8(cg, 66); wasm_emit_sleb128(cg, 0);
         }
+        cg_emit8(cg, 65); cg_emit8(cg, 24);
+        cg_emit8(cg, 32); wasm_emit_uleb128(cg, 57);
+        cg_emit8(cg, 55); cg_emit8(cg, 3); cg_emit8(cg, 0);
         cg_emit8(cg, 15);
         return;
     }
@@ -404,7 +675,7 @@ fn compile_fn_wasm(cg: *mut CodeGen, fnode: *mut AstNode) {
         lv.name_hash = p_cur.hash;
         lv.rbp_offset = cg.current_stack_offset;
         lv.size = 8;
-        lv.is_struct_ptr = p_cur.id;
+        lv.is_struct_ptr = p_cur.is_mut;
         lv.is_struct_val = 0;
         lv.struct_hash = p_cur.val;
         cg.local_count = cg.local_count + 1;
@@ -422,12 +693,38 @@ fn compile_fn_wasm(cg: *mut CodeGen, fnode: *mut AstNode) {
     wasm_emit_uleb128(cg, 64);
     cg_emit8(cg, 126);
 
+    cg_emit8(cg, 65); cg_emit8(cg, 24);
+    cg_emit8(cg, 41); cg_emit8(cg, 3); cg_emit8(cg, 0);
+    cg_emit8(cg, 33); wasm_emit_uleb128(cg, 57);
+
+    cg.cur_fn_ast = fnode.child1;
+    var pi_w: u32 = 0;
+    while pi_w < p_cnt {
+        let plv: *mut LocalVar = ((cg.locals as *mut u8) + ((pi_w as u64) * 48)) as *mut LocalVar;
+        if plv.is_struct_val == 0 && wasm_ast_has_addr(fnode.child1, plv.name_hash) == 1 && cg.current_stack_offset < 56 {
+            let sp_slot: u64 = cg.current_stack_offset;
+            cg.current_stack_offset = cg.current_stack_offset + 1;
+            wasm_emit_alloc_shadow(cg, sp_slot, 8);
+            cg_emit8(cg, 32); wasm_emit_uleb128(cg, sp_slot);
+            cg_emit8(cg, 167);
+            cg_emit8(cg, 32); wasm_emit_uleb128(cg, pi_w as u64);
+            cg_emit8(cg, 55); cg_emit8(cg, 3); cg_emit8(cg, 0);
+            plv.rbp_offset = sp_slot;
+            plv.is_struct_val = 9;
+        }
+        pi_w = pi_w + 1;
+    }
+
     var stmt: *mut AstNode = fnode.child1;
     while stmt != (0 as *mut AstNode) {
         compile_stmt_wasm(cg, stmt);
         stmt = stmt.next;
     }
+    cg.cur_fn_ast = 0 as *mut AstNode;
 
+    cg_emit8(cg, 65); cg_emit8(cg, 24);
+    cg_emit8(cg, 32); wasm_emit_uleb128(cg, 57);
+    cg_emit8(cg, 55); cg_emit8(cg, 3); cg_emit8(cg, 0);
     cg_emit8(cg, 66);
     wasm_emit_sleb128(cg, 0);
     cg_emit8(cg, 11);

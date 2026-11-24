@@ -209,9 +209,24 @@ fn main(argc: int, argv: **byte) -> int {
         return 0;
     }
 
-    print("Unknown command: ");
-    let s_cmd: str = cmd as str;
-    println(s_cmd);
-    print_ecosystem_help();
-    return 1;
+    var d_argv: [*const byte; 32];
+    d_argv[0] = "bin/rux" as *const byte;
+    d_argv[1 as int] = "run" as *const byte;
+    var di: int = 1;
+    var dj: int = 2;
+    while di < argc && dj < 30 {
+        d_argv[dj] = argv[di];
+        dj = dj + 1;
+        di = di + 1;
+    }
+    d_argv[dj] = 0 as *const byte;
+    let d_pid: int = @os.clone(17, 0, 0, 0, 0);
+    if d_pid == 0 {
+        @os.execve("bin/rux" as *byte, &d_argv[0], 0);
+        @os.execve("./bin/rux" as *byte, &d_argv[0], 0);
+        @os.exit(127);
+    }
+    var d_status: int = 0;
+    @os.wait4(d_pid, &d_status, 0, 0);
+    return (d_status >> 8) & 255;
 }

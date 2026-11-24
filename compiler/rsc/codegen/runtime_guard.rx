@@ -560,6 +560,35 @@ fn rt_guard_emit_all(cg: *mut CodeGen) {
     cg_emit8(cg, 195);
 }
 
+fn rt_register_fallback_contract(cg: *mut CodeGen, sym_hash: u64, sig_hash: u64, fn_off: u32, code_size: u64, param_cnt: u8) {
+    let fn_vaddr: u64 = 4259840 + (fn_off as u64);
+    var ci: u64 = 0;
+    while ci < cg.contract_count {
+        let sc: *mut SymbolContract = ((cg.contracts as *mut u8) + (ci * 48)) as *mut SymbolContract;
+        if sc.symbol_hash == sym_hash {
+            if sc.type_sig_hash == 0 {
+                sc.type_sig_hash = sig_hash;
+            }
+            sc.vaddr = fn_vaddr;
+            sc.code_size = code_size;
+            if (sc.flags & EIA_SYM_IMPORT) != 0 {
+                sc.flags = sc.flags - EIA_SYM_IMPORT;
+            }
+            sc.flags = sc.flags | EIA_SYM_DEFINED;
+            if sc.param_conv == 0 && param_cnt != 0 {
+                sc.param_conv = param_cnt as u32;
+            }
+            eia_contract_seal(sc);
+            return;
+        }
+        ci = ci + 1;
+    }
+    cg_ensure_contract_slot(cg);
+    let nsc: *mut SymbolContract = ((cg.contracts as *mut u8) + (cg.contract_count * 48)) as *mut SymbolContract;
+    eia_contract_init_ex(nsc, sym_hash, sig_hash, fn_vaddr, code_size, EIA_SYM_DEFINED, param_cnt as u32, 0);
+    cg.contract_count = cg.contract_count + 1;
+}
+
 fn rt_emit_builtin_fallbacks(cg: *mut CodeGen) {
     if cg == (0 as *mut CodeGen) { return; }
     if cg.target_arch != 0 { return; }
@@ -585,6 +614,12 @@ fn rt_emit_builtin_fallbacks(cg: *mut CodeGen) {
         fe.fn_hash = sys_exit_h;
         fe.text_offset = fn_off as u64;
         cg.fn_entry_count = cg.fn_entry_count + 1;
+        var sx_pt: [u64; 1];
+        var sx_pp: [u64; 1];
+        sx_pt[0] = 5563585020063213298;
+        sx_pp[0] = 0;
+        let sx_sig: u64 = compute_canonical_sig_hash_ex(1, 0, 3563412735833858527, 0, (&mut sx_pt[0]) as *u64, (&mut sx_pp[0]) as *u64);
+        rt_register_fallback_contract(cg, sys_exit_h, sx_sig, fn_off, (cg.text_size - fn_off) as u64, 1);
     }
     let eval_h: u64 = hash_identifier("eval", 4);
     var eval_defined: u32 = 0;
@@ -614,6 +649,12 @@ fn rt_emit_builtin_fallbacks(cg: *mut CodeGen) {
             efe2.fn_hash = eval_h;
             efe2.text_offset = eval_off as u64;
             cg.fn_entry_count = cg.fn_entry_count + 1;
+            var ev_pt: [u64; 1];
+            var ev_pp: [u64; 1];
+            ev_pt[0] = hash_identifier("u8", 2);
+            ev_pp[0] = 1;
+            let ev_sig: u64 = compute_canonical_sig_hash_ex(1, 0, 5563585020063213298, 0, (&mut ev_pt[0]) as *u64, (&mut ev_pp[0]) as *u64);
+            rt_register_fallback_contract(cg, eval_h, ev_sig, eval_off, (cg.text_size - eval_off) as u64, 1);
         }
     }
 }

@@ -2,6 +2,7 @@ include "lib/core/types.rx";
 include "lib/io/print.rx";
 include "compiler/subsystems/lnga/channel.rx";
 include "compiler/subsystems/lnga/neuromorphic.rx";
+include "compiler/subsystems/lnga/reflex.rx";
 
 fn main() -> int {
     println("=== RUX COMPILER SUITE: LNGA (LIVING NEUROMORPHIC GRID) ===");
@@ -36,6 +37,24 @@ fn main() -> int {
         return 3;
     }
     println("[PASS] LNGA: Leaky integrate-and-fire action potential verified");
+
+    var bad_arc: ReflexArc;
+    lnga_reflex_arc_init(&mut bad_arc, 1, 5, 5);
+    if lnga_trigger_reflex_arc(&mut bad_arc, 0xBEEF) {
+        println("[FAIL] LNGA: Self-loop ReflexArc trigger accepted");
+        return 4;
+    }
+    var good_arc: ReflexArc;
+    lnga_reflex_arc_init(&mut good_arc, 2, 1, 2);
+    if lnga_trigger_reflex_arc(&mut good_arc, 0) {
+        println("[FAIL] LNGA: Zero-payload ReflexArc trigger accepted");
+        return 5;
+    }
+    if !lnga_trigger_reflex_arc(&mut good_arc, 0xBEEF) || good_arc.trigger_count != 1 || good_arc.last_digest == 0 {
+        println("[FAIL] LNGA: Valid ReflexArc trigger failed");
+        return 6;
+    }
+    println("[PASS] LNGA: ReflexArc loop/payload validation and digest verified");
 
     println("ALL LNGA NEUROMORPHIC GRID TESTS PASSED (100% OK)");
     return 0;

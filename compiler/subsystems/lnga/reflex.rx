@@ -3,12 +3,47 @@ struct ReflexArc {
     src_subsystem: uint,
     dst_subsystem: uint,
     trigger_count: uint,
+    last_payload: uint,
+    last_digest: uint,
+}
+
+fn lnga_reflex_arc_init(
+    arc: *mut ReflexArc,
+    arc_id: uint,
+    src_sub: uint,
+    dst_sub: uint
+) {
+    if (arc as uint) == 0 {
+        return;
+    }
+    arc.arc_id = arc_id;
+    arc.src_subsystem = src_sub;
+    arc.dst_subsystem = dst_sub;
+    arc.trigger_count = 0;
+    arc.last_payload = 0;
+    arc.last_digest = 0;
 }
 
 fn lnga_trigger_reflex_arc(
     arc: *mut ReflexArc,
     payload: uint
 ) -> bool {
+    if (arc as uint) == 0 {
+        return false;
+    }
+    if arc.src_subsystem == 0 || arc.dst_subsystem == 0 || arc.src_subsystem == arc.dst_subsystem {
+        return false;
+    }
+    if payload == 0 {
+        return false;
+    }
+    var frame: [uint; 4];
+    frame[0] = arc.arc_id;
+    frame[1] = arc.src_subsystem;
+    frame[2] = arc.dst_subsystem;
+    frame[3] = payload;
+    arc.last_payload = payload;
+    arc.last_digest = @crypto.blake3_64((&frame[0]) as uint, 32);
     arc.trigger_count = arc.trigger_count + 1;
     return true;
 }

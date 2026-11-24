@@ -96,7 +96,10 @@ fn parse_primary(p: *mut Parser) -> *mut AstNode {
         n.child2 = parse_expr(p);
         consume_optional_semi(p);
         parser_expect(p, 63);
-        if p.cur_tok.kind == 15 {
+        if p.cur_tok.kind == 1 && p.cur_tok.hash == 9153970177108736995 {
+            p.cur_tok.kind = 14;
+            n.child3 = parse_primary(p);
+        } else if p.cur_tok.kind == 15 {
             lex_next_token(p.lex, &mut p.cur_tok);
             if p.cur_tok.kind == 14 {
                 n.child3 = parse_primary(p);
@@ -129,7 +132,7 @@ fn parse_primary(p: *mut Parser) -> *mut AstNode {
         lex_next_token(p.lex, &mut p.cur_tok);
         parser_expect(p, 64);
         let varr: *mut AstNode = alloc_node(p, 121);
-        varr.val = 2;
+        varr.val = 50;
         if p.cur_tok.kind == 65 {
             parser_expect(p, 65);
             return varr;
@@ -148,8 +151,8 @@ fn parse_primary(p: *mut Parser) -> *mut AstNode {
         return varr;
     }
     if p.cur_tok.kind == 149 || p.cur_tok.kind == 150 {
-        var is_m: u64 = 3;
-        if p.cur_tok.kind == 150 { is_m = 4; }
+        var is_m: u64 = 51;
+        if p.cur_tok.kind == 150 { is_m = 52; }
         lex_next_token(p.lex, &mut p.cur_tok);
         parser_expect(p, 62);
         let coll_n: *mut AstNode = alloc_node(p, 121);
@@ -161,13 +164,17 @@ fn parse_primary(p: *mut Parser) -> *mut AstNode {
         var last_citem: *mut AstNode = 0 as *mut AstNode;
         while p.cur_tok.kind != 63 && p.cur_tok.kind != 0 {
             let item_k: *mut AstNode = parse_expr(p);
-            if is_m == 4 && p.cur_tok.kind == 70 {
+            var entry_n: *mut AstNode = item_k;
+            if is_m == 52 && p.cur_tok.kind == 70 {
                 parser_expect(p, 70);
-                item_k.child1 = parse_expr(p);
+                let pair_n: *mut AstNode = alloc_node(p, 101);
+                pair_n.child1 = item_k;
+                pair_n.child2 = parse_expr(p);
+                entry_n = pair_n;
             }
-            if last_citem == (0 as *mut AstNode) { coll_n.child1 = item_k; }
-            else { last_citem.next = item_k; }
-            last_citem = item_k;
+            if last_citem == (0 as *mut AstNode) { coll_n.child1 = entry_n; }
+            else { last_citem.next = entry_n; }
+            last_citem = entry_n;
             if p.cur_tok.kind == 72 { parser_expect(p, 72); }
         }
         parser_expect(p, 63);
@@ -332,24 +339,47 @@ fn parse_primary(p: *mut Parser) -> *mut AstNode {
             }
         }
 
-        if p.cur_tok.kind == 78 {
+        let use_al: *mut ConstEntry = parser_find_alias(p, ident_hash);
+        if use_al != (0 as *mut ConstEntry) && use_al.extra == 2000 {
+            ident_hash = use_al.val;
+        }
+
+        while p.cur_tok.kind == 78 {
             parser_expect(p, 78);
             let v_hash: u64 = p.cur_tok.hash;
             if (p.cur_tok.start as u64) >= (id_start as u64) {
                 id_len = ((p.cur_tok.start as u64) - (id_start as u64)) + p.cur_tok.len;
             }
             parser_expect_ident(p);
+            if v_hash == 2393897505926526769 && p.cur_tok.kind == 60 {
+                if (ident_hash == 8913785957651686373 || ident_hash == 6014062794857405207 || ident_hash == 3738392585861989357) && is_generic_struct(p, ident_hash) == 0 && parser_find_known_struct(p, ident_hash) == (0 as *mut ConstEntry) {
+                    parser_expect(p, 60);
+                    parser_expect(p, 61);
+                    n = alloc_node(p, 121);
+                    if ident_hash == 8913785957651686373 { n.val = 50; }
+                    else if ident_hash == 6014062794857405207 { n.val = 51; }
+                    else { n.val = 52; }
+                    return n;
+                }
+            }
             let scoped_h: u64 = combine_ns_hash(ident_hash, v_hash);
             let sce: *mut ConstEntry = parser_find_const(p, scoped_h);
-            if sce != (0 as *mut ConstEntry) {
+            if sce != (0 as *mut ConstEntry) && sce.extra != 778 {
+                if (sce.extra & 4294967295) == 2 {
+                    n = alloc_node(p, 118);
+                    n.hash = sce.val;
+                    n.val = sce.extra >> 32;
+                    return n;
+                }
                 n = alloc_node(p, 116);
                 n.val = sce.val;
+                if sce.extra == 3 { n.is_mut = 1; }
                 return n;
             }
             ident_hash = scoped_h;
         }
 
-        if p.cur_tok.kind == 73 {
+        while p.cur_tok.kind == 73 {
             let ns_ce: *mut ConstEntry = parser_find_const(p, ident_hash);
             if ns_ce != (0 as *mut ConstEntry) {
                 if ns_ce.extra == 777 {
@@ -362,6 +392,16 @@ fn parse_primary(p: *mut Parser) -> *mut AstNode {
                     if sce2 != (0 as *mut ConstEntry) { n.val = sce2.val; }
                     return n;
                 }
+                if ns_ce.extra == 778 {
+                    parser_expect(p, 73);
+                    let v_hash3: u64 = p.cur_tok.hash;
+                    parser_expect_ident(p);
+                    ident_hash = combine_ns_hash(ident_hash, v_hash3);
+                } else {
+                    break;
+                }
+            } else {
+                break;
             }
         }
 
@@ -640,7 +680,20 @@ fn parse_postfix(p: *mut Parser) -> *mut AstNode {
             }
             parser_expect(p, 61);
             if seen_named == 1 { resolve_named_call_args(p, call_node); }
-            left = call_node;
+            if call_node.child2 == (0 as *mut AstNode) && left != (0 as *mut AstNode) && left.kind == 114 && left.hash == 2393897505926526769 && left.child1 != (0 as *mut AstNode) && left.child1.kind == 117 {
+                let c_th: u64 = left.child1.hash;
+                if (c_th == 8913785957651686373 || c_th == 6014062794857405207 || c_th == 3738392585861989357) && is_generic_struct(p, c_th) == 0 && parser_find_known_struct(p, c_th) == (0 as *mut ConstEntry) {
+                    let c_node: *mut AstNode = alloc_node(p, 121);
+                    if c_th == 8913785957651686373 { c_node.val = 50; }
+                    else if c_th == 6014062794857405207 { c_node.val = 51; }
+                    else { c_node.val = 52; }
+                    left = c_node;
+                } else {
+                    left = call_node;
+                }
+            } else {
+                left = call_node;
+            }
         } else if p.cur_tok.kind == 75 {
             parser_expect(p, 75);
             let fn_name_hash: u64 = p.cur_tok.hash;
@@ -680,11 +733,16 @@ fn parse_postfix(p: *mut Parser) -> *mut AstNode {
 fn parse_unary(p: *mut Parser) -> *mut AstNode {
     if p.cur_tok.kind == 50 {
         parser_expect(p, 50);
+        var is_m: u8 = 0;
         if p.cur_tok.kind == 13 || p.cur_tok.kind == 12 {
+            if p.cur_tok.kind == 13 {
+                is_m = 1;
+            }
             lex_next_token(p.lex, &mut p.cur_tok);
         }
         let n: *mut AstNode = alloc_node(p, 112);
         n.val = 50;
+        n.is_mut = is_m;
         n.child1 = parse_unary(p);
         return n;
     }

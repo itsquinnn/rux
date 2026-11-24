@@ -10,6 +10,8 @@ struct SwarmDistributedNode {
     cluster_epoch: uint,
     tasks_dispatched: uint,
     tasks_completed: uint,
+    last_task_id: uint,
+    last_task_digest: uint,
 }
 
 fn hsns_swarm_node_init(
@@ -17,11 +19,16 @@ fn hsns_swarm_node_init(
     id: uint,
     role: SwarmRole
 ) {
+    if (node as uint) == 0 {
+        return;
+    }
     node.node_id = id;
     node.role = role;
     node.cluster_epoch = 1;
     node.tasks_dispatched = 0;
     node.tasks_completed = 0;
+    node.last_task_id = 0;
+    node.last_task_digest = 0;
 }
 
 fn hsns_swarm_cluster_dispatch_task(
@@ -30,6 +37,18 @@ fn hsns_swarm_cluster_dispatch_task(
     src_bytes: *const byte,
     len: uint
 ) -> bool {
+    if (coord as uint) == 0 {
+        return false;
+    }
+    if coord.role != SwarmRole.COORDINATOR || task_id == 0 {
+        return false;
+    }
+    if (src_bytes as uint) == 0 || len == 0 {
+        return false;
+    }
+    let digest: uint = @crypto.blake3_64(src_bytes as uint, len);
+    coord.last_task_id = task_id;
+    coord.last_task_digest = digest;
     coord.tasks_dispatched = coord.tasks_dispatched + 1;
     return true;
 }

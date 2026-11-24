@@ -16,9 +16,15 @@ fn opt_try_emit_tail_call(cg: *mut CodeGen, ret_expr: *mut AstNode) -> u32 {
     while pop_i > 0 {
         pop_i = pop_i - 1;
         cg_emit8(cg, 88);
-        let p_disp: u32 = 0 - ((pop_i + 1) * 8);
-        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 133);
-        cg_emit32(cg, p_disp);
+        let p_slot: u32 = (pop_i + 1) * 8;
+        if (pop_i as u64) < cg.local_count {
+            let p_lv: *mut LocalVar = ((cg.locals as *mut u8) + ((pop_i as u64) * 48)) as *mut LocalVar;
+            cg_emit_store_local_reg(cg, p_lv.name_hash, p_lv.rbp_offset as u32, 0);
+        } else {
+            let p_disp: u32 = 0 - p_slot;
+            cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 133);
+            cg_emit32(cg, p_disp);
+        }
     }
     cg_emit8(cg, 233);
     let j_back: i32 = (cg.cur_fn_body_off as i32) - ((cg.text_size + 4) as i32);

@@ -115,6 +115,9 @@ fn c_expr_is_str(ct: *mut CTranspiler, n: *mut AstNode) -> u32 {
         if c_find_decl_kind(ct, n.child1.hash) == 11 { return 1; }
     }
     if n.kind == 113 {
+        if n.child1 != (0 as *mut AstNode) && n.child1.kind == 114 {
+            if n.child1.hash == 18080069455335980988 { return 1; }
+        }
         var i: u64 = 0;
         while i < ct.fn_cnt {
             if ((ct.fn_hashes + (i * 8)) as *u64)[0] == n.hash {
@@ -122,6 +125,9 @@ fn c_expr_is_str(ct: *mut CTranspiler, n: *mut AstNode) -> u32 {
             }
             i = i + 1;
         }
+    }
+    if n.kind == 106 && n.val == 30 {
+        if c_expr_is_str(ct, n.child1) == 1 || c_expr_is_str(ct, n.child2) == 1 { return 1; }
     }
     return 0;
 }
@@ -189,6 +195,24 @@ fn c_emit_expr(ct: *mut CTranspiler, n: *mut AstNode) {
                 c_puts(ct, ")");
                 return;
             }
+            if n.child1 != (0 as *mut AstNode) && n.child1.kind == 115 {
+                let idx_base: *mut AstNode = n.child1.child1;
+                var astr: u64 = 8;
+                if c_expr_is_str(ct, idx_base) == 1 { astr = 1; }
+                if idx_base != (0 as *mut AstNode) && idx_base.kind == 117 {
+                    let dk_a: i64 = c_find_decl_kind(ct, idx_base.hash);
+                    if dk_a == 1 { astr = 1; }
+                    else if dk_a == 4 { astr = 4; }
+                }
+                c_puts(ct, "((int64_t)(uintptr_t)(((uint8_t *)(uintptr_t)(");
+                c_emit_expr(ct, idx_base);
+                c_puts(ct, ")) + ((uint64_t)(");
+                c_emit_expr(ct, n.child1.child2);
+                c_puts(ct, ") * ");
+                c_put_u64(ct, astr);
+                c_puts(ct, "ULL)))");
+                return;
+            }
             c_emit_expr(ct, n.child1);
             return;
         }
@@ -234,6 +258,22 @@ fn c_emit_expr(ct: *mut CTranspiler, n: *mut AstNode) {
     }
     if n.kind == 106 {
         let op: u64 = n.val;
+        if op == 30 {
+            let lk: u32 = c_expr_is_str(ct, n.child1);
+            let rk: u32 = c_expr_is_str(ct, n.child2);
+            if lk == 1 || rk == 1 {
+                c_puts(ct, "rx_c_str_concat((int64_t)(");
+                c_emit_expr(ct, n.child1);
+                c_puts(ct, "), ");
+                c_put_u64(ct, lk as u64);
+                c_puts(ct, ", (int64_t)(");
+                c_emit_expr(ct, n.child2);
+                c_puts(ct, "), ");
+                c_put_u64(ct, rk as u64);
+                c_puts(ct, ")");
+                return;
+            }
+        }
         if op == 30 || op == 31 || op == 32 {
             c_puts(ct, "((int64_t)((uint64_t)(");
             c_emit_expr(ct, n.child1);
@@ -310,6 +350,38 @@ fn c_emit_expr(ct: *mut CTranspiler, n: *mut AstNode) {
         return;
     }
     if n.kind == 113 {
+        if n.child1 != (0 as *mut AstNode) && n.child1.kind == 114 {
+            let m_hash: u64 = n.child1.hash;
+            let rec_n: *mut AstNode = n.child1.child1;
+            if m_hash == 18080069455335980988 {
+                if c_expr_is_str(ct, rec_n) == 1 {
+                    c_puts(ct, "((int64_t)(");
+                    c_emit_expr(ct, rec_n);
+                    c_puts(ct, "))");
+                } else {
+                    c_puts(ct, "rx_c_int_to_str((int64_t)(");
+                    c_emit_expr(ct, rec_n);
+                    c_puts(ct, "))");
+                }
+                return;
+            }
+            if m_hash == 1329241496134363980 && n.child2 == (0 as *mut AstNode) {
+                if c_expr_is_str(ct, rec_n) == 1 {
+                    c_puts(ct, "rx_c_str_len((int64_t)(");
+                    c_emit_expr(ct, rec_n);
+                    c_puts(ct, "))");
+                    return;
+                }
+            }
+            if m_hash == 6052333226747276115 && n.child2 == (0 as *mut AstNode) {
+                if c_expr_is_str(ct, rec_n) == 1 {
+                    c_puts(ct, "(rx_c_str_len((int64_t)(");
+                    c_emit_expr(ct, rec_n);
+                    c_puts(ct, ")) == 0 ? 1LL : 0LL)");
+                    return;
+                }
+            }
+        }
         if n.hash == hash_identifier("sys_exit", 8) {
             c_puts(ct, "(exit((int)(");
             c_emit_expr(ct, n.child2);
@@ -362,8 +434,8 @@ fn c_emit_stmt(ct: *mut CTranspiler, s: *mut AstNode) {
             return;
         }
         var vk: u64 = 0;
-        if s.id == 11 { vk = 11; }
-        else if s.id == 2 && (s.val == 23 || s.val == 631772817358541784) { vk = 1; }
+        if s.id == 13 { vk = 11; }
+        else if s.id == 2 && (s.val == 23 || s.val == 631772817358541784 || s.val == 9398593617327382768) { vk = 1; }
         else if s.child1 != (0 as *mut AstNode) && c_expr_is_str(ct, s.child1) == 1 { vk = 1; }
         let existed2: u32 = c_add_decl(ct, s.hash, vk);
         c_puts(ct, "    ");
@@ -487,7 +559,15 @@ fn continuum_transpile_c(p: *mut Parser, entry_hash: u64, out_path: *u8) -> i64 
     ct.fn_ret_str = uses_alloc(32768);
     ct.fn_cnt = 0;
 
-    c_puts(&mut ct, "#define _GNU_SOURCE\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <unistd.h>\n#include <sys/syscall.h>\n\n");
+    c_puts(&mut ct, "#define _GNU_SOURCE\n#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#ifdef _WIN32\n#include <io.h>\nstatic int64_t rux_c_syscall(long nr, ...) { (void)nr; return -1; }\n#define syscall rux_c_syscall\n#else\n#include <unistd.h>\n#include <sys/syscall.h>\n#endif\n\n");
+    c_puts(&mut ct, "static int64_t rx_c_str_len(int64_t p) { if (!p) return 0; return (int64_t)strlen((const char*)(uintptr_t)p); }\n");
+    c_puts(&mut ct, "static int64_t rx_c_int_to_str(int64_t v) { char *b = (char*)malloc(32); snprintf(b, 32, \"%lld\", (long long)v); return (int64_t)(uintptr_t)b; }\n");
+    c_puts(&mut ct, "static int64_t rx_c_str_concat(int64_t a, int ak, int64_t b, int bk) {\n");
+    c_puts(&mut ct, "    const char *sa = ak ? (a ? (const char*)(uintptr_t)a : \"\") : (const char*)(uintptr_t)rx_c_int_to_str(a);\n");
+    c_puts(&mut ct, "    const char *sb = bk ? (b ? (const char*)(uintptr_t)b : \"\") : (const char*)(uintptr_t)rx_c_int_to_str(b);\n");
+    c_puts(&mut ct, "    size_t la = strlen(sa), lb = strlen(sb); char *o = (char*)malloc(la + lb + 1);\n");
+    c_puts(&mut ct, "    memcpy(o, sa, la); memcpy(o + la, sb, lb); o[la + lb] = 0;\n");
+    c_puts(&mut ct, "    return (int64_t)(uintptr_t)o;\n}\n\n");
 
     var fi: u64 = 0;
     while fi < p.fn_ast_count && ct.fn_cnt < 4096 {
@@ -496,7 +576,7 @@ fn continuum_transpile_c(p: *mut Parser, entry_hash: u64, out_path: *u8) -> i64 
         if fnode != (0 as *mut AstNode) {
             ((ct.fn_hashes + (ct.fn_cnt * 8)) as *mut u64)[0] = fnode.hash;
             var rstr: u64 = 0;
-            if fnode.is_mut == 1 && (fnode.val == 23 || fnode.val == 631772817358541784) { rstr = 1; }
+            if fnode.val == 9398593617327382768 || (fnode.is_mut == 1 && (fnode.val == 23 || fnode.val == 631772817358541784)) { rstr = 1; }
             ((ct.fn_ret_str + (ct.fn_cnt * 8)) as *mut u64)[0] = rstr;
             ct.fn_cnt = ct.fn_cnt + 1;
 
@@ -536,7 +616,7 @@ fn continuum_transpile_c(p: *mut Parser, entry_hash: u64, out_path: *u8) -> i64 
                 c_put_var(&mut ct, pc2.hash);
                 var pk: u64 = 0;
                 if pc2.is_mut == 11 { pk = 11; }
-                else if pc2.is_mut > 0 && (pc2.val == 23 || pc2.val == 631772817358541784) { pk = 1; }
+                else if pc2.val == 9398593617327382768 || (pc2.is_mut > 0 && (pc2.val == 23 || pc2.val == 631772817358541784)) { pk = 1; }
                 c_add_decl(&mut ct, pc2.hash, pk);
                 pcnt = pcnt + 1;
                 pc2 = pc2.next;
@@ -549,7 +629,10 @@ fn continuum_transpile_c(p: *mut Parser, entry_hash: u64, out_path: *u8) -> i64 
         fi = fi + 1;
     }
 
-    c_puts(&mut ct, "int main(int rx_argc, char **rx_argv) {\n    return (int)");
+    c_puts(&mut ct, "int main(int rx_argc, char **rx_argv) {\n");
+    if entry_pcnt == 0 { c_puts(&mut ct, "    (void)rx_argc;\n    (void)rx_argv;\n"); }
+    if entry_pcnt == 1 { c_puts(&mut ct, "    (void)rx_argv;\n"); }
+    c_puts(&mut ct, "    return (int)");
     c_put_fn(&mut ct, entry_hash);
     c_puts(&mut ct, "(");
     if entry_pcnt >= 1 { c_puts(&mut ct, "(int64_t)rx_argc"); }

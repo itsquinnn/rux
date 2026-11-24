@@ -46,9 +46,26 @@ fn zwns_emit_freestanding_elf174(
     dst[83] = ((vaddr >> 24) & 0xFF) as byte;
     i = 84; while i < 96 { dst[i] = dst[i - 8]; i = i + 1; }
 
-    let total_sz: uint = 174;
-    dst[96] = (total_sz & 0xFF) as byte;
-    dst[97] = 0 as byte; i = 98; while i < 112 { dst[i] = 0 as byte; i = i + 1; }
+    let msg_p: *const byte = payload_msg as *const byte;
+    var msg_len: uint = 0;
+    if (msg_p as uint) != 0 {
+        while msg_p[msg_len] != (0 as byte) && msg_len < 65536 {
+            msg_len = msg_len + 1;
+        }
+    }
+
+    var total_sz: uint = 174;
+    if (156 + msg_len) > total_sz {
+        total_sz = 156 + msg_len;
+    }
+
+    var b: uint = 0;
+    while b < 8 {
+        let byte_val: byte = ((total_sz >> (b * 8)) & 0xFF) as byte;
+        dst[96 + b] = byte_val;
+        dst[104 + b] = byte_val;
+        b = b + 1;
+    }
 
     dst[112] = 0 as byte; dst[113] = 0x10 as byte;
     i = 114; while i < 120 { dst[i] = 0 as byte; i = i + 1; }
@@ -56,5 +73,38 @@ fn zwns_emit_freestanding_elf174(
     dst[120] = 0xB8 as byte; dst[121] = 1 as byte; dst[122] = 0 as byte; dst[123] = 0 as byte; dst[124] = 0 as byte;
     dst[125] = 0xBF as byte; dst[126] = 1 as byte; dst[127] = 0 as byte; dst[128] = 0 as byte; dst[129] = 0 as byte;
 
-    return 174;
+    dst[130] = 0x48 as byte; dst[131] = 0x8D as byte; dst[132] = 0x35 as byte;
+    dst[133] = 0x13 as byte; dst[134] = 0 as byte; dst[135] = 0 as byte; dst[136] = 0 as byte;
+
+    dst[137] = 0xBA as byte;
+    dst[138] = (msg_len & 0xFF) as byte;
+    dst[139] = ((msg_len >> 8) & 0xFF) as byte;
+    dst[140] = ((msg_len >> 16) & 0xFF) as byte;
+    dst[141] = ((msg_len >> 24) & 0xFF) as byte;
+
+    dst[142] = 0x0F as byte; dst[143] = 0x05 as byte;
+
+    dst[144] = 0xB8 as byte; dst[145] = 0x3C as byte; dst[146] = 0 as byte; dst[147] = 0 as byte; dst[148] = 0 as byte;
+
+    let ec: uint = exit_code as uint;
+    dst[149] = 0xBF as byte;
+    dst[150] = (ec & 0xFF) as byte;
+    dst[151] = ((ec >> 8) & 0xFF) as byte;
+    dst[152] = ((ec >> 16) & 0xFF) as byte;
+    dst[153] = ((ec >> 24) & 0xFF) as byte;
+
+    dst[154] = 0x0F as byte; dst[155] = 0x05 as byte;
+
+    var k: uint = 0;
+    while k < msg_len {
+        dst[156 + k] = msg_p[k];
+        k = k + 1;
+    }
+    var pad_i: uint = 156 + msg_len;
+    while pad_i < total_sz {
+        dst[pad_i] = 0 as byte;
+        pad_i = pad_i + 1;
+    }
+
+    return total_sz;
 }

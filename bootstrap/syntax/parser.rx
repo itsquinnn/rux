@@ -1,21 +1,39 @@
 include "bootstrap/syntax/shapes.rx";
 
-fn parse_function_declaration(p: *mut ParserState) -> *mut AstNode {
+fn parse_function_declaration_ex(p: *mut ParserState, is_pub: uint, is_extern: uint) -> *mut AstNode {
     expect_token(p, TOKEN_FN);
 
     let fn_node: *mut AstNode = create_node(p, NODE_FN);
+    if fn_node == (0 as *mut AstNode) {
+        return 0 as *mut AstNode;
+    }
+    var fn_meta_flags: uint = is_pub;
+    if is_extern != 0 {
+        fn_meta_flags = fn_meta_flags | 2;
+    }
     fn_node.name_hash = p.current_token.name_hash;
+    fn_node.value = 3563412735833858527;
     expect_token(p, TOKEN_IDENT);
     expect_token(p, TOKEN_LPAREN);
 
     var last_param: *mut AstNode = 0 as *mut AstNode;
     while p.current_token.kind != TOKEN_RPAREN && p.current_token.kind != TOKEN_EOF {
         let param_node: *mut AstNode = create_node(p, NODE_LET);
+        if param_node == (0 as *mut AstNode) {
+            return 0 as *mut AstNode;
+        }
         param_node.name_hash = p.current_token.name_hash;
+        param_node.value = 3143511548502526014;
+        param_node.is_mut = 0;
         expect_token(p, TOKEN_IDENT);
         if p.current_token.kind == TOKEN_COLON {
             scan_next_token(p.reader, &mut p.current_token);
-            skip_type(p);
+            var p_type_hash: uint = 0;
+            var p_ptr_flags: uint = 0;
+            var p_type_size: uint = 8;
+            parse_type_spec(p, &mut p_type_hash, &mut p_ptr_flags, &mut p_type_size);
+            param_node.value = p_type_hash;
+            param_node.is_mut = p_ptr_flags;
         }
         if last_param == (0 as *mut AstNode) {
             fn_node.child2 = param_node;
@@ -30,11 +48,26 @@ fn parse_function_declaration(p: *mut ParserState) -> *mut AstNode {
 
     expect_token(p, TOKEN_RPAREN);
 
+    var ret_ptr_flags: uint = 0;
     if p.current_token.kind == TOKEN_ARROW {
         scan_next_token(p.reader, &mut p.current_token);
-        skip_type(p);
+        var r_type_hash: uint = 0;
+        var r_type_size: uint = 8;
+        parse_type_spec(p, &mut r_type_hash, &mut ret_ptr_flags, &mut r_type_size);
+        fn_node.value = r_type_hash;
+    }
+    if ret_ptr_flags != 0 {
+        fn_meta_flags = fn_meta_flags | ((ret_ptr_flags & 7) << 8);
     }
 
+    if p.current_token.kind == TOKEN_SEMICOLON {
+        scan_next_token(p.reader, &mut p.current_token);
+        fn_node.is_mut = fn_meta_flags | 2;
+        fn_node.child1 = 0 as *mut AstNode;
+        return fn_node;
+    }
+
+    fn_node.is_mut = fn_meta_flags;
     if p.current_token.kind == TOKEN_FAT_ARROW {
         scan_next_token(p.reader, &mut p.current_token);
         fn_node.child1 = parse_expression(p);
@@ -59,6 +92,85 @@ fn parse_function_declaration(p: *mut ParserState) -> *mut AstNode {
 
     expect_token(p, TOKEN_RBRACE);
     return fn_node;
+}
+
+fn parse_function_declaration(p: *mut ParserState) -> *mut AstNode {
+    return parse_function_declaration_ex(p, 0, 0);
+}
+
+fn parse_program_dynamic(p: *mut ParserState, tbl: *mut PipelineShapeTable) -> *mut AstNode {
+    let program_root: *mut AstNode = create_node(p, NODE_PROGRAM);
+    if program_root == (0 as *mut AstNode) {
+        tbl.had_error = 1;
+        return 0 as *mut AstNode;
+    }
+    var last_item: *mut AstNode = 0 as *mut AstNode;
+    var pending_pub: uint = 0;
+
+    while p.current_token.kind != TOKEN_EOF {
+        if tbl.had_error != 0 {
+            return 0 as *mut AstNode;
+        }
+        var item: *mut AstNode = 0 as *mut AstNode;
+
+        if p.current_token.kind == TOKEN_IDENT && p.current_token.name_hash == 8643359970820732452 {
+            pending_pub = 1;
+            scan_next_token(p.reader, &mut p.current_token);
+        } else if p.current_token.kind == TOKEN_SHAPE {
+            pending_pub = 0;
+            item = parse_shape_declaration_dyn(p, tbl);
+        } else if p.current_token.kind == TOKEN_FN {
+            item = parse_function_declaration_ex(p, pending_pub, 0);
+            pending_pub = 0;
+        } else if p.current_token.kind == TOKEN_IDENT && p.current_token.name_hash == 417800907370030071 {
+            let ext_pub: uint = pending_pub;
+            pending_pub = 0;
+            scan_next_token(p.reader, &mut p.current_token);
+            if p.current_token.kind == TOKEN_STRING {
+                scan_next_token(p.reader, &mut p.current_token);
+            }
+            if p.current_token.kind == TOKEN_LBRACE {
+                scan_next_token(p.reader, &mut p.current_token);
+                var ext_item_pub: uint = ext_pub;
+                while p.current_token.kind != TOKEN_RBRACE && p.current_token.kind != TOKEN_EOF {
+                    if p.current_token.kind == TOKEN_IDENT && p.current_token.name_hash == 8643359970820732452 {
+                        ext_item_pub = 1;
+                        scan_next_token(p.reader, &mut p.current_token);
+                    } else if p.current_token.kind == TOKEN_FN {
+                        let e_item: *mut AstNode = parse_function_declaration_ex(p, ext_item_pub, 1);
+                        ext_item_pub = ext_pub;
+                        if e_item != (0 as *mut AstNode) {
+                            if last_item == (0 as *mut AstNode) {
+                                program_root.child1 = e_item;
+                            } else {
+                                last_item.next = e_item;
+                            }
+                            last_item = e_item;
+                        }
+                    } else {
+                        scan_next_token(p.reader, &mut p.current_token);
+                    }
+                }
+                expect_token(p, TOKEN_RBRACE);
+            } else if p.current_token.kind == TOKEN_FN {
+                item = parse_function_declaration_ex(p, ext_pub, 1);
+            }
+        } else {
+            pending_pub = 0;
+            scan_next_token(p.reader, &mut p.current_token);
+        }
+
+        if item != (0 as *mut AstNode) {
+            if last_item == (0 as *mut AstNode) {
+                program_root.child1 = item;
+            } else {
+                last_item.next = item;
+            }
+            last_item = item;
+        }
+    }
+
+    return program_root;
 }
 
 fn parse_program(p: *mut ParserState, shapes_out: *mut ShapeContract, max_shapes: uint) -> *mut AstNode {

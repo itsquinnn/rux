@@ -9,7 +9,9 @@ struct ManagedRes {
 fn drop::ManagedRes(r: *mut ManagedRes) {
     if r.status_ptr != (0 as *mut uint) {
         let p: *mut uint = r.status_ptr;
-        p[0] = p[0] + 1;
+        unsafe {
+            p[0] = p[0] + 1;
+        }
     }
 }
 

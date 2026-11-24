@@ -37,6 +37,33 @@ fn main() -> int {
         println("[FAIL] ZWNS: ELF magic header mismatch");
         return 4;
     }
+    if elf_buf[96] != (174 as byte) || elf_buf[104] != (174 as byte) || elf_buf[105] != (0 as byte) {
+        println("[FAIL] ZWNS: ELF p_filesz/p_memsz mismatch");
+        return 5;
+    }
+    if elf_buf[130] != (0x48 as byte) || elf_buf[131] != (0x8D as byte) || elf_buf[132] != (0x35 as byte) || elf_buf[133] != (0x13 as byte) {
+        println("[FAIL] ZWNS: Missing lea rsi, [rip+0x13] opcode");
+        return 6;
+    }
+    if elf_buf[137] != (0xBA as byte) || elf_buf[138] != (4 as byte) || elf_buf[142] != (0x0F as byte) || elf_buf[143] != (0x05 as byte) {
+        println("[FAIL] ZWNS: Missing sys_write payload length or syscall");
+        return 7;
+    }
+    if elf_buf[144] != (0xB8 as byte) || elf_buf[145] != (0x3C as byte) || elf_buf[154] != (0x0F as byte) || elf_buf[155] != (0x05 as byte) {
+        println("[FAIL] ZWNS: Missing sys_exit opcode or syscall");
+        return 8;
+    }
+    if elf_buf[156] != (84 as byte) || elf_buf[157] != (69 as byte) || elf_buf[158] != (83 as byte) || elf_buf[159] != (84 as byte) {
+        println("[FAIL] ZWNS: Payload string bytes missing at offset 156");
+        return 9;
+    }
+
+    var long_elf_buf: [byte; 256];
+    let long_bytes: uint = zwns_emit_freestanding_elf174(&mut long_elf_buf[0], "ZWNS_CUSTOM_MESSAGE_OK", 42);
+    if long_bytes != 178 || long_elf_buf[104] != (178 as byte) || long_elf_buf[138] != (22 as byte) || long_elf_buf[150] != (42 as byte) || long_elf_buf[156] != (90 as byte) {
+        println("[FAIL] ZWNS: Dynamic extended ELF payload / exit code synthesis failed");
+        return 10;
+    }
     println("[PASS] ZWNS: Minimalist 174-byte freestanding ELF synthesizer verified");
 
     println("ALL ZWNS NATIVE SYNTHESIS TESTS PASSED (100% OK)");

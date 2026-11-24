@@ -4,25 +4,89 @@ struct RejuvenatingArena {
     allocated_bytes: uint,
     fragmentation_permille: uint,
     rejuvenations_count: uint,
+    live_bytes: uint,
+    dead_bytes: uint,
 }
 
 fn lcvs_rejuvenate_init(arena: *mut RejuvenatingArena, base: *mut byte, cap: uint) {
+    if (arena as uint) == 0 {
+        return;
+    }
     arena.base = base;
     arena.capacity = cap;
     arena.allocated_bytes = 0;
     arena.fragmentation_permille = 0;
     arena.rejuvenations_count = 0;
+    arena.live_bytes = 0;
+    arena.dead_bytes = 0;
+}
+
+fn lcvs_rejuvenate_alloc(arena: *mut RejuvenatingArena, bytes: uint) -> *mut byte {
+    if (arena as uint) == 0 || (arena.base as uint) == 0 || bytes == 0 {
+        return 0 as *mut byte;
+    }
+    if bytes > arena.capacity || arena.allocated_bytes > (arena.capacity - bytes) {
+        return 0 as *mut byte;
+    }
+    let ptr: *mut byte = (arena.base as uint + arena.allocated_bytes) as *mut byte;
+    arena.allocated_bytes = arena.allocated_bytes + bytes;
+    arena.live_bytes = arena.live_bytes + bytes;
+    if arena.allocated_bytes > 0 {
+        arena.fragmentation_permille = (arena.dead_bytes * 1000) / arena.allocated_bytes;
+    }
+    return ptr;
+}
+
+fn lcvs_rejuvenate_free_bytes(arena: *mut RejuvenatingArena, bytes: uint) -> bool {
+    if (arena as uint) == 0 || bytes == 0 || bytes > arena.live_bytes {
+        return false;
+    }
+    arena.live_bytes = arena.live_bytes - bytes;
+    arena.dead_bytes = arena.dead_bytes + bytes;
+    if arena.allocated_bytes > 0 {
+        arena.fragmentation_permille = (arena.dead_bytes * 1000) / arena.allocated_bytes;
+    }
+    return true;
 }
 
 fn lcvs_check_fragmentation_permille(arena: *mut RejuvenatingArena) -> uint {
-    if arena.capacity == 0 {
+    if (arena as uint) == 0 || arena.capacity == 0 {
         return 0;
     }
-    return (arena.fragmentation_permille);
+    if arena.allocated_bytes > 0 && arena.dead_bytes > 0 {
+        let computed: uint = (arena.dead_bytes * 1000) / arena.allocated_bytes;
+        arena.fragmentation_permille = computed;
+        return computed;
+    }
+    return arena.fragmentation_permille;
 }
 
 fn lcvs_rejuvenate_heap(arena: *mut RejuvenatingArena) -> uint {
+    if (arena as uint) == 0 {
+        return 0;
+    }
+    let old_alloc: uint = arena.allocated_bytes;
+    let old_dead: uint = arena.dead_bytes;
+    let old_permille: uint = arena.fragmentation_permille;
+    let had_work: bool = (old_dead > 0) || (old_permille > 0) || (old_alloc > arena.live_bytes);
+
+    if (arena.base as uint) != 0 && old_alloc > arena.live_bytes {
+        var scrub_end: uint = old_alloc;
+        if scrub_end > arena.capacity {
+            scrub_end = arena.capacity;
+        }
+        var z: uint = arena.live_bytes;
+        while z < scrub_end {
+            arena.base[z] = 0 as byte;
+            z = z + 1;
+        }
+    }
+
+    arena.allocated_bytes = arena.live_bytes;
+    arena.dead_bytes = 0;
     arena.fragmentation_permille = 0;
-    arena.rejuvenations_count = arena.rejuvenations_count + 1;
+    if had_work {
+        arena.rejuvenations_count = arena.rejuvenations_count + 1;
+    }
     return arena.rejuvenations_count;
 }

@@ -1,1 +1,2787 @@
-include "compiler/verify_5gate.rx";
+include "compiler/verify_5gate_ring.rx";
+include "compiler/pipeline/pipeline.rx";
+
+fn eia_test_read_file(path: *const byte, out_len: *mut uint) -> *mut u8 {
+    let fd: int = @os.open(path, 0, 0);
+    if fd < 0 {
+        return 0 as *mut u8;
+    }
+    let cap: uint = 262144;
+    let buf: *mut u8 = @os.mmap(0 as *mut byte, cap, 3, 34, 0 - 1, 0) as *mut u8;
+    if (buf as int) <= 0 {
+        @os.close(fd);
+        return 0 as *mut u8;
+    }
+    var tot: uint = 0;
+    while tot < cap {
+        let nr: int = @os.read(fd, (buf + tot) as *byte, cap - tot);
+        if nr <= 0 {
+            break;
+        }
+        tot = tot + (nr as uint);
+    }
+    @os.close(fd);
+    out_len[0] = tot;
+    return buf;
+}
+
+fn eia_test_free_buf(buf: *mut u8) {
+    if (buf as int) > 0 {
+        @os.munmap(buf as uint, 262144);
+    }
+}
+
+fn eia_test_write_temp_source(path: *const byte, src: *const byte, len: uint) -> bool {
+    let fd: int = @os.open(path, 577, 420);
+    if fd < 0 {
+        return false;
+    }
+    let nw: int = @os.write(fd, src, len);
+    @os.close(fd);
+    return nw == (len as int);
+}
+
+fn test_eia_binary_vessels_and_tamper() -> bool {
+    println("[EIA C1/C4] Verifying ELF64, PE32+, Mach-O hologram embedding & tamper rejection...");
+    var code: [u8; 16];
+    var ci: uint = 0;
+    while ci < 16 { code[ci] = 0x90; ci = ci + 1; }
+    code[15] = 0xC3;
+
+    var vessel: ExecutableVessel;
+    vessel.code_ptr = (&code[0]) as *const byte;
+    vessel.code_len = 16;
+    vessel.entry_offset = 0;
+
+    var contracts: [SymbolContract; 2];
+    let sym_main: uint = blake3_hash64("main" as *const u8, 4);
+    let sig_main: uint = blake3_hash64("()->i64" as *const u8, 7);
+    let sym_helper: uint = blake3_hash64("packet_checksum" as *const u8, 15);
+    let sig_helper: uint = blake3_hash64("(ptr,u64)->u64" as *const u8, 14);
+    eia_contract_init_ex(&mut contracts[0], sym_main, sig_main, 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut contracts[1], sym_helper, sig_helper, 4259848, 8, EIA_SYM_DEFINED, 1, 0);
+
+    var tg: [EiaTypeGraphEntry; 2];
+    let type_pkt: uint = blake3_hash64("PacketV2" as *const u8, 8);
+    let fld_seq: uint = blake3_hash64("seq" as *const u8, 3);
+    let fld_tag: uint = blake3_hash64("tag" as *const u8, 3);
+    eia_type_graph_entry_init(&mut tg[0], type_pkt, fld_seq, 16, 8);
+    eia_type_graph_entry_init(&mut tg[1], type_pkt, fld_tag, 24, 8);
+
+    var holes: [EiaRelocHole; 2];
+    eia_reloc_init(&mut holes[0], 3, RelocPatchKind.DISP32, type_pkt, fld_seq);
+    eia_reloc_init(&mut holes[1], 8, RelocPatchKind.LEA32, type_pkt, fld_tag);
+
+    let p_elf: *const byte = ".rux_eia_test_v.elf" as *const byte;
+    let p_pe: *const byte = ".rux_eia_test_v.exe" as *const byte;
+    let p_macho: *const byte = ".rux_eia_test_v.macho" as *const byte;
+
+    let r_elf: int = write_vessel_elf_with_eia(&vessel, p_elf as *byte, &contracts[0], 2, &holes[0], 2, &tg[0], 2);
+    let r_pe: int = write_vessel_pe_with_eia(&vessel, p_pe as *byte, &contracts[0], 2, &holes[0], 2, &tg[0], 2);
+    let r_mac: int = write_vessel_macho_with_eia(&vessel, p_macho as *byte, &contracts[0], 2, &holes[0], 2, &tg[0], 2);
+    if r_elf <= 0 || r_pe <= 0 || r_mac <= 0 {
+        println("  [FAIL] Failed writing one or more multi-OS EIA vessels");
+        return false;
+    }
+
+    var paths: [*const byte; 3];
+    paths[0] = p_elf;
+    paths[1] = p_pe;
+    paths[2] = p_macho;
+
+    var idx: uint = 0;
+    while idx < 3 {
+        var blen: uint = 0;
+        let bbuf: *mut u8 = eia_test_read_file(paths[idx], &mut blen);
+        if (bbuf as int) <= 0 || blen == 0 {
+            println("  [FAIL] Failed reading back emitted vessel");
+            return false;
+        }
+        let hoff: i64 = eia_locate_hologram_offset(bbuf as *const u8, blen);
+        if hoff < 0 {
+            eia_test_free_buf(bbuf);
+            println("  [FAIL] Hologram header not found in emitted vessel");
+            return false;
+        }
+        if idx == 0 && hoff != 128 {
+            eia_test_free_buf(bbuf);
+            println("  [FAIL] Unexpected ELF hologram offset");
+            return false;
+        }
+        let v_ok: int = eia_verify_artifact_bytes(bbuf as *const u8, blen);
+        if v_ok != 0 {
+            eia_test_free_buf(bbuf);
+            println("  [FAIL] Emitted vessel failed BLAKE3/contract/reloc verification");
+            return false;
+        }
+
+        let holo: *mut UniversalHologramHeader = (bbuf + (hoff as uint)) as *mut UniversalHologramHeader;
+        if holo.contracts_count != 2 || holo.relocs_count != 2 || holo.type_graph_size != 48 || holo.blake3_root == 0 {
+            eia_test_free_buf(bbuf);
+            println("  [FAIL] Unexpected hologram metadata counts");
+            return false;
+        }
+
+        let saved_root: uint = holo.blake3_root;
+        holo.blake3_root = saved_root ^ 1;
+        if eia_verify_artifact_bytes(bbuf as *const u8, blen) != -3 {
+            eia_test_free_buf(bbuf);
+            println("  [FAIL] Tampered blake3_root was not rejected with -3");
+            return false;
+        }
+        holo.blake3_root = saved_root;
+
+        let c0: *mut SymbolContract = (bbuf + holo.contracts_offset) as *mut SymbolContract;
+        let saved_digest: uint = c0.contract_digest;
+        c0.contract_digest = saved_digest ^ 1;
+        if eia_verify_artifact_bytes(bbuf as *const u8, blen) == 0 {
+            eia_test_free_buf(bbuf);
+            println("  [FAIL] Tampered contract_digest passed verification");
+            return false;
+        }
+        c0.contract_digest = saved_digest;
+
+        var coff: uint = 0;
+        var clen: uint = 0;
+        if (holo.flags & EIA_FLAG_HAS_CODE_HASH) == 0 || !eia_locate_code_span(bbuf as *const u8, blen, holo as *const UniversalHologramHeader, &mut coff, &mut clen) || clen == 0 {
+            eia_test_free_buf(bbuf);
+            println("  [FAIL] Vessel missing EIA_FLAG_HAS_CODE_HASH or code span");
+            return false;
+        }
+        bbuf[coff] = bbuf[coff] ^ 1;
+        if eia_verify_artifact_bytes(bbuf as *const u8, blen) != -3 {
+            eia_test_free_buf(bbuf);
+            println("  [FAIL] Tampered executable code byte passed verification");
+            return false;
+        }
+        bbuf[coff] = bbuf[coff] ^ 1;
+        if eia_verify_artifact_bytes(bbuf as *const u8, blen) != 0 {
+            eia_test_free_buf(bbuf);
+            println("  [FAIL] Restored executable code byte failed verification");
+            return false;
+        }
+
+        eia_test_free_buf(bbuf);
+        @os.unlink(paths[idx] as *byte);
+        idx = idx + 1;
+    }
+    println("  [PASS] ELF64, PE32+, Mach-O hologram sealing & tamper rejection verified");
+    return true;
+}
+
+fn test_eia_pipeline_real_emission() -> bool {
+    println("[EIA C3] Verifying compiler/pipeline real multi-OS hologram sealing...");
+    let src_path: *const byte = ".rux_eia_pipe_tmp.rx" as *const byte;
+    let src_code: *const byte = "shape Vec2 { x: int y: int }\nfn helper(a: int, b: int) -> int { return a + b; }\nfn main() -> int { return 0; }\n" as *const byte;
+    var slen: uint = 0;
+    while src_code[slen] != 0 as byte { slen = slen + 1; }
+    if !eia_test_write_temp_source(src_path, src_code, slen) {
+        println("  [FAIL] Could not write temporary pipeline source file");
+        return false;
+    }
+
+    var envs: [TargetEnv; 3];
+    envs[0] = TARGET_ENV_LINUX_EIA;
+    envs[1] = TARGET_ENV_WINDOWS_PE;
+    envs[2] = TARGET_ENV_MACOS_MACHO;
+
+    var outs: [*const byte; 3];
+    outs[0] = ".rux_eia_pipe_out.elf" as *const byte;
+    outs[1] = ".rux_eia_pipe_out.exe" as *const byte;
+    outs[2] = ".rux_eia_pipe_out.macho" as *const byte;
+
+    var i: uint = 0;
+    while i < 3 {
+        var opts: CompilerOptions = options_default();
+        opts.input_path = src_path as str;
+        opts.output_path = outs[i] as str;
+        opts.target_env = envs[i];
+        opts.is_run_mode = false;
+        var ctx: PipelineContext = pipeline_init(opts);
+        let st: PipelineStatus = pipeline_execute(&mut ctx);
+        if st != PipelineStatus.SUCCESS {
+            @os.unlink(src_path as *byte);
+            println("  [FAIL] pipeline_execute did not return SUCCESS");
+            return false;
+        }
+        var blen: uint = 0;
+        let buf: *mut u8 = eia_test_read_file(outs[i], &mut blen);
+        if (buf as int) <= 0 {
+            @os.unlink(src_path as *byte);
+            println("  [FAIL] Failed reading pipeline output binary");
+            return false;
+        }
+        let hoff: i64 = eia_locate_hologram_offset(buf as *const u8, blen);
+        let vres: int = eia_verify_artifact_bytes(buf as *const u8, blen);
+        if hoff < 0 || vres != 0 {
+            eia_test_free_buf(buf);
+            @os.unlink(src_path as *byte);
+            println("  [FAIL] Pipeline output binary failed eia_verify_artifact_bytes");
+            return false;
+        }
+        let holo: *const UniversalHologramHeader = (buf + (hoff as uint)) as *const UniversalHologramHeader;
+        let first_sc: *const SymbolContract = (buf + holo.contracts_offset) as *const SymbolContract;
+        if holo.contracts_count < 2 || holo.type_graph_size != 48 || first_sc.symbol_hash == 0x1234 || first_sc.type_sig_hash == 0x5678 {
+            eia_test_free_buf(buf);
+            @os.unlink(src_path as *byte);
+            println("  [FAIL] Pipeline output still missing per-fn contracts or type graph");
+            return false;
+        }
+        eia_test_free_buf(buf);
+        @os.unlink(outs[i] as *byte);
+        i = i + 1;
+    }
+
+    var fopts: CompilerOptions = options_default();
+    fopts.input_path = src_path as str;
+    fopts.output_path = ".rux_eia_pipe_free.elf" as str;
+    fopts.target_env = TARGET_ENV_LINUX_EIA;
+    fopts.is_freestanding = true;
+    fopts.is_run_mode = false;
+    var fctx: PipelineContext = pipeline_init(fopts);
+    if pipeline_execute(&mut fctx) != PipelineStatus.SUCCESS {
+        @os.unlink(src_path as *byte);
+        println("  [FAIL] Freestanding pipeline_execute failed");
+        return false;
+    }
+    var flen: uint = 0;
+    let fbuf: *mut u8 = eia_test_read_file(".rux_eia_pipe_free.elf" as *const byte, &mut flen);
+    if (fbuf as int) <= 0 || eia_locate_hologram_offset(fbuf as *const u8, flen) != 128 || eia_verify_artifact_bytes(fbuf as *const u8, flen) != 0 {
+        if (fbuf as int) > 0 { eia_test_free_buf(fbuf); }
+        @os.unlink(".rux_eia_pipe_free.elf" as *byte);
+        @os.unlink(src_path as *byte);
+        println("  [FAIL] Freestanding pipeline ELF hologram verification failed");
+        return false;
+    }
+    let fholo: *const UniversalHologramHeader = (fbuf + 128) as *const UniversalHologramHeader;
+    var fcoff: uint = 0;
+    var fclen: uint = 0;
+    if (fholo.flags & EIA_FLAG_HAS_CODE_HASH) == 0 || (fholo.flags & EIA_FLAG_FREESTANDING) == 0 || !eia_locate_code_span(fbuf as *const u8, flen, fholo, &mut fcoff, &mut fclen) || fclen == 0 {
+        eia_test_free_buf(fbuf);
+        @os.unlink(".rux_eia_pipe_free.elf" as *byte);
+        @os.unlink(src_path as *byte);
+        println("  [FAIL] Freestanding pipeline ELF missing code-hash/freestanding flags");
+        return false;
+    }
+    fbuf[fcoff] = fbuf[fcoff] ^ 1;
+    let ftampered: int = eia_verify_artifact_bytes(fbuf as *const u8, flen);
+    eia_test_free_buf(fbuf);
+    @os.unlink(".rux_eia_pipe_free.elf" as *byte);
+    if ftampered != -3 {
+        @os.unlink(src_path as *byte);
+        println("  [FAIL] Tampered freestanding pipeline ELF code was not rejected");
+        return false;
+    }
+
+    @os.unlink(src_path as *byte);
+    println("  [PASS] Pipeline emitted verified ELF/Freestanding/PE/Mach-O with real FN contracts & Vec2 type graph");
+    return true;
+}
+
+fn test_eia_cross_unit_contracts() -> bool {
+    println("[EIA C2] Verifying cross-unit contract matching & ABI mismatch detection...");
+    let fn_compute: uint = blake3_hash64("matrix_mul" as *const u8, 10);
+    let sig_v1: uint = blake3_hash64("(Mat4,Mat4)->Mat4" as *const u8, 17);
+    let sig_v2: uint = blake3_hash64("(Mat4,Mat4,u64)->Mat4" as *const u8, 21);
+
+    var client_tbl: [SymbolContract; 2];
+    eia_contract_init_ex(&mut client_tbl[0], fn_compute, sig_v1, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    let fn_local: uint = blake3_hash64("app_entry" as *const u8, 9);
+    let sig_local: uint = blake3_hash64("()->i64" as *const u8, 7);
+    eia_contract_init_ex(&mut client_tbl[1], fn_local, sig_local, 4259840, 64, EIA_SYM_DEFINED, 0, 0);
+
+    var prov_tbl: [SymbolContract; 1];
+    eia_contract_init_ex(&mut prov_tbl[0], fn_compute, sig_v1, 4260000, 128, EIA_SYM_DEFINED, 0, 0);
+
+    if !eia_contract_verify_match(&client_tbl[0], &prov_tbl[0]) {
+        println("  [FAIL] Compatible contracts failed eia_contract_verify_match");
+        return false;
+    }
+    if eia_verify_cross_unit_contracts(&client_tbl[0], 2, &prov_tbl[0], 1) != 1 {
+        println("  [FAIL] Expected 1 verified cross-unit link");
+        return false;
+    }
+
+    eia_contract_init_ex(&mut prov_tbl[0], fn_compute, sig_v2, 4260000, 128, EIA_SYM_DEFINED, 0, 0);
+    if eia_contract_verify_match(&client_tbl[0], &prov_tbl[0]) {
+        println("  [FAIL] type_sig_hash mismatch was falsely accepted");
+        return false;
+    }
+    if eia_verify_cross_unit_contracts(&client_tbl[0], 2, &prov_tbl[0], 1) != -6 {
+        println("  [FAIL] Expected -6 on signature mismatch");
+        return false;
+    }
+
+    eia_contract_init_ex(&mut prov_tbl[0], fn_compute, sig_v1, 4260000, 128, EIA_SYM_DEFINED, 2, 0);
+    if eia_verify_cross_unit_contracts(&client_tbl[0], 2, &prov_tbl[0], 1) != -6 {
+        println("  [FAIL] param_conv mismatch did not fail cross-unit check");
+        return false;
+    }
+
+    let missing_sym: uint = blake3_hash64("missing_fn" as *const u8, 10);
+    eia_contract_init_ex(&mut client_tbl[0], missing_sym, sig_v1, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    if eia_verify_cross_unit_contracts(&client_tbl[0], 2, &prov_tbl[0], 1) != -5 {
+        println("  [FAIL] Unresolved import did not return -5");
+        return false;
+    }
+
+    println("  [PASS] Cross-unit compatibility, signature/conv/missing rejection verified");
+    return true;
+}
+
+fn test_eia_multiarch_reloc_layout_permutation() -> bool {
+    println("[EIA C5] Verifying post-ABI layout permutation & canonical multi-arch patching...");
+    let t_rec: uint = blake3_hash64("TelemetryFrame" as *const u8, 14);
+    let f_a: uint = blake3_hash64("epoch" as *const u8, 5);
+    let f_b: uint = blake3_hash64("seq" as *const u8, 3);
+    let f_c: uint = blake3_hash64("crc" as *const u8, 3);
+    let sym_call: uint = blake3_hash64("external_noop" as *const u8, 13);
+
+    var epoch1_tg: [EiaTypeGraphEntry; 3];
+    eia_type_graph_entry_init(&mut epoch1_tg[0], t_rec, f_a, 0, 8);
+    eia_type_graph_entry_init(&mut epoch1_tg[1], t_rec, f_b, 8, 8);
+    eia_type_graph_entry_init(&mut epoch1_tg[2], t_rec, f_c, 16, 8);
+
+    var epoch2_tg: [EiaTypeGraphEntry; 3];
+    eia_type_graph_entry_init(&mut epoch2_tg[0], t_rec, f_c, 0, 8);
+    eia_type_graph_entry_init(&mut epoch2_tg[1], t_rec, f_a, 8, 8);
+    eia_type_graph_entry_init(&mut epoch2_tg[2], t_rec, f_b, 16, 8);
+
+    var holes_x86: [EiaRelocHole; 4];
+    eia_reloc_init(&mut holes_x86[0], 3, RelocPatchKind.DISP32, t_rec, f_b);
+    eia_reloc_init(&mut holes_x86[1], 11, RelocPatchKind.LEA32, t_rec, f_a);
+    eia_reloc_init(&mut holes_x86[2], 18, RelocPatchKind.WIDEN_STENCIL, t_rec, f_c);
+    eia_reloc_init(&mut holes_x86[3], 28, RelocPatchKind.CALL32, 0, sym_call);
+
+    var code_x86: [u8; 40];
+    var zi: uint = 0;
+    while zi < 40 { code_x86[zi] = 0; zi = zi + 1; }
+    code_x86[28] = 0xE8;
+    code_x86[29] = 0x11;
+    code_x86[30] = 0x22;
+    code_x86[31] = 0x33;
+
+    let n_e1: uint = eia_patch_reloc_holes_arch(&mut code_x86[0], 0, &holes_x86[0], 4, &epoch1_tg[0], 3);
+    if n_e1 != 3 || eia_patch_read_u32((&code_x86[3]) as *const u8) != 8 || eia_patch_read_u32((&code_x86[11]) as *const u8) != 0 || eia_patch_read_u64((&code_x86[18]) as *const u8) != 16 {
+        println("  [FAIL] Epoch 1 x86_64 reloc patching failed");
+        return false;
+    }
+
+    let n_e2: uint = eia_patch_reloc_holes_arch(&mut code_x86[0], 0, &holes_x86[0], 4, &epoch2_tg[0], 3);
+    if n_e2 != 3 || eia_patch_read_u32((&code_x86[3]) as *const u8) != 16 || eia_patch_read_u32((&code_x86[11]) as *const u8) != 8 || eia_patch_read_u64((&code_x86[18]) as *const u8) != 0 {
+        println("  [FAIL] Epoch 2 permuted x86_64 reloc patching failed");
+        return false;
+    }
+    if eia_patch_read_u32((&code_x86[28]) as *const u8) != 0x332211E8 {
+        println("  [FAIL] CALL32 hole was unexpectedly overwritten");
+        return false;
+    }
+
+    var big_tg: [EiaTypeGraphEntry; 2];
+    let f_arm: uint = blake3_hash64("arm_wide" as *const u8, 8);
+    let f_rv: uint = blake3_hash64("rv_hi_lo" as *const u8, 8);
+    eia_type_graph_entry_init(&mut big_tg[0], t_rec, f_arm, 0x00102030, 8);
+    eia_type_graph_entry_init(&mut big_tg[1], t_rec, f_rv, 6400, 8);
+
+    var arm_code: [u8; 8];
+    eia_patch_write_u32(&mut arm_code[0], 3531603968);
+    eia_patch_write_u32(&mut arm_code[4], 4070572032);
+    var arm_hole: EiaRelocHole;
+    eia_reloc_init(&mut arm_hole, 0, RelocPatchKind.DISP32, t_rec, f_arm);
+    let n_arm: uint = eia_patch_reloc_holes_arch(&mut arm_code[0], 1, &arm_hole, 1, &big_tg[0], 2);
+    let aw0: u32 = eia_patch_read_u32((&arm_code[0]) as *const u8);
+    let aw1: u32 = eia_patch_read_u32((&arm_code[4]) as *const u8);
+    if n_arm != 1 || ((aw0 >> 5) & 65535) != 0x2030 || ((aw1 >> 5) & 65535) != 0x0010 {
+        println("  [FAIL] ARM64 MOVZ/MOVK relocation patch encoding mismatch");
+        return false;
+    }
+
+    var rv_code: [u8; 8];
+    eia_patch_write_u32(&mut rv_code[0], 0x000002B7);
+    eia_patch_write_u32(&mut rv_code[4], 0x00028293);
+    var rv_hole: EiaRelocHole;
+    eia_reloc_init(&mut rv_hole, 0, RelocPatchKind.DISP32, t_rec, f_rv);
+    let n_rv: uint = eia_patch_reloc_holes_arch(&mut rv_code[0], 2, &rv_hole, 1, &big_tg[0], 2);
+    let rw0: u32 = eia_patch_read_u32((&rv_code[0]) as *const u8);
+    let rw1: u32 = eia_patch_read_u32((&rv_code[4]) as *const u8);
+    let hi20: uint = ((rw0 >> 12) & 1048575) as uint;
+    let lo12_u: uint = ((rw1 >> 20) & 4095) as uint;
+    var lo12_s: i64 = lo12_u as i64;
+    if lo12_u >= 2048 {
+        lo12_s = lo12_s - 4096;
+    }
+    let recon: i64 = ((hi20 << 12) as i64) + lo12_s;
+    if n_rv != 1 || recon != 6400 {
+        println("  [FAIL] RISC-V LUI/ADDI relocation patch encoding mismatch");
+        return false;
+    }
+
+    var call_sc: SymbolContract;
+    let c_vbase: uint = 4259840;
+    eia_contract_init_ex(&mut call_sc, sym_call, blake3_hash64("()->u64" as *const u8, 7), c_vbase + 36, 4, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_seal(&mut call_sc);
+    var call_hole_x86: EiaRelocHole;
+    eia_reloc_init(&mut call_hole_x86, 29, RelocPatchKind.CALL32, sym_call, sym_call);
+    let cp_x86: uint = eia_patch_binary_relocs(&mut code_x86[0], 40, 0, &call_hole_x86, 1, &epoch2_tg[0], 3, &call_sc, 1, c_vbase);
+    if cp_x86 != 1 || eia_patch_read_u32((&code_x86[29]) as *const u8) != 3 {
+        println("  [FAIL] x86_64 CALL32 contract-driven patch mismatch");
+        return false;
+    }
+
+    var arm_call_code: [u8; 32];
+    var aci: uint = 0;
+    while aci < 32 { arm_call_code[aci] = 0; aci = aci + 1; }
+    eia_patch_write_u32(&mut arm_call_code[4], 2483027968);
+    var arm_call_sc: SymbolContract;
+    eia_contract_init_ex(&mut arm_call_sc, sym_call, blake3_hash64("()->u64" as *const u8, 7), c_vbase + 24, 8, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_seal(&mut arm_call_sc);
+    var arm_call_hole: EiaRelocHole;
+    eia_reloc_init(&mut arm_call_hole, 4, RelocPatchKind.CALL32, sym_call, sym_call);
+    let cp_arm: uint = eia_patch_binary_relocs(&mut arm_call_code[0], 32, 1, &arm_call_hole, 1, &big_tg[0], 2, &arm_call_sc, 1, c_vbase);
+    let patched_bl: u32 = eia_patch_read_u32((&arm_call_code[4]) as *const u8);
+    if cp_arm != 1 || patched_bl != (2483027968 | 5) {
+        println("  [FAIL] ARM64 BL CALL32 patch mismatch");
+        return false;
+    }
+
+    var rv_call_code: [u8; 32];
+    var rci: uint = 0;
+    while rci < 32 { rv_call_code[rci] = 0; rci = rci + 1; }
+    eia_patch_write_u32(&mut rv_call_code[4], 239);
+    var rv_call_hole: EiaRelocHole;
+    eia_reloc_init(&mut rv_call_hole, 4, RelocPatchKind.CALL32, sym_call, sym_call);
+    let cp_rv: uint = eia_patch_binary_relocs(&mut rv_call_code[0], 32, 2, &rv_call_hole, 1, &big_tg[0], 2, &arm_call_sc, 1, c_vbase);
+    let patched_jal: u32 = eia_patch_read_u32((&rv_call_code[4]) as *const u8);
+    let j_disp: uint = (((patched_jal >> 21) & 1023) << 1) as uint;
+    if cp_rv != 1 || (patched_jal & 255) != 239 || j_disp != 20 {
+        println("  [FAIL] RISC-V JAL CALL32 patch mismatch");
+        return false;
+    }
+
+    println("  [PASS] Post-ABI layout permutation & x86_64/ARM64/RISC-V CALL32/DISP32/LEA32/WIDEN_STENCIL verified");
+    return true;
+}
+
+fn test_eia_wasm_and_relink_proof() -> bool {
+    println("[EIA C1/C2/C4/C5] Verifying Wasm hologram section & end-to-end binary relinking...");
+    var wbuf: [u8; 512];
+    var wi: uint = 0;
+    while wi < 512 { wbuf[wi] = 0; wi = wi + 1; }
+    wbuf[0] = 0; wbuf[1] = 97; wbuf[2] = 115; wbuf[3] = 109;
+    wbuf[4] = 1; wbuf[5] = 0; wbuf[6] = 0; wbuf[7] = 0;
+    wbuf[8] = 10; wbuf[9] = 4; wbuf[10] = 1; wbuf[11] = 2; wbuf[12] = 0; wbuf[13] = 11;
+    let w_contracts_sz: uint = 48;
+    let w_tg_sz: uint = 24;
+    let w_sec_len: uint = 4 + 96 + w_contracts_sz + w_tg_sz;
+    wbuf[14] = 0;
+    wbuf[15] = (w_sec_len & 127) as u8;
+    wbuf[15] = wbuf[15] | 128;
+    wbuf[16] = ((w_sec_len >> 7) & 127) as u8;
+    wbuf[17] = 3; wbuf[18] = 101; wbuf[19] = 105; wbuf[20] = 97;
+    let w_holo_off: uint = 21;
+    let w_c_off: uint = w_holo_off + 96;
+    let w_tg_off: uint = w_c_off + w_contracts_sz;
+    let w_total: uint = 17 + w_sec_len;
+
+    var w_sc: SymbolContract;
+    eia_contract_init_ex(&mut w_sc, blake3_hash64("wasm_main" as *const u8, 9), blake3_hash64("()->i64" as *const u8, 7), 4259840, 4, EIA_SYM_DEFINED, 0, 0);
+    var w_tg: EiaTypeGraphEntry;
+    eia_type_graph_entry_init(&mut w_tg, blake3_hash64("WFrame" as *const u8, 6), blake3_hash64("val" as *const u8, 3), 16, 8);
+    if !eia_populate_and_seal_hologram(&mut wbuf[0], w_total, w_holo_off, w_c_off, &w_sc, 1, w_tg_off, 0 as *const EiaRelocHole, 0, w_tg_off, &w_tg, 1, 1, EIA_FLAG_HAS_CODE_HASH, 65536, 65536) {
+        println("  [FAIL] Failed sealing synthetic Wasm custom 'eia' hologram");
+        return false;
+    }
+    if eia_locate_hologram_offset((&wbuf[0]) as *const u8, w_total) != (w_holo_off as i64) || eia_verify_artifact_bytes((&wbuf[0]) as *const u8, w_total) != 0 {
+        println("  [FAIL] Wasm custom 'eia' hologram verification failed");
+        return false;
+    }
+    wbuf[12] = wbuf[12] ^ 1;
+    if eia_verify_artifact_bytes((&wbuf[0]) as *const u8, w_total) != -3 {
+        println("  [FAIL] Wasm code byte tamper was not rejected");
+        return false;
+    }
+
+    var code_c: [u8; 40];
+    var ci2: uint = 0;
+    while ci2 < 40 { code_c[ci2] = 0x90; ci2 = ci2 + 1; }
+    code_c[19] = 0xE8;
+    code_c[39] = 0xC3;
+    var vc: ExecutableVessel;
+    vc.code_ptr = (&code_c[0]) as *const byte;
+    vc.code_len = 40;
+    vc.entry_offset = 0;
+
+    let sym_eval: uint = blake3_hash64("eval_frame" as *const u8, 10);
+    let sym_leaf: uint = blake3_hash64("leaf_fn" as *const u8, 7);
+    let sig_v1: uint = blake3_hash64("(*Frame)->i64" as *const u8, 13);
+    let sig_v2: uint = blake3_hash64("(*Frame,u64)->i64" as *const u8, 17);
+    let t_frame: uint = blake3_hash64("RelinkFrame" as *const u8, 11);
+    let f_x: uint = blake3_hash64("x" as *const u8, 1);
+    let f_y: uint = blake3_hash64("y" as *const u8, 1);
+
+    var c_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut c_sc[0], sym_eval, sig_v1, 4259840, 20, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut c_sc[1], sym_leaf, sig_v1, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var c_tg: [EiaTypeGraphEntry; 2];
+    eia_type_graph_entry_init(&mut c_tg[0], t_frame, f_x, 0, 8);
+    eia_type_graph_entry_init(&mut c_tg[1], t_frame, f_y, 8, 8);
+    var c_holes: [EiaRelocHole; 3];
+    eia_reloc_init(&mut c_holes[0], 3, RelocPatchKind.DISP32, t_frame, f_x);
+    eia_reloc_init(&mut c_holes[1], 10, RelocPatchKind.LEA32, t_frame, f_y);
+    eia_reloc_init(&mut c_holes[2], 20, RelocPatchKind.CALL32, sym_leaf, sym_leaf);
+
+    var p_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut p_sc[0], sym_eval, sig_v1, 4259840, 20, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut p_sc[1], sym_leaf, sig_v1, 4259840 + 32, 8, EIA_SYM_DEFINED, 0, 0);
+    var p_tg: [EiaTypeGraphEntry; 2];
+    eia_type_graph_entry_init(&mut p_tg[0], t_frame, f_y, 0, 8);
+    eia_type_graph_entry_init(&mut p_tg[1], t_frame, f_x, 8, 8);
+
+    let p_cli: *const byte = ".rux_eia_relink_cli.elf" as *const byte;
+    let p_prv: *const byte = ".rux_eia_relink_prv.elf" as *const byte;
+    let p_bad: *const byte = ".rux_eia_relink_bad.elf" as *const byte;
+    if write_vessel_elf_with_eia(&vc, p_cli as *byte, &c_sc[0], 2, &c_holes[0], 3, &c_tg[0], 2) <= 0 {
+        println("  [FAIL] Failed writing relink client ELF");
+        return false;
+    }
+    var prov_ok_v: ExecutableVessel;
+    prov_ok_v.code_ptr = (&code_c[0]) as *const byte;
+    prov_ok_v.code_len = 40;
+    prov_ok_v.entry_offset = 0;
+    if write_vessel_elf_with_eia(&prov_ok_v, p_prv as *byte, &p_sc[0], 2, 0 as *const EiaRelocHole, 0, &p_tg[0], 2) <= 0 {
+        @os.unlink(p_cli as *byte);
+        println("  [FAIL] Failed writing relink provider ELF");
+        return false;
+    }
+
+    var cli_len: uint = 0;
+    var prv_len: uint = 0;
+    let cli_buf: *mut u8 = eia_test_read_file(p_cli, &mut cli_len);
+    let prv_buf: *mut u8 = eia_test_read_file(p_prv, &mut prv_len);
+    let cli_holo: *const UniversalHologramHeader = (cli_buf + 128) as *const UniversalHologramHeader;
+    let prv_holo: *const UniversalHologramHeader = (prv_buf + 128) as *const UniversalHologramHeader;
+    let p_leaf_sc: *mut SymbolContract = (prv_buf + prv_holo.contracts_offset + 48) as *mut SymbolContract;
+    p_leaf_sc.vaddr = cli_holo.reserved0 + 32;
+    eia_contract_seal(p_leaf_sc);
+    var prv_b3: uint = 0;
+    eia_compute_artifact_sealed_digest(prv_buf as *const u8, prv_len, prv_holo, &mut prv_b3);
+    eia_hologram_seal_tables_with_digest((prv_buf + 128) as *mut UniversalHologramHeader, prv_buf as *const u8, prv_len, true, prv_b3);
+
+    let rl_cnt: int = eia_relink_binary_bytes(cli_buf, cli_len, prv_buf as *const u8, prv_len);
+    let c_coff: uint = (cli_holo.reserved0 - 4194304) as uint;
+    if rl_cnt != 3 || eia_verify_artifact_bytes(cli_buf as *const u8, cli_len) != 0 {
+        eia_test_free_buf(cli_buf);
+        eia_test_free_buf(prv_buf);
+        @os.unlink(p_cli as *byte);
+        @os.unlink(p_prv as *byte);
+        println("  [FAIL] eia_relink_binary_bytes failed");
+        return false;
+    }
+    if eia_patch_read_u32((cli_buf + c_coff + 3) as *const u8) != 8 || eia_patch_read_u32((cli_buf + c_coff + 10) as *const u8) != 0 || eia_patch_read_u32((cli_buf + c_coff + 20) as *const u8) != 8 {
+        eia_test_free_buf(cli_buf);
+        eia_test_free_buf(prv_buf);
+        @os.unlink(p_cli as *byte);
+        @os.unlink(p_prv as *byte);
+        println("  [FAIL] Relinked ELF machine code displacements/call target mismatch");
+        return false;
+    }
+
+    var bad_sc: SymbolContract;
+    eia_contract_init_ex(&mut bad_sc, sym_eval, sig_v2, 4259840, 20, EIA_SYM_DEFINED, 0, 0);
+    write_vessel_elf_with_eia(&vc, p_bad as *byte, &bad_sc, 1, 0 as *const EiaRelocHole, 0, &p_tg[0], 2);
+    var bad_len: uint = 0;
+    let bad_buf: *mut u8 = eia_test_read_file(p_bad, &mut bad_len);
+    let mm_rc: int = eia_relink_binary_bytes(cli_buf, cli_len, bad_buf as *const u8, bad_len);
+
+    eia_test_free_buf(bad_buf);
+    eia_test_free_buf(cli_buf);
+    eia_test_free_buf(prv_buf);
+    @os.unlink(p_bad as *byte);
+    @os.unlink(p_cli as *byte);
+    @os.unlink(p_prv as *byte);
+
+    if mm_rc != -6 {
+        println("  [FAIL] Incompatible provider contract was not rejected with -6 during relink");
+        return false;
+    }
+
+    println("  [PASS] Wasm custom section + real ELF relinking & mismatch rejection verified");
+    return true;
+}
+
+fn test_eia_multi_image_relink_splice() -> bool {
+    println("[EIA C5/C6] Verifying multi-image ELF64 splicing relink, CALL32 & negative checks...");
+
+    var code_c: [u8; 40];
+    var ci: uint = 0;
+    while ci < 40 { code_c[ci] = 0x90; ci = ci + 1; }
+    code_c[19] = 0xE8;
+    code_c[39] = 0xC3;
+
+    var code_p: [u8; 48];
+    var pi: uint = 0;
+    while pi < 48 { code_p[pi] = 0x90; pi = pi + 1; }
+    code_p[7] = 0xC3;
+    code_p[16] = 0x48;
+    code_p[17] = 0x89;
+    code_p[18] = 0xF8;
+    code_p[19] = 0xC3;
+    code_p[47] = 0xC3;
+
+    var vc: ExecutableVessel;
+    vc.code_ptr = (&code_c[0]) as *const byte;
+    vc.code_len = 40;
+    vc.entry_offset = 0;
+
+    var vp: ExecutableVessel;
+    vp.code_ptr = (&code_p[0]) as *const byte;
+    vp.code_len = 48;
+    vp.entry_offset = 0;
+
+    let sym_cli_main: uint = blake3_hash64("cli_entry_fn" as *const u8, 12);
+    let sym_prv_entry: uint = blake3_hash64("prv_entry_fn" as *const u8, 12);
+    let sym_prv_fn: uint = blake3_hash64("spliced_prov_fn" as *const u8, 15);
+    let sym_missing: uint = blake3_hash64("missing_sym_fn" as *const u8, 14);
+    let sig_ok: uint = blake3_hash64("(u64)->u64" as *const u8, 10);
+
+    var c_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut c_sc[0], sym_cli_main, sig_ok, 4259840, 24, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut c_sc[1], sym_prv_fn, sig_ok, 0, 0, EIA_SYM_IMPORT, 0, 0);
+
+    var c_hole: EiaRelocHole;
+    eia_reloc_init(&mut c_hole, 20, RelocPatchKind.CALL32, sym_prv_fn, sym_prv_fn);
+
+    var p_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut p_sc[0], sym_prv_entry, sig_ok, 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut p_sc[1], sym_prv_fn, sig_ok, 4259840 + 16, 16, EIA_SYM_DEFINED, 0, 0);
+
+    var m_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut m_sc[0], sym_cli_main, sig_ok, 4259840, 24, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut m_sc[1], sym_missing, sig_ok, 0, 0, EIA_SYM_IMPORT, 0, 0);
+
+    let p_cli: *const byte = ".rux_eia_splice_cli.elf" as *const byte;
+    let p_prv: *const byte = ".rux_eia_splice_prv.elf" as *const byte;
+    let p_mis: *const byte = ".rux_eia_splice_mis.elf" as *const byte;
+
+    if write_vessel_elf_with_eia(&vc, p_cli as *byte, &c_sc[0], 2, &c_hole, 1, 0 as *const EiaTypeGraphEntry, 0) <= 0 {
+        println("  [FAIL] Failed writing multi-image splice client ELF");
+        return false;
+    }
+    if write_vessel_elf_with_eia(&vp, p_prv as *byte, &p_sc[0], 2, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0) <= 0 {
+        @os.unlink(p_cli as *byte);
+        println("  [FAIL] Failed writing multi-image splice provider ELF");
+        return false;
+    }
+    if write_vessel_elf_with_eia(&vc, p_mis as *byte, &m_sc[0], 2, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0) <= 0 {
+        @os.unlink(p_cli as *byte);
+        @os.unlink(p_prv as *byte);
+        println("  [FAIL] Failed writing missing-import client ELF");
+        return false;
+    }
+
+    var cli_len: uint = 0;
+    var prv_len: uint = 0;
+    var mis_len: uint = 0;
+    let cli_buf: *mut u8 = eia_test_read_file(p_cli, &mut cli_len);
+    let prv_buf: *mut u8 = eia_test_read_file(p_prv, &mut prv_len);
+    let mis_buf: *mut u8 = eia_test_read_file(p_mis, &mut mis_len);
+    @os.unlink(p_cli as *byte);
+    @os.unlink(p_prv as *byte);
+    @os.unlink(p_mis as *byte);
+
+    if (cli_buf as int) <= 0 || (prv_buf as int) <= 0 || (mis_buf as int) <= 0 {
+        eia_test_free_buf(cli_buf);
+        eia_test_free_buf(prv_buf);
+        eia_test_free_buf(mis_buf);
+        println("  [FAIL] Failed reading back splice test ELFs");
+        return false;
+    }
+
+    let prv_holo: *mut UniversalHologramHeader = (prv_buf + 128) as *mut UniversalHologramHeader;
+    let prv_coff: uint = (prv_holo.reserved0 - 4194304) as uint;
+    let prv_sc0: *mut SymbolContract = (prv_buf + prv_holo.contracts_offset) as *mut SymbolContract;
+    let prv_sc1: *mut SymbolContract = (prv_buf + prv_holo.contracts_offset + 48) as *mut SymbolContract;
+    prv_sc0.vaddr = prv_holo.reserved0;
+    prv_sc1.vaddr = prv_holo.reserved0 + 16;
+    eia_contract_seal(prv_sc0);
+    eia_contract_seal(prv_sc1);
+    var prv_b3_2: uint = 0;
+    eia_compute_artifact_sealed_digest(prv_buf as *const u8, prv_len, prv_holo as *const UniversalHologramHeader, &mut prv_b3_2);
+    eia_hologram_seal_tables_with_digest(prv_holo, prv_buf as *const u8, prv_len, true, prv_b3_2);
+
+    let big_cap: uint = 2097152;
+    let big_buf: *mut u8 = @os.mmap(0 as *mut byte, big_cap, 3, 34, 0 - 1, 0) as *mut u8;
+    if (big_buf as int) <= 0 {
+        eia_test_free_buf(cli_buf);
+        eia_test_free_buf(prv_buf);
+        eia_test_free_buf(mis_buf);
+        println("  [FAIL] Failed allocating splice work buffer");
+        return false;
+    }
+    var bi: uint = 0;
+    while bi < cli_len {
+        big_buf[bi] = cli_buf[bi];
+        bi = bi + 1;
+    }
+
+    let mis_res: int = eia_relink_binary_bytes_ex(mis_buf, mis_len, 262144, prv_buf as *const u8, prv_len, 0 as *mut uint);
+    var new_len: uint = 0;
+    let sp_res: int = eia_relink_binary_bytes_ex(big_buf, cli_len, big_cap, prv_buf as *const u8, prv_len, &mut new_len);
+
+    var ok: bool = true;
+    if mis_res != -5 {
+        println("  [FAIL] Missing provider import was not rejected with -5");
+        ok = false;
+    }
+    let splice_off: uint = ((cli_len + 4095) / 4096) * 4096;
+    let cli_holo: *const UniversalHologramHeader = (big_buf + 128) as *const UniversalHologramHeader;
+    let c_coff: uint = (cli_holo.reserved0 - 4194304) as uint;
+    let expected_rel32: u32 = ((splice_off - c_coff + 16) - 24) as u32;
+
+    if sp_res != 1 || new_len <= cli_len {
+        println("  [FAIL] Multi-image splice relink failed or did not expand binary");
+        ok = false;
+    } else if eia_verify_artifact_bytes(big_buf as *const u8, new_len) != 0 {
+        println("  [FAIL] Post-splice artifact failed EIA verification");
+        ok = false;
+    } else {
+        let cli_sc1: *const SymbolContract = (big_buf + cli_holo.contracts_offset + 48) as *const SymbolContract;
+        let patched_rel32: u32 = eia_patch_read_u32((big_buf + c_coff + 20) as *const u8);
+        if (cli_sc1.flags & EIA_SYM_DEFINED) == 0 || (cli_sc1.flags & EIA_SYM_IMPORT) != 0 || cli_sc1.vaddr != (4194304 + splice_off + 16) {
+            println("  [FAIL] Spliced import contract was not promoted with relocated vaddr");
+            ok = false;
+        } else if patched_rel32 != expected_rel32 {
+            println("  [FAIL] Cross-image E8 CALL32 displacement mismatch after splice");
+            ok = false;
+        } else if big_buf[splice_off + 16] != 0x48 || big_buf[splice_off + 19] != 0xC3 {
+            println("  [FAIL] Spliced provider machine code bytes missing at expected page offset");
+            ok = false;
+        } else {
+            big_buf[splice_off + 17] = big_buf[splice_off + 17] ^ 1;
+            if eia_verify_artifact_bytes(big_buf as *const u8, new_len) != -3 {
+                println("  [FAIL] Tamper in spliced provider .text was not rejected with -3");
+                ok = false;
+            }
+        }
+    }
+
+    @os.munmap(big_buf as uint, big_cap);
+    eia_test_free_buf(cli_buf);
+    eia_test_free_buf(prv_buf);
+    eia_test_free_buf(mis_buf);
+    if !ok {
+        return false;
+    }
+    println("  [PASS] Multi-image ELF64 splice relink, CALL32 resolution & negative checks verified");
+    return true;
+}
+
+fn eia_test_build_macho4k(
+    out_buf: *mut u8,
+    cap: uint,
+    code: *const u8,
+    code_len: uint,
+    sc_src: *const SymbolContract,
+    sc_cnt: uint,
+    hole_src: *const EiaRelocHole,
+    hole_cnt: uint
+) -> uint {
+    let code_off: uint = 4096;
+    let eia_off: uint = ((code_off + code_len + 4095) / 4096) * 4096;
+    let eia_raw: uint = 96 + (sc_cnt * 48) + (hole_cnt * 24);
+    let eia_vmsz: uint = ((eia_raw + 4095) / 4096) * 4096;
+    let total_sz: uint = eia_off + eia_raw;
+    if total_sz > cap { return 0; }
+    var zi: uint = 0;
+    while zi < total_sz { out_buf[zi] = 0; zi = zi + 1; }
+    eia_patch_write_u32(out_buf + 0, 4277009103);
+    eia_patch_write_u32(out_buf + 4, 16777223);
+    eia_patch_write_u32(out_buf + 8, 2147483651);
+    eia_patch_write_u32(out_buf + 12, 2);
+    eia_patch_write_u32(out_buf + 16, 4);
+    eia_patch_write_u32(out_buf + 20, 320);
+    eia_patch_write_u32(out_buf + 24, 2097153);
+
+    let pz: uint = 32;
+    eia_patch_write_u32(out_buf + pz + 0, 25);
+    eia_patch_write_u32(out_buf + pz + 4, 72);
+    out_buf[pz + 8] = 95; out_buf[pz + 9] = 95; out_buf[pz + 10] = 80; out_buf[pz + 11] = 65;
+    out_buf[pz + 12] = 71; out_buf[pz + 13] = 69; out_buf[pz + 14] = 90; out_buf[pz + 15] = 69;
+    out_buf[pz + 16] = 82; out_buf[pz + 17] = 79;
+    eia_patch_write_u64(out_buf + pz + 32, 4294967296);
+
+    let tx: uint = 104;
+    eia_patch_write_u32(out_buf + tx + 0, 25);
+    eia_patch_write_u32(out_buf + tx + 4, 152);
+    out_buf[tx + 8] = 95; out_buf[tx + 9] = 95; out_buf[tx + 10] = 84; out_buf[tx + 11] = 69;
+    out_buf[tx + 12] = 88; out_buf[tx + 13] = 84;
+    eia_patch_write_u64(out_buf + tx + 24, 4294967296);
+    eia_patch_write_u64(out_buf + tx + 32, eia_off as u64);
+    eia_patch_write_u64(out_buf + tx + 40, 0);
+    eia_patch_write_u64(out_buf + tx + 48, eia_off as u64);
+    eia_patch_write_u32(out_buf + tx + 56, 7);
+    eia_patch_write_u32(out_buf + tx + 60, 5);
+    eia_patch_write_u32(out_buf + tx + 64, 1);
+
+    let sc: uint = tx + 72;
+    out_buf[sc + 0] = 95; out_buf[sc + 1] = 95; out_buf[sc + 2] = 116; out_buf[sc + 3] = 101;
+    out_buf[sc + 4] = 120; out_buf[sc + 5] = 116;
+    out_buf[sc + 16] = 95; out_buf[sc + 17] = 95; out_buf[sc + 18] = 84; out_buf[sc + 19] = 69;
+    out_buf[sc + 20] = 88; out_buf[sc + 21] = 84;
+    eia_patch_write_u64(out_buf + sc + 32, 4294967296 + (code_off as u64));
+    eia_patch_write_u64(out_buf + sc + 40, code_len as u64);
+    eia_patch_write_u32(out_buf + sc + 48, code_off as u32);
+    eia_patch_write_u32(out_buf + sc + 68, 2147484672);
+
+    let mn: uint = 256;
+    eia_patch_write_u32(out_buf + mn + 0, 2147483688);
+    eia_patch_write_u32(out_buf + mn + 4, 24);
+    eia_patch_write_u64(out_buf + mn + 8, code_off as u64);
+
+    let es: uint = 280;
+    eia_patch_write_u32(out_buf + es + 0, 25);
+    eia_patch_write_u32(out_buf + es + 4, 72);
+    out_buf[es + 8] = 95; out_buf[es + 9] = 95; out_buf[es + 10] = 69; out_buf[es + 11] = 73; out_buf[es + 12] = 65;
+    eia_patch_write_u64(out_buf + es + 24, 4294967296 + (eia_off as u64));
+    eia_patch_write_u64(out_buf + es + 32, eia_vmsz as u64);
+    eia_patch_write_u64(out_buf + es + 40, eia_off as u64);
+    eia_patch_write_u64(out_buf + es + 48, eia_raw as u64);
+    eia_patch_write_u32(out_buf + es + 56, 1);
+    eia_patch_write_u32(out_buf + es + 60, 1);
+
+    var ci: uint = 0;
+    while ci < code_len { out_buf[code_off + ci] = code[ci]; ci = ci + 1; }
+    if !eia_populate_and_seal_hologram(
+        out_buf, total_sz, eia_off,
+        eia_off + 96, sc_src, sc_cnt,
+        eia_off + 96 + (sc_cnt * 48), hole_src, hole_cnt,
+        eia_off + 96 + (sc_cnt * 48) + (hole_cnt * 24), 0 as *const EiaTypeGraphEntry, 0,
+        1, EIA_FLAG_HAS_CODE_HASH, 4294967296 + code_off, 0
+    ) { return 0; }
+    return total_sz;
+}
+
+fn test_eia_pe_macho_ar_and_epoch_proof() -> bool {
+    println("[EIA C2/C4/C5] Verifying abi_epoch policy (-9), .a archive verify, PE .pcode & Mach-O __PCODE splice...");
+
+    let sym_cli: uint = blake3_hash64("pm_cli_main" as *const u8, 11);
+    let sym_prv: uint = blake3_hash64("pm_prov_fn" as *const u8, 10);
+    let sig_fn: uint = blake3_hash64("(u64)->u64" as *const u8, 10);
+
+    var h1: UniversalHologramHeader;
+    var h2: UniversalHologramHeader;
+    eia_hologram_init(&mut h1, 1, 0, 0);
+    eia_hologram_init(&mut h2, (1 << EIA_EPOCH_MAJOR_SHIFT) | 1, 0, 0);
+    var c_sc_ep: SymbolContract;
+    var p_sc_ep: SymbolContract;
+    eia_contract_init_ex(&mut c_sc_ep, sym_prv, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    eia_contract_init_ex(&mut p_sc_ep, sym_prv, sig_fn, 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+    if !eia_epochs_compatible(1, 2) || eia_epochs_compatible(1, (1 << EIA_EPOCH_MAJOR_SHIFT) | 1) {
+        println("  [FAIL] abi_epoch compatibility helper returned wrong answer");
+        return false;
+    }
+    if eia_verify_units_compat(&h1, (&c_sc_ep) as *const u8, &h2, (&p_sc_ep) as *const u8) != -9 {
+        println("  [FAIL] Major abi_epoch mismatch did not return -9");
+        return false;
+    }
+    h1.abi_epoch = 1; h2.abi_epoch = 2;
+    h1.contracts_count = 1;
+    h2.contracts_count = 1;
+    h1.contracts_offset = 0; h2.contracts_offset = 0;
+    if eia_verify_units_compat(&h1, (&c_sc_ep) as *const u8, &h2, (&p_sc_ep) as *const u8) < 0 {
+        println("  [FAIL] Minor abi_epoch upgrade failed compatibility check");
+        return false;
+    }
+
+    var code_c: [u8; 40];
+    var ci: uint = 0;
+    while ci < 40 { code_c[ci] = 0x90; ci = ci + 1; }
+    code_c[19] = 0xE8;
+    code_c[39] = 0xC3;
+
+    var code_p: [u8; 48];
+    var pi: uint = 0;
+    while pi < 48 { code_p[pi] = 0x90; pi = pi + 1; }
+    code_p[7] = 0xC3;
+    code_p[16] = 0x48; code_p[17] = 0x89; code_p[18] = 0xF8; code_p[19] = 0xC3;
+    code_p[47] = 0xC3;
+
+    var v_elf: ExecutableVessel;
+    v_elf.code_ptr = (&code_p[0]) as *const byte;
+    v_elf.code_len = 48;
+    v_elf.entry_offset = 0;
+    let p_ar_elf: *const byte = ".rux_eia_ar_mem.elf" as *const byte;
+    if write_vessel_elf_with_eia(&v_elf, p_ar_elf as *byte, &p_sc_ep, 1, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0) <= 0 {
+        println("  [FAIL] Failed writing ELF member for .a test");
+        return false;
+    }
+    var mem_len: uint = 0;
+    let mem_buf: *mut u8 = eia_test_read_file(p_ar_elf, &mut mem_len);
+    @os.unlink(p_ar_elf as *byte);
+    if (mem_buf as int) <= 0 { return false; }
+
+    let ar_cap: uint = 68 + mem_len + 2;
+    let ar_buf: *mut u8 = @os.mmap(0 as *mut byte, ar_cap, 3, 34, 0 - 1, 0) as *mut u8;
+    var azi: uint = 0;
+    while azi < ar_cap { ar_buf[azi] = 32; azi = azi + 1; }
+    let ar_hdr: *const u8 = "!<arch>\nmod.o/          0           0     0     100644  " as *const u8;
+    var ahi: uint = 0;
+    while ahi < 56 { ar_buf[ahi] = ar_hdr[ahi]; ahi = ahi + 1; }
+    var dsz: uint = mem_len;
+    var dpos: uint = 0;
+    var digits: [u8; 10];
+    while dsz > 0 { digits[dpos] = (48 + (dsz % 10)) as u8; dsz = dsz / 10; dpos = dpos + 1; }
+    var di2: uint = 0;
+    while di2 < dpos { ar_buf[56 + di2] = digits[dpos - 1 - di2]; di2 = di2 + 1; }
+    ar_buf[66] = 96; ar_buf[67] = 10;
+    var mi: uint = 0;
+    while mi < mem_len { ar_buf[68 + mi] = mem_buf[mi]; mi = mi + 1; }
+    let ar_len: uint = 68 + mem_len + (mem_len % 2);
+    if (mem_len % 2) != 0 { ar_buf[68 + mem_len] = 10; }
+    eia_test_free_buf(mem_buf);
+
+    var u_off: uint = 0;
+    var u_len: uint = 0;
+    if !eia_is_ar_archive(ar_buf as *const u8, ar_len) || !eia_ar_first_elf_member(ar_buf as *const u8, ar_len, &mut u_off, &mut u_len) || u_off != 68 || u_len != mem_len {
+        @os.munmap(ar_buf as uint, ar_cap);
+        println("  [FAIL] .a archive member parse failed");
+        return false;
+    }
+    if eia_verify_artifact_bytes(ar_buf as *const u8, ar_len) != 0 {
+        @os.munmap(ar_buf as uint, ar_cap);
+        println("  [FAIL] Valid .a archive failed EIA verification");
+        return false;
+    }
+    let m_holo: *const UniversalHologramHeader = (ar_buf + 68 + 128) as *const UniversalHologramHeader;
+    let m_coff: uint = (m_holo.reserved0 - 4194304) as uint;
+    ar_buf[68 + m_coff] = ar_buf[68 + m_coff] ^ 1;
+    if eia_verify_artifact_bytes(ar_buf as *const u8, ar_len) != -3 {
+        @os.munmap(ar_buf as uint, ar_cap);
+        println("  [FAIL] Tampered .a ELF member did not return -3");
+        return false;
+    }
+    @os.munmap(ar_buf as uint, ar_cap);
+
+    var vc: ExecutableVessel;
+    vc.code_ptr = (&code_c[0]) as *const byte; vc.code_len = 40; vc.entry_offset = 0;
+    var vp: ExecutableVessel;
+    vp.code_ptr = (&code_p[0]) as *const byte; vp.code_len = 48; vp.entry_offset = 0;
+
+    var pe_c_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut pe_c_sc[0], sym_cli, sig_fn, 4259840, 24, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut pe_c_sc[1], sym_prv, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var c_hole: EiaRelocHole;
+    eia_reloc_init(&mut c_hole, 20, RelocPatchKind.CALL32, sym_prv, sym_prv);
+    var pe_p_sc: [SymbolContract; 1];
+    eia_contract_init_ex(&mut pe_p_sc[0], sym_prv, sig_fn, 4259840 + 16, 16, EIA_SYM_DEFINED, 0, 0);
+
+    let p_c_pe: *const byte = ".rux_eia_pm_cli.exe" as *const byte;
+    let p_p_pe: *const byte = ".rux_eia_pm_prv.exe" as *const byte;
+    if write_vessel_pe_with_eia(&vc, p_c_pe as *byte, &pe_c_sc[0], 2, &c_hole, 1, 0 as *const EiaTypeGraphEntry, 0) <= 0 ||
+       write_vessel_pe_with_eia(&vp, p_p_pe as *byte, &pe_p_sc[0], 1, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0) <= 0 {
+        println("  [FAIL] Failed writing PE vessels for .pcode splice test");
+        return false;
+    }
+    var pe_c_len: uint = 0;
+    var pe_p_len: uint = 0;
+    let pe_c_tmp: *mut u8 = eia_test_read_file(p_c_pe, &mut pe_c_len);
+    let pe_p_buf: *mut u8 = eia_test_read_file(p_p_pe, &mut pe_p_len);
+    @os.unlink(p_c_pe as *byte);
+    @os.unlink(p_p_pe as *byte);
+    if (pe_c_tmp as int) <= 0 || (pe_p_buf as int) <= 0 { return false; }
+
+    let work_cap: uint = 262144;
+    let work_buf: *mut u8 = @os.mmap(0 as *mut byte, work_cap, 3, 34, 0 - 1, 0) as *mut u8;
+    var wi: uint = 0;
+    while wi < pe_c_len { work_buf[wi] = pe_c_tmp[wi]; wi = wi + 1; }
+    eia_test_free_buf(pe_c_tmp);
+
+    var pe_new_len: uint = 0;
+    let pe_res: int = eia_relink_binary_bytes_ex(work_buf, pe_c_len, work_cap, pe_p_buf as *const u8, pe_p_len, &mut pe_new_len);
+    let p_pe_holo: *mut UniversalHologramHeader = (pe_p_buf + (eia_locate_hologram_offset(pe_p_buf as *const u8, pe_p_len) as uint)) as *mut UniversalHologramHeader;
+    p_pe_holo.abi_epoch = (1 << EIA_EPOCH_MAJOR_SHIFT) | 1;
+    var ep_b3: uint = 0;
+    eia_compute_artifact_sealed_digest(pe_p_buf as *const u8, pe_p_len, p_pe_holo as *const UniversalHologramHeader, &mut ep_b3);
+    eia_hologram_seal_tables_with_digest(p_pe_holo, pe_p_buf as *const u8, pe_p_len, true, ep_b3);
+    var ep_out_len: uint = 0;
+    let ep_res: int = eia_relink_binary_bytes_ex(work_buf, pe_new_len, work_cap, pe_p_buf as *const u8, pe_p_len, &mut ep_out_len);
+    eia_test_free_buf(pe_p_buf);
+
+    if ep_res != -9 {
+        @os.munmap(work_buf as uint, work_cap);
+        println("  [FAIL] eia_relink_binary_bytes_ex did not return -9 on major abi_epoch mismatch");
+        return false;
+    }
+    if pe_res != 1 || pe_new_len <= pe_c_len || eia_verify_artifact_bytes(work_buf as *const u8, pe_new_len) != 0 {
+        @os.munmap(work_buf as uint, work_cap);
+        println("  [FAIL] PE32+ .pcode splice relink failed post-relink verify");
+        return false;
+    }
+    let pe_rel32: u32 = eia_patch_read_u32((work_buf + 512 + 20) as *const u8);
+    let exp_pe_rel32: u32 = ((12288 + 16) - (4096 + 24)) as u32;
+    if pe_rel32 != exp_pe_rel32 || work_buf[12288 + 16] != 0x48 || work_buf[12288 + 19] != 0xC3 {
+        @os.munmap(work_buf as uint, work_cap);
+        println("  [FAIL] Spliced PE32+ .pcode code or CALL32 displacement mismatch");
+        return false;
+    }
+    work_buf[12288 + 17] = work_buf[12288 + 17] ^ 1;
+    if eia_verify_artifact_bytes(work_buf as *const u8, pe_new_len) != -3 {
+        @os.munmap(work_buf as uint, work_cap);
+        println("  [FAIL] Tampered PE32+ .pcode byte was not rejected with -3");
+        return false;
+    }
+
+    var mc_c_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut mc_c_sc[0], sym_cli, sig_fn, 4259840, 24, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut mc_c_sc[1], sym_prv, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var mc_p_sc: [SymbolContract; 1];
+    eia_contract_init_ex(&mut mc_p_sc[0], sym_prv, sig_fn, 4259840 + 16, 16, EIA_SYM_DEFINED, 0, 0);
+
+    let mc_p_buf: *mut u8 = @os.mmap(0 as *mut byte, work_cap, 3, 34, 0 - 1, 0) as *mut u8;
+    let mc_c_len: uint = eia_test_build_macho4k(work_buf, work_cap, &code_c[0], 40, &mc_c_sc[0], 2, &c_hole, 1);
+    let mc_p_len: uint = eia_test_build_macho4k(mc_p_buf, work_cap, &code_p[0], 48, &mc_p_sc[0], 1, 0 as *const EiaRelocHole, 0);
+    if mc_c_len == 0 || mc_p_len == 0 {
+        @os.munmap(work_buf as uint, work_cap);
+        @os.munmap(mc_p_buf as uint, work_cap);
+        println("  [FAIL] Failed building 4K Mach-O fixtures");
+        return false;
+    }
+    var mc_new_len: uint = 0;
+    let mc_res: int = eia_relink_binary_bytes_ex(work_buf, mc_c_len, work_cap, mc_p_buf as *const u8, mc_p_len, &mut mc_new_len);
+    @os.munmap(mc_p_buf as uint, work_cap);
+    if mc_res != 1 || mc_new_len <= mc_c_len || eia_verify_artifact_bytes(work_buf as *const u8, mc_new_len) != 0 {
+        @os.munmap(work_buf as uint, work_cap);
+        println("  [FAIL] Mach-O __PCODE splice relink failed");
+        return false;
+    }
+    let mc_sp: uint = ((mc_c_len + 4095) / 4096) * 4096;
+    if work_buf[mc_sp + 16] != 0x48 || work_buf[mc_sp + 19] != 0xC3 {
+        @os.munmap(work_buf as uint, work_cap);
+        println("  [FAIL] Spliced Mach-O __PCODE bytes missing");
+        return false;
+    }
+    work_buf[mc_sp + 17] = work_buf[mc_sp + 17] ^ 1;
+    if eia_verify_artifact_bytes(work_buf as *const u8, mc_new_len) != -3 {
+        @os.munmap(work_buf as uint, work_cap);
+        println("  [FAIL] Tampered Mach-O __PCODE byte was not rejected with -3");
+        return false;
+    }
+    @os.munmap(work_buf as uint, work_cap);
+    println("  [PASS] abi_epoch (-9), .a archive, PE32+ .pcode & Mach-O __PCODE splice proofs verified");
+    return true;
+}
+
+fn eia_test_buf_str(dst: *mut u8, pos: *mut uint, cap: uint, s: *const byte) {
+    var i: uint = 0;
+    while s[i] != 0 as byte && pos[0] < cap {
+        dst[pos[0]] = s[i] as u8;
+        pos[0] = pos[0] + 1;
+        i = i + 1;
+    }
+}
+
+fn eia_test_buf_u64(dst: *mut u8, pos: *mut uint, cap: uint, val: uint) {
+    if val == 0 {
+        if pos[0] < cap {
+            dst[pos[0]] = 48;
+            pos[0] = pos[0] + 1;
+        }
+        return;
+    }
+    var tmp: [u8; 24];
+    var len: uint = 0;
+    var v: uint = val;
+    while v > 0 {
+        tmp[len] = (48 + (v % 10)) as u8;
+        v = v / 10;
+        len = len + 1;
+    }
+    while len > 0 && pos[0] < cap {
+        len = len - 1;
+        dst[pos[0]] = tmp[len];
+        pos[0] = pos[0] + 1;
+    }
+}
+
+fn eia_test_compile_mem_src(
+    src: *const byte,
+    src_len: uint,
+    tmp_src_path: *const byte,
+    out_path: *const byte,
+    is_freestanding: bool
+) -> bool {
+    if !eia_test_write_temp_source(tmp_src_path, src, src_len) {
+        return false;
+    }
+    var opts: CompilerOptions = options_default();
+    opts.input_path = tmp_src_path as str;
+    opts.output_path = out_path as str;
+    opts.target_env = TARGET_ENV_LINUX_EIA;
+    opts.is_freestanding = is_freestanding;
+    opts.is_run_mode = false;
+    var ctx: PipelineContext = pipeline_init(opts);
+    let st: PipelineStatus = pipeline_execute(&mut ctx);
+    @os.unlink(tmp_src_path as *byte);
+    return st == PipelineStatus.SUCCESS;
+}
+
+fn test_eia_pipeline_extended_proof() -> bool {
+    println("[EIA C3+] Verifying dynamic pipeline limits (>32 shapes, >16 fields, >64 fns/params, ptr/ret sigs, pub/extern, freestanding empty)...");
+    let scap: uint = 65536;
+    let sbuf: *mut u8 = @os.mmap(0 as *mut byte, scap, 3, 34, 0 - 1, 0) as *mut u8;
+    if (sbuf as int) <= 0 {
+        return false;
+    }
+
+    // Part A: 1 shape with 20 fields (>16) + 34 shapes with 4 fields each = 35 shapes (>32) & 156 TypeGraph entries (>128)
+    var pos: uint = 0;
+    eia_test_buf_str(sbuf, &mut pos, scap, "shape Big20 { " as *const byte);
+    var fi: uint = 0;
+    while fi < 20 {
+        eia_test_buf_str(sbuf, &mut pos, scap, "f" as *const byte);
+        eia_test_buf_u64(sbuf, &mut pos, scap, fi);
+        eia_test_buf_str(sbuf, &mut pos, scap, ": int " as *const byte);
+        fi = fi + 1;
+    }
+    eia_test_buf_str(sbuf, &mut pos, scap, "}\n" as *const byte);
+
+    var si: uint = 0;
+    while si < 34 {
+        eia_test_buf_str(sbuf, &mut pos, scap, "shape S" as *const byte);
+        eia_test_buf_u64(sbuf, &mut pos, scap, si);
+        eia_test_buf_str(sbuf, &mut pos, scap, " { a: int b: int c: int d: int }\n" as *const byte);
+        si = si + 1;
+    }
+    eia_test_buf_str(sbuf, &mut pos, scap, "fn main() -> int { return 0; }\n" as *const byte);
+
+    let p_a_src: *const byte = ".rux_eia_ext_a.rx" as *const byte;
+    let p_a_out: *const byte = ".rux_eia_ext_a.elf" as *const byte;
+    if !eia_test_compile_mem_src(sbuf as *const byte, pos, p_a_src, p_a_out, false) {
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] Pipeline failed on >32 shapes / >16 fields / >128 TypeGraph entries");
+        return false;
+    }
+    var alen: uint = 0;
+    let abuf: *mut u8 = eia_test_read_file(p_a_out, &mut alen);
+    @os.unlink(p_a_out as *byte);
+    if (abuf as int) <= 0 || eia_verify_artifact_bytes(abuf as *const u8, alen) != 0 {
+        if (abuf as int) > 0 { eia_test_free_buf(abuf); }
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] Dynamic shape pipeline output failed EIA verification");
+        return false;
+    }
+    let a_hoff: i64 = eia_locate_hologram_offset(abuf as *const u8, alen);
+    if a_hoff < 0 {
+        eia_test_free_buf(abuf);
+        @os.munmap(sbuf as uint, scap);
+        return false;
+    }
+    let a_holo: *const UniversalHologramHeader = (abuf + (a_hoff as uint)) as *const UniversalHologramHeader;
+    if a_holo.type_graph_size != (156 * 24) {
+        eia_test_free_buf(abuf);
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] Pipeline truncated dynamic shapes or >128 TypeGraph entries");
+        return false;
+    }
+    let tg_big19_off: u32 = eia_resolve_field_displacement(
+        (abuf + a_holo.type_graph_offset) as *const EiaTypeGraphEntry,
+        156,
+        hash_string("Big20" as *byte, 5),
+        hash_string("f19" as *byte, 3)
+    );
+    eia_test_free_buf(abuf);
+    if tg_big19_off != 152 {
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] Big20 field f19 offset mismatch (expected 152)");
+        return false;
+    }
+
+    // Part B: >64 functions (68), >64 params (66), extern IMPORT + pub PUBLIC
+    pos = 0;
+    eia_test_buf_str(sbuf, &mut pos, scap, "extern fn ext_sym(a: int, b: *int) -> int;\n" as *const byte);
+    eia_test_buf_str(sbuf, &mut pos, scap, "pub fn pub_sym(x: *mut int) -> *int { return x as *int; }\n" as *const byte);
+    eia_test_buf_str(sbuf, &mut pos, scap, "fn many_p(" as *const byte);
+    var pi: uint = 0;
+    while pi < 66 {
+        if pi > 0 { eia_test_buf_str(sbuf, &mut pos, scap, ", " as *const byte); }
+        eia_test_buf_str(sbuf, &mut pos, scap, "p" as *const byte);
+        eia_test_buf_u64(sbuf, &mut pos, scap, pi);
+        eia_test_buf_str(sbuf, &mut pos, scap, ": int" as *const byte);
+        pi = pi + 1;
+    }
+    eia_test_buf_str(sbuf, &mut pos, scap, ") -> int { return p0; }\n" as *const byte);
+    var fni: uint = 0;
+    while fni < 65 {
+        eia_test_buf_str(sbuf, &mut pos, scap, "fn fn_" as *const byte);
+        eia_test_buf_u64(sbuf, &mut pos, scap, fni);
+        eia_test_buf_str(sbuf, &mut pos, scap, "() -> int { return 0; }\n" as *const byte);
+        fni = fni + 1;
+    }
+
+    let p_b_src: *const byte = ".rux_eia_ext_b.rx" as *const byte;
+    let p_b_out: *const byte = ".rux_eia_ext_b.elf" as *const byte;
+    if !eia_test_compile_mem_src(sbuf as *const byte, pos, p_b_src, p_b_out, false) {
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] Pipeline failed on >64 functions / >64 params / extern+pub");
+        return false;
+    }
+    var blen: uint = 0;
+    let bbuf: *mut u8 = eia_test_read_file(p_b_out, &mut blen);
+    @os.unlink(p_b_out as *byte);
+    if (bbuf as int) <= 0 || eia_verify_artifact_bytes(bbuf as *const u8, blen) != 0 {
+        if (bbuf as int) > 0 { eia_test_free_buf(bbuf); }
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] >64 function pipeline output failed EIA verification");
+        return false;
+    }
+    let b_hoff: i64 = eia_locate_hologram_offset(bbuf as *const u8, blen);
+    if b_hoff < 0 {
+        eia_test_free_buf(bbuf);
+        @os.munmap(sbuf as uint, scap);
+        return false;
+    }
+    let b_holo: *const UniversalHologramHeader = (bbuf + (b_hoff as uint)) as *const UniversalHologramHeader;
+    if b_holo.contracts_count != 68 {
+        eia_test_free_buf(bbuf);
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] Expected 68 contracts (>64) from pipeline");
+        return false;
+    }
+    let b_contracts: *const SymbolContract = (bbuf + b_holo.contracts_offset) as *const SymbolContract;
+    let sc_ext: *const SymbolContract = eia_find_contract(b_contracts, b_holo.contracts_count, hash_string("ext_sym" as *byte, 7), 0);
+    let sc_pub: *const SymbolContract = eia_find_contract(b_contracts, b_holo.contracts_count, hash_string("pub_sym" as *byte, 7), 0);
+    if sc_ext == (0 as *const SymbolContract) || (sc_ext.flags & EIA_SYM_IMPORT) == 0 || sc_ext.vaddr != 0 || sc_ext.code_size != 0 ||
+       sc_pub == (0 as *const SymbolContract) || (sc_pub.flags & EIA_SYM_PUBLIC) == 0 || (sc_pub.flags & EIA_SYM_DEFINED) == 0 || sc_pub.vaddr == 0 {
+        eia_test_free_buf(bbuf);
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] extern fn / pub fn contract flags or vaddr incorrect");
+        return false;
+    }
+    eia_test_free_buf(bbuf);
+
+    // Part C: Distinct pointer/return type signatures on same symbol name
+    let s1: *const byte = "pub fn probe(x: int) -> int { return x; }\n" as *const byte;
+    let s2: *const byte = "pub fn probe(x: int) -> *int { return 0 as *int; }\n" as *const byte;
+    let s3: *const byte = "pub fn probe(x: *int) -> int { return 0; }\n" as *const byte;
+    var p_sigs: [uint; 3];
+    var p_variants: [*const byte; 3];
+    p_variants[0] = s1; p_variants[1] = s2; p_variants[2] = s3;
+    let sym_probe: uint = hash_string("probe" as *byte, 5);
+    var vi: uint = 0;
+    while vi < 3 {
+        var vlen: uint = 0;
+        while p_variants[vi][vlen] != 0 as byte { vlen = vlen + 1; }
+        let vp_src: *const byte = ".rux_eia_sig_tmp.rx" as *const byte;
+        let vp_out: *const byte = ".rux_eia_sig_tmp.elf" as *const byte;
+        if !eia_test_compile_mem_src(p_variants[vi], vlen, vp_src, vp_out, false) {
+            @os.munmap(sbuf as uint, scap);
+            return false;
+        }
+        var ulen: uint = 0;
+        let ubuf: *mut u8 = eia_test_read_file(vp_out, &mut ulen);
+        @os.unlink(vp_out as *byte);
+        if (ubuf as int) <= 0 {
+            @os.munmap(sbuf as uint, scap);
+            return false;
+        }
+        let uhoff: i64 = eia_locate_hologram_offset(ubuf as *const u8, ulen);
+        if uhoff < 0 {
+            eia_test_free_buf(ubuf);
+            @os.munmap(sbuf as uint, scap);
+            return false;
+        }
+        let uholo: *const UniversalHologramHeader = (ubuf + (uhoff as uint)) as *const UniversalHologramHeader;
+        let usc: *const SymbolContract = eia_find_contract((ubuf + uholo.contracts_offset) as *const SymbolContract, uholo.contracts_count, sym_probe, 0);
+        if usc == (0 as *const SymbolContract) {
+            eia_test_free_buf(ubuf);
+            @os.munmap(sbuf as uint, scap);
+            return false;
+        }
+        p_sigs[vi] = usc.type_sig_hash;
+        eia_test_free_buf(ubuf);
+        vi = vi + 1;
+    }
+    if p_sigs[0] == p_sigs[1] || p_sigs[0] == p_sigs[2] || p_sigs[1] == p_sigs[2] {
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] Distinct ptr/return signatures collided in pipeline sig_hash");
+        return false;
+    }
+
+    // Part D: Empty/code-less freestanding source must still emit sealed EIA ELF (never hologram-less 174B ELF)
+    let empty_fs: *const byte = "// code-less freestanding marker\nshape Marker { v: int }\n" as *const byte;
+    var efs_len: uint = 0;
+    while empty_fs[efs_len] != 0 as byte { efs_len = efs_len + 1; }
+    let p_efs_src: *const byte = ".rux_eia_empty_fs.rx" as *const byte;
+    let p_efs_out: *const byte = ".rux_eia_empty_fs.elf" as *const byte;
+    if !eia_test_compile_mem_src(empty_fs, efs_len, p_efs_src, p_efs_out, true) {
+        @os.munmap(sbuf as uint, scap);
+        println("  [FAIL] Code-less freestanding compilation failed");
+        return false;
+    }
+    var rlen: uint = 0;
+    let rbuf: *mut u8 = eia_test_read_file(p_efs_out, &mut rlen);
+    @os.unlink(p_efs_out as *byte);
+    @os.munmap(sbuf as uint, scap);
+    if (rbuf as int) <= 0 {
+        return false;
+    }
+    let rhoff: i64 = eia_locate_hologram_offset(rbuf as *const u8, rlen);
+    var rcoff: uint = 0;
+    var rclen: uint = 0;
+    var efs_ok: bool = (rhoff == 128) && (eia_verify_artifact_bytes(rbuf as *const u8, rlen) == 0);
+    if efs_ok {
+        let rholo: *const UniversalHologramHeader = (rbuf + 128) as *const UniversalHologramHeader;
+        efs_ok = ((rholo.flags & EIA_FLAG_FREESTANDING) != 0) &&
+                 eia_locate_code_span(rbuf as *const u8, rlen, rholo, &mut rcoff, &mut rclen) &&
+                 rclen >= 9;
+    }
+    eia_test_free_buf(rbuf);
+    if !efs_ok {
+        println("  [FAIL] Code-less freestanding source emitted hologram-less or unverified ELF");
+        return false;
+    }
+    println("  [PASS] Extended pipeline limits, signature hashing, pub/extern & freestanding ELF verified");
+    return true;
+}
+
+fn test_eia_malformed_hologram_rejection() -> bool {
+    println("[EIA C4-] Verifying malformed hologram bounds, overflow, overlap & contract contradiction rejection...");
+    var code: [u8; 16];
+    var ci: uint = 0;
+    while ci < 16 { code[ci] = 0x90; ci = ci + 1; }
+    code[15] = 0xC3;
+
+    var v: ExecutableVessel;
+    v.code_ptr = (&code[0]) as *const byte;
+    v.code_len = 16;
+    v.entry_offset = 0;
+
+    let t_h: uint = blake3_hash64("BadHdrStruct" as *const u8, 12);
+    let f_h: uint = blake3_hash64("x" as *const u8, 1);
+    var sc: SymbolContract;
+    eia_contract_init_ex(&mut sc, blake3_hash64("mal_fn" as *const u8, 6), blake3_hash64("()->int" as *const u8, 7), 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+    var tg: EiaTypeGraphEntry;
+    eia_type_graph_entry_init(&mut tg, t_h, f_h, 0, 8);
+    var hole: EiaRelocHole;
+    eia_reloc_init(&mut hole, 3, RelocPatchKind.DISP32, t_h, f_h);
+
+    let p_elf: *const byte = ".rux_eia_mal_tmp.elf" as *const byte;
+    if write_vessel_elf_with_eia(&v, p_elf as *byte, &sc, 1, &hole, 1, &tg, 1) <= 0 {
+        return false;
+    }
+    var blen: uint = 0;
+    let orig: *mut u8 = eia_test_read_file(p_elf, &mut blen);
+    @os.unlink(p_elf as *byte);
+    if (orig as int) <= 0 || blen < 256 {
+        if (orig as int) > 0 { eia_test_free_buf(orig); }
+        return false;
+    }
+
+    let copy_buf: *mut u8 = @os.mmap(0 as *mut byte, blen, 3, 34, 0 - 1, 0) as *mut u8;
+    if (copy_buf as int) <= 0 {
+        eia_test_free_buf(orig);
+        return false;
+    }
+
+    var ok: bool = true;
+    var case_idx: uint = 0;
+    while case_idx < 4 {
+        var i: uint = 0;
+        while i < blen { copy_buf[i] = orig[i]; i = i + 1; }
+        let hdr: *mut UniversalHologramHeader = (copy_buf + 128) as *mut UniversalHologramHeader;
+        if case_idx == 0 {
+            hdr.contracts_offset = blen;
+        } else if case_idx == 1 {
+            hdr.contracts_count = 0x1000000000000001;
+        } else if case_idx == 2 {
+            hdr.type_graph_offset = hdr.contracts_offset;
+        } else {
+            hdr.relocs_offset = 128;
+        }
+        let vr: int = eia_verify_artifact_bytes(copy_buf as *const u8, blen);
+        if vr != -2 && vr != -4 {
+            println("  [FAIL] Malformed hologram case was not rejected with -2/-4");
+            ok = false;
+        }
+        case_idx = case_idx + 1;
+    }
+
+    var bad_sc: SymbolContract;
+    eia_contract_init_ex(&mut bad_sc, 111, 222, 4259840, 16, EIA_SYM_DEFINED | EIA_SYM_IMPORT, 0, 0);
+    if eia_verify_contracts_table(&bad_sc, 1) >= 0 || eia_verify_contracts_table(0 as *const SymbolContract, 1) >= 0 {
+        println("  [FAIL] eia_verify_contracts_table failed to reject DEFINED|IMPORT contradiction or null ptr");
+        ok = false;
+    }
+
+    @os.munmap(copy_buf as uint, blen);
+    eia_test_free_buf(orig);
+    if ok {
+        println("  [PASS] Hologram bounds, overflow, overlap & contradiction rejections verified");
+    }
+    return ok;
+}
+
+fn test_eia_rodata_and_wasm_data_tamper() -> bool {
+    println("[EIA C4+] Verifying immutable .rodata/.rdata/Wasm Data section tamper detection (-3)...");
+
+    // 1. Wasm Data section (sec_id == 11)
+    var wbuf: [u8; 512];
+    var wi: uint = 0;
+    while wi < 512 { wbuf[wi] = 0; wi = wi + 1; }
+    wbuf[0] = 0; wbuf[1] = 97; wbuf[2] = 115; wbuf[3] = 109; wbuf[4] = 1;
+    wbuf[8] = 10; wbuf[9] = 4; wbuf[10] = 1; wbuf[11] = 2; wbuf[12] = 0; wbuf[13] = 11;
+    wbuf[14] = 11; wbuf[15] = 6; wbuf[16] = 1; wbuf[17] = 0; wbuf[18] = 65; wbuf[19] = 0; wbuf[20] = 11; wbuf[21] = 82;
+    let w_sec_len: uint = 4 + 96 + 48;
+    wbuf[22] = 0;
+    wbuf[23] = ((w_sec_len & 127) | 128) as u8;
+    wbuf[24] = ((w_sec_len >> 7) & 127) as u8;
+    wbuf[25] = 3; wbuf[26] = 101; wbuf[27] = 105; wbuf[28] = 97;
+    let w_holo_off: uint = 29;
+    let w_c_off: uint = w_holo_off + 96;
+    let w_total: uint = 25 + w_sec_len;
+
+    var w_sc: SymbolContract;
+    eia_contract_init_ex(&mut w_sc, blake3_hash64("wasm_data_fn" as *const u8, 12), blake3_hash64("()->i64" as *const u8, 7), 4259840, 4, EIA_SYM_DEFINED, 0, 0);
+    if !eia_populate_and_seal_hologram(&mut wbuf[0], w_total, w_holo_off, w_c_off, &w_sc, 1, w_c_off + 48, 0 as *const EiaRelocHole, 0, w_c_off + 48, 0 as *const EiaTypeGraphEntry, 0, 1, EIA_FLAG_HAS_CODE_HASH, 65536, 65536) {
+        return false;
+    }
+    if eia_verify_artifact_bytes((&wbuf[0]) as *const u8, w_total) != 0 {
+        return false;
+    }
+    wbuf[21] = wbuf[21] ^ 1;
+    if eia_verify_artifact_bytes((&wbuf[0]) as *const u8, w_total) != -3 {
+        println("  [FAIL] Tamper in Wasm Data section was not rejected with -3");
+        return false;
+    }
+
+    // 2. ELF64 with SHT .rodata (sh_type == 1, (sh_flags & 7) == 2)
+    var ebuf: [u8; 1024];
+    var ei: uint = 0;
+    while ei < 1024 { ebuf[ei] = 0; ei = ei + 1; }
+    let e_holo_off: uint = 128;
+    let e_c_off: uint = 224;
+    let e_code_off: uint = 384;
+    let e_ro_off: uint = 400;
+    let e_shstr_off: uint = 416;
+    let e_sh_off: uint = 512;
+    let e_total: uint = e_sh_off + (4 * 64);
+
+    ebuf[0] = 127; ebuf[1] = 69; ebuf[2] = 76; ebuf[3] = 70;
+    ebuf[4] = 2; ebuf[5] = 1; ebuf[6] = 1;
+    eia_patch_write_u16(&mut ebuf[16], 2);
+    eia_patch_write_u16(&mut ebuf[18], 62);
+    eia_patch_write_u32(&mut ebuf[20], 1);
+    eia_patch_write_u64(&mut ebuf[24], 4194304 + (e_code_off as u64));
+    eia_patch_write_u64(&mut ebuf[32], 64);
+    eia_patch_write_u64(&mut ebuf[40], e_sh_off as u64);
+    eia_patch_write_u16(&mut ebuf[52], 64);
+    eia_patch_write_u16(&mut ebuf[54], 56);
+    eia_patch_write_u16(&mut ebuf[56], 1);
+    eia_patch_write_u16(&mut ebuf[58], 64);
+    eia_patch_write_u16(&mut ebuf[60], 4);
+    eia_patch_write_u16(&mut ebuf[62], 3);
+
+    eia_patch_write_u32(&mut ebuf[64], 1);
+    eia_patch_write_u32(&mut ebuf[68], 5);
+    eia_patch_write_u64(&mut ebuf[72], 0);
+    eia_patch_write_u64(&mut ebuf[80], 4194304);
+    eia_patch_write_u64(&mut ebuf[88], 4194304);
+    eia_patch_write_u64(&mut ebuf[96], e_total as u64);
+    eia_patch_write_u64(&mut ebuf[104], e_total as u64);
+    eia_patch_write_u64(&mut ebuf[112], 4096);
+
+    ebuf[e_code_off] = 0x48; ebuf[e_code_off + 1] = 0x31; ebuf[e_code_off + 2] = 0xC0; ebuf[e_code_off + 3] = 0xC3;
+    var ri: uint = 0;
+    while ri < 16 { ebuf[e_ro_off + ri] = (65 + ri) as u8; ri = ri + 1; }
+
+    let shstr: *const u8 = "\x00.text\x00.rodata\x00.shstrtab\x00" as *const u8;
+    var si2: uint = 0;
+    while si2 < 25 { ebuf[e_shstr_off + si2] = shstr[si2]; si2 = si2 + 1; }
+
+    let sh1: uint = e_sh_off + 64;
+    eia_patch_write_u32(&mut ebuf[sh1 + 0], 1);
+    eia_patch_write_u32(&mut ebuf[sh1 + 4], 1);
+    eia_patch_write_u64(&mut ebuf[sh1 + 8], 6);
+    eia_patch_write_u64(&mut ebuf[sh1 + 16], 4194304 + (e_code_off as u64));
+    eia_patch_write_u64(&mut ebuf[sh1 + 24], e_code_off as u64);
+    eia_patch_write_u64(&mut ebuf[sh1 + 32], 16);
+
+    let sh2: uint = e_sh_off + 128;
+    eia_patch_write_u32(&mut ebuf[sh2 + 0], 7);
+    eia_patch_write_u32(&mut ebuf[sh2 + 4], 1);
+    eia_patch_write_u64(&mut ebuf[sh2 + 8], 2);
+    eia_patch_write_u64(&mut ebuf[sh2 + 16], 4194304 + (e_ro_off as u64));
+    eia_patch_write_u64(&mut ebuf[sh2 + 24], e_ro_off as u64);
+    eia_patch_write_u64(&mut ebuf[sh2 + 32], 16);
+
+    let sh3: uint = e_sh_off + 192;
+    eia_patch_write_u32(&mut ebuf[sh3 + 0], 15);
+    eia_patch_write_u32(&mut ebuf[sh3 + 4], 3);
+    eia_patch_write_u64(&mut ebuf[sh3 + 24], e_shstr_off as u64);
+    eia_patch_write_u64(&mut ebuf[sh3 + 32], 25);
+
+    var esc: SymbolContract;
+    eia_contract_init_ex(&mut esc, blake3_hash64("elf_ro_main" as *const u8, 11), blake3_hash64("()->i64" as *const u8, 7), 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+    if !eia_populate_and_seal_hologram(&mut ebuf[0], e_total, e_holo_off, e_c_off, &esc, 1, e_c_off + 48, 0 as *const EiaRelocHole, 0, e_c_off + 48, 0 as *const EiaTypeGraphEntry, 0, 1, EIA_FLAG_HAS_CODE_HASH, 4194304 + e_code_off, 4194304 + e_ro_off) {
+        return false;
+    }
+    if eia_verify_artifact_bytes((&ebuf[0]) as *const u8, e_total) != 0 {
+        println("  [FAIL] ELF64 SHT .rodata binary failed initial verification");
+        return false;
+    }
+    ebuf[e_ro_off + 3] = ebuf[e_ro_off + 3] ^ 1;
+    if eia_verify_artifact_bytes((&ebuf[0]) as *const u8, e_total) != -3 {
+        println("  [FAIL] Tamper in ELF64 SHT .rodata was not rejected with -3");
+        return false;
+    }
+
+    // 3. PE32+ .rdata section
+    var pbuf: [u8; 2560];
+    var pi2: uint = 0;
+    while pi2 < 2560 { pbuf[pi2] = 0; pi2 = pi2 + 1; }
+    pbuf[0] = 77; pbuf[1] = 90;
+    eia_patch_write_u32(&mut pbuf[60], 128);
+    pbuf[128] = 80; pbuf[129] = 69;
+    eia_patch_write_u16(&mut pbuf[132], 0x8664);
+    eia_patch_write_u16(&mut pbuf[134], 3);
+    eia_patch_write_u16(&mut pbuf[148], 240);
+    eia_patch_write_u16(&mut pbuf[150], 0x0022);
+    eia_patch_write_u16(&mut pbuf[152], 0x020B);
+    eia_patch_write_u32(&mut pbuf[168], 4096);
+    eia_patch_write_u64(&mut pbuf[176], 5368709120);
+    eia_patch_write_u32(&mut pbuf[184], 4096);
+    eia_patch_write_u32(&mut pbuf[188], 512);
+    eia_patch_write_u32(&mut pbuf[208], 16384);
+    eia_patch_write_u32(&mut pbuf[212], 1024);
+
+    // .text @ 1024
+    pbuf[392] = 46; pbuf[393] = 116; pbuf[394] = 101; pbuf[395] = 120; pbuf[396] = 116;
+    eia_patch_write_u32(&mut pbuf[400], 16);
+    eia_patch_write_u32(&mut pbuf[404], 4096);
+    eia_patch_write_u32(&mut pbuf[408], 512);
+    eia_patch_write_u32(&mut pbuf[412], 1024);
+    eia_patch_write_u32(&mut pbuf[428], 0x60000020);
+    // .rdata @ 1536
+    pbuf[432] = 46; pbuf[433] = 114; pbuf[434] = 100; pbuf[435] = 97; pbuf[436] = 116; pbuf[437] = 97;
+    eia_patch_write_u32(&mut pbuf[440], 16);
+    eia_patch_write_u32(&mut pbuf[444], 8192);
+    eia_patch_write_u32(&mut pbuf[448], 512);
+    eia_patch_write_u32(&mut pbuf[452], 1536);
+    eia_patch_write_u32(&mut pbuf[468], 0x40000040);
+    // .eia @ 2048
+    pbuf[472] = 46; pbuf[473] = 101; pbuf[474] = 105; pbuf[475] = 97;
+    eia_patch_write_u32(&mut pbuf[480], 144);
+    eia_patch_write_u32(&mut pbuf[484], 12288);
+    eia_patch_write_u32(&mut pbuf[488], 512);
+    eia_patch_write_u32(&mut pbuf[492], 2048);
+    eia_patch_write_u32(&mut pbuf[508], 0x40000040);
+
+    pbuf[1024] = 0x31; pbuf[1025] = 0xC0; pbuf[1026] = 0xC3;
+    pbuf[1536] = 80; pbuf[1537] = 69; pbuf[1538] = 82; pbuf[1539] = 68;
+    if !eia_populate_and_seal_hologram(&mut pbuf[0], 2560, 2048, 2144, &esc, 1, 2192, 0 as *const EiaRelocHole, 0, 2192, 0 as *const EiaTypeGraphEntry, 0, 1, EIA_FLAG_HAS_CODE_HASH, 4096, 8192) {
+        return false;
+    }
+    if eia_verify_artifact_bytes((&pbuf[0]) as *const u8, 2560) != 0 {
+        println("  [FAIL] PE32+ .rdata binary failed initial verification");
+        return false;
+    }
+    pbuf[1538] = pbuf[1538] ^ 1;
+    if eia_verify_artifact_bytes((&pbuf[0]) as *const u8, 2560) != -3 {
+        println("  [FAIL] Tamper in PE32+ .rdata section was not rejected with -3");
+        return false;
+    }
+
+    // 4. Mach-O __rodata [reserved1 .. holo_off)
+    let mcap: uint = 16384;
+    let mbuf: *mut u8 = @os.mmap(0 as *mut byte, mcap, 3, 34, 0 - 1, 0) as *mut u8;
+    if (mbuf as int) <= 0 {
+        return false;
+    }
+    var mcode: [u8; 16];
+    var mci: uint = 0;
+    while mci < 16 { mcode[mci] = 0x90; mci = mci + 1; }
+    mcode[15] = 0xC3;
+    let m_total: uint = eia_test_build_macho4k(mbuf, mcap, &mcode[0], 16, &esc, 1, 0 as *const EiaRelocHole, 0);
+    if m_total == 0 {
+        @os.munmap(mbuf as uint, mcap);
+        return false;
+    }
+    let m_hoff: uint = eia_locate_hologram_offset(mbuf as *const u8, m_total) as uint;
+    mbuf[4112] = 77; mbuf[4113] = 65; mbuf[4114] = 67; mbuf[4115] = 72;
+    if !eia_populate_and_seal_hologram(mbuf, m_total, m_hoff, m_hoff + 96, &esc, 1, m_hoff + 144, 0 as *const EiaRelocHole, 0, m_hoff + 144, 0 as *const EiaTypeGraphEntry, 0, 1, EIA_FLAG_HAS_CODE_HASH, 4096, 4112) {
+        @os.munmap(mbuf as uint, mcap);
+        return false;
+    }
+    var m_ok: bool = (eia_verify_artifact_bytes(mbuf as *const u8, m_total) == 0);
+    if m_ok {
+        mbuf[4113] = mbuf[4113] ^ 1;
+        m_ok = (eia_verify_artifact_bytes(mbuf as *const u8, m_total) == -3);
+    }
+    @os.munmap(mbuf as uint, mcap);
+    if !m_ok {
+        println("  [FAIL] Tamper in Mach-O __rodata [reserved1..holo_off) was not rejected with -3");
+        return false;
+    }
+
+    println("  [PASS] Wasm Data, ELF64 SHT .rodata, PE32+ .rdata & Mach-O __rodata tamper detection verified (-3)");
+    return true;
+}
+
+fn test_eia_chained_relink_and_negatives() -> bool {
+    println("[EIA C5+] Verifying chained multi-provider relink (cli -> provA -> provB) & -5/-7/-8 rejections...");
+    var code_c: [u8; 40];
+    var ci: uint = 0;
+    while ci < 40 { code_c[ci] = 0x90; ci = ci + 1; }
+    code_c[19] = 0xE8;
+    code_c[39] = 0xC3;
+
+    var code_pa: [u8; 32];
+    var pi: uint = 0;
+    while pi < 32 { code_pa[pi] = 0x90; pi = pi + 1; }
+    code_pa[0] = 0x48; code_pa[1] = 0x8B; code_pa[2] = 0x83;
+    code_pa[11] = 0xE8;
+    code_pa[31] = 0xC3;
+
+    var code_pb: [u8; 32];
+    var bi: uint = 0;
+    while bi < 32 { code_pb[bi] = 0x90; bi = bi + 1; }
+    code_pb[16] = 0x48; code_pb[17] = 0x89; code_pb[18] = 0xF8; code_pb[19] = 0xC3;
+    code_pb[31] = 0xC3;
+
+    let sym_cli: uint = blake3_hash64("ch_cli" as *const u8, 6);
+    let sym_foo: uint = blake3_hash64("ch_foo" as *const u8, 6);
+    let sym_bar: uint = blake3_hash64("ch_bar" as *const u8, 6);
+    let sig_fn: uint = blake3_hash64("(u64)->u64" as *const u8, 10);
+    let t_ch: uint = blake3_hash64("ChainRec" as *const u8, 8);
+    let f_ch: uint = blake3_hash64("k_off" as *const u8, 5);
+
+    var c_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut c_sc[0], sym_cli, sig_fn, 4259840, 24, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut c_sc[1], sym_foo, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var c_hole: EiaRelocHole;
+    eia_reloc_init(&mut c_hole, 20, RelocPatchKind.CALL32, sym_foo, sym_foo);
+
+    var pa_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut pa_sc[0], sym_foo, sig_fn, 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut pa_sc[1], sym_bar, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var pa_tg: EiaTypeGraphEntry;
+    eia_type_graph_entry_init(&mut pa_tg, t_ch, f_ch, 40, 8);
+    var pa_holes: [EiaRelocHole; 2];
+    eia_reloc_init(&mut pa_holes[0], 3, RelocPatchKind.DISP32, t_ch, f_ch);
+    eia_reloc_init(&mut pa_holes[1], 12, RelocPatchKind.CALL32, sym_bar, sym_bar);
+
+    var pb_sc: [SymbolContract; 1];
+    eia_contract_init_ex(&mut pb_sc[0], sym_bar, sig_fn, 4259840 + 16, 16, EIA_SYM_DEFINED, 0, 0);
+
+    var vc: ExecutableVessel; vc.code_ptr = (&code_c[0]) as *const byte; vc.code_len = 40; vc.entry_offset = 0;
+    var vpa: ExecutableVessel; vpa.code_ptr = (&code_pa[0]) as *const byte; vpa.code_len = 32; vpa.entry_offset = 0;
+    var vpb: ExecutableVessel; vpb.code_ptr = (&code_pb[0]) as *const byte; vpb.code_len = 32; vpb.entry_offset = 0;
+
+    let pc: *const byte = ".rux_eia_ch_c.elf" as *const byte;
+    let ppa: *const byte = ".rux_eia_ch_pa.elf" as *const byte;
+    let ppb: *const byte = ".rux_eia_ch_pb.elf" as *const byte;
+    if write_vessel_elf_with_eia(&vc, pc as *byte, &c_sc[0], 2, &c_hole, 1, 0 as *const EiaTypeGraphEntry, 0) <= 0 ||
+       write_vessel_elf_with_eia(&vpa, ppa as *byte, &pa_sc[0], 2, &pa_holes[0], 2, &pa_tg, 1) <= 0 ||
+       write_vessel_elf_with_eia(&vpb, ppb as *byte, &pb_sc[0], 1, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0) <= 0 {
+        return false;
+    }
+    var clen: uint = 0; var palen: uint = 0; var pblen: uint = 0;
+    let cbuf: *mut u8 = eia_test_read_file(pc, &mut clen);
+    let pabuf: *mut u8 = eia_test_read_file(ppa, &mut palen);
+    let pbbuf: *mut u8 = eia_test_read_file(ppb, &mut pblen);
+    @os.unlink(pc as *byte); @os.unlink(ppa as *byte); @os.unlink(ppb as *byte);
+    if (cbuf as int) <= 0 || (pabuf as int) <= 0 || (pbbuf as int) <= 0 {
+        if (cbuf as int) > 0 { eia_test_free_buf(cbuf); }
+        if (pabuf as int) > 0 { eia_test_free_buf(pabuf); }
+        if (pbbuf as int) > 0 { eia_test_free_buf(pbbuf); }
+        return false;
+    }
+
+    let work_cap: uint = 16384;
+    let work: *mut u8 = @os.mmap(0 as *mut byte, work_cap, 3, 34, 0 - 1, 0) as *mut u8;
+    var ok: bool = true;
+    var wi: uint = 0;
+    while wi < clen { work[wi] = cbuf[wi]; wi = wi + 1; }
+    var dummy_len: uint = 0;
+    if eia_relink_binary_bytes_ex(work, clen, work_cap, pabuf as *const u8, palen, &mut dummy_len) != -5 {
+        println("  [FAIL] Final-mode relink on partial chain cli->provA did not return -5");
+        ok = false;
+    }
+
+    wi = 0;
+    while wi < clen { work[wi] = cbuf[wi]; wi = wi + 1; }
+    var step1_len: uint = 0;
+    if eia_relink_binary_bytes_step(work, clen, work_cap, pabuf as *const u8, palen, &mut step1_len, false) < 0 ||
+       eia_verify_artifact_bytes(work as *const u8, step1_len) != 0 {
+        println("  [FAIL] Step 1 chained relink cli->provA failed");
+        ok = false;
+    }
+
+    var final_len: uint = 0;
+    if eia_relink_binary_bytes_step(work, step1_len, work_cap, pbbuf as *const u8, pblen, &mut final_len, true) < 0 ||
+       eia_verify_artifact_bytes(work as *const u8, final_len) != 0 {
+        println("  [FAIL] Step 2 chained relink (cli+provA)->provB failed");
+        ok = false;
+    }
+
+    if ok {
+        let fholo: *const UniversalHologramHeader = (work + 128) as *const UniversalHologramHeader;
+        let fcs: *const SymbolContract = (work + fholo.contracts_offset) as *const SymbolContract;
+        let f_foo: *const SymbolContract = eia_find_contract(fcs, fholo.contracts_count, sym_foo, 0);
+        let f_bar: *const SymbolContract = eia_find_contract(fcs, fholo.contracts_count, sym_bar, 0);
+        var f_coff: uint = 0; var f_clen: uint = 0;
+        if f_foo == (0 as *const SymbolContract) || f_bar == (0 as *const SymbolContract) ||
+           (f_foo.flags & EIA_SYM_DEFINED) == 0 || (f_bar.flags & EIA_SYM_DEFINED) == 0 ||
+           !eia_locate_code_span(work as *const u8, final_len, fholo, &mut f_coff, &mut f_clen) ||
+           fholo.type_graph_size < 24 {
+            println("  [FAIL] Chained relink missing defined contracts or provider TypeGraph");
+            ok = false;
+        } else {
+            var ci_u: uint = 0;
+            while ci_u < fholo.contracts_count {
+                let fsc: *const SymbolContract = ((fcs as uint) + (ci_u * 48)) as *const SymbolContract;
+                if (fsc.flags & EIA_SYM_IMPORT) != 0 {
+                    println("  [FAIL] Unresolved import remained after complete chained relink");
+                    ok = false;
+                }
+                ci_u = ci_u + 1;
+            }
+            let base_va: uint = fholo.reserved0;
+            let disp_foo: i32 = eia_patch_read_u32(work + f_coff + 20) as i32;
+            if ((base_va + 24) as i64) + (disp_foo as i64) != (f_foo.vaddr as i64) {
+                println("  [FAIL] Client CALL32 did not resolve to spliced ch_foo");
+                ok = false;
+            }
+            let foo_off: uint = f_foo.vaddr - base_va;
+            if eia_patch_read_u32(work + f_coff + foo_off + 3) != 40 {
+                println("  [FAIL] Spliced provA DISP32 field offset (40) was not resolved via TypeGraph");
+                ok = false;
+            }
+            let disp_bar: i32 = eia_patch_read_u32(work + f_coff + foo_off + 12) as i32;
+            if ((f_foo.vaddr + 16) as i64) + (disp_bar as i64) != (f_bar.vaddr as i64) {
+                println("  [FAIL] Spliced provA CALL32 did not resolve to spliced ch_bar");
+                ok = false;
+            }
+        }
+    }
+
+    // Negative: too small buffer (-8), cross-format ELF vs Mach-O (-8), invalid patch_kind (-7)
+    wi = 0;
+    while wi < clen { work[wi] = cbuf[wi]; wi = wi + 1; }
+    if eia_relink_binary_bytes_ex(work, clen, clen, pabuf as *const u8, palen, &mut dummy_len) != -8 {
+        println("  [FAIL] Small buffer relink did not return -8");
+        ok = false;
+    }
+    let mprv: *mut u8 = @os.mmap(0 as *mut byte, 16384, 3, 34, 0 - 1, 0) as *mut u8;
+    let mprv_len: uint = eia_test_build_macho4k(mprv, 16384, &code_pa[0], 32, &pa_sc[0], 1, 0 as *const EiaRelocHole, 0);
+    if mprv_len == 0 || eia_relink_binary_bytes_ex(work, clen, work_cap, mprv as *const u8, mprv_len, &mut dummy_len) != -8 {
+        println("  [FAIL] Cross-format ELF vs Mach-O relink did not return -8");
+        ok = false;
+    }
+    @os.munmap(mprv as uint, 16384);
+
+    var bad_hole: EiaRelocHole;
+    eia_reloc_init_raw(&mut bad_hole, 4, 99, t_ch, f_ch);
+    if eia_verify_relocs_resolvable(&bad_hole, 1, &pa_tg, 1) != -7 {
+        println("  [FAIL] Invalid reloc patch_kind (99) did not return -7");
+        ok = false;
+    }
+
+    @os.munmap(work as uint, work_cap);
+    eia_test_free_buf(cbuf);
+    eia_test_free_buf(pabuf);
+    eia_test_free_buf(pbbuf);
+    if ok {
+        println("  [PASS] Chained cli->provA->provB relink, TypeGraph DISP32 & -5/-7/-8 rejections verified");
+    }
+    return ok;
+}
+
+fn eia_test_fnv1a(s: *const u8, len: uint) -> uint {
+    var h: uint = 14695981039346656037;
+    var i: uint = 0;
+    while i < len {
+        h = h ^ (s[i] as uint);
+        h = h * 1099511628211;
+        i = i + 1;
+    }
+    return h;
+}
+
+fn eia_test_run_cli(argv_ptr: *const *const byte) -> int {
+    let pid: int = @os.clone(17, 0, 0, 0, 0);
+    if pid < 0 {
+        return -1;
+    }
+    if pid == 0 {
+        @os.close(1);
+        @os.open("/dev/null" as *byte, 2, 0);
+        @os.close(2);
+        @os.open("/dev/null" as *byte, 2, 0);
+        @os.execve("./bin/rux" as *byte, argv_ptr, 0);
+        @os.execve("bin/rux" as *byte, argv_ptr, 0);
+        @os.exit(127);
+    }
+    var status: int = 0;
+    @os.wait4(pid, &mut status, 0, 0);
+    if (status & 127) != 0 {
+        return -1;
+    }
+    return (status >> 8) & 255;
+}
+
+fn eia_test_write_bytes(path: *const byte, data: *const u8, len: uint) -> bool {
+    let fd: int = @os.open(path, 577, 420);
+    if fd < 0 {
+        return false;
+    }
+    var off: uint = 0;
+    while off < len {
+        let nw: int = @os.write(fd, (data + off) as *const byte, len - off);
+        if nw <= 0 {
+            @os.close(fd);
+            return false;
+        }
+        off = off + (nw as uint);
+    }
+    @os.close(fd);
+    return true;
+}
+
+fn eia_test_ar_append_member(
+    buf: *mut u8,
+    pos_ptr: *mut uint,
+    cap: uint,
+    name: *const u8,
+    name_len: uint,
+    data: *const u8,
+    data_len: uint
+) -> bool {
+    let pos: uint = pos_ptr[0];
+    let pad: uint = data_len % 2;
+    let needed: uint = 60 + data_len + pad;
+    if (pos + needed) > cap {
+        return false;
+    }
+    var hi: uint = 0;
+    while hi < 60 {
+        buf[pos + hi] = 32;
+        hi = hi + 1;
+    }
+    var ni: uint = 0;
+    while ni < name_len && ni < 16 {
+        buf[pos + ni] = name[ni];
+        ni = ni + 1;
+    }
+    buf[pos + 16] = 48;
+    buf[pos + 28] = 48;
+    buf[pos + 34] = 48;
+    buf[pos + 40] = 49; buf[pos + 41] = 48; buf[pos + 42] = 48;
+    buf[pos + 43] = 54; buf[pos + 44] = 52; buf[pos + 45] = 52;
+    if data_len == 0 {
+        buf[pos + 48] = 48;
+    } else {
+        var sz_tmp: uint = data_len;
+        var digits: [u8; 10];
+        var dc: uint = 0;
+        while sz_tmp > 0 && dc < 10 {
+            digits[dc] = (48 + (sz_tmp % 10)) as u8;
+            sz_tmp = sz_tmp / 10;
+            dc = dc + 1;
+        }
+        var di: uint = 0;
+        while di < dc {
+            buf[pos + 48 + di] = digits[dc - 1 - di];
+            di = di + 1;
+        }
+    }
+    buf[pos + 58] = 96;
+    buf[pos + 59] = 10;
+    var bi: uint = 0;
+    while bi < data_len {
+        buf[pos + 60 + bi] = data[bi];
+        bi = bi + 1;
+    }
+    if pad != 0 {
+        buf[pos + 60 + data_len] = 10;
+    }
+    pos_ptr[0] = pos + needed;
+    return true;
+}
+
+fn test_eia_archive_longnames_and_cli_multi() -> bool {
+    println("[EIA C2/C4/C5] Verifying GNU /0+/16 .a archives, Mach-O .a members & CLI eia-check/link-check/relink...");
+    var ok: bool = true;
+
+    let sym_cli: uint = blake3_hash64("ar_cli_entry" as *const u8, 12);
+    let sym_foo: uint = blake3_hash64("ar_long_foo" as *const u8, 11);
+    let sym_bar: uint = blake3_hash64("ar_long_bar" as *const u8, 11);
+    let sig_fn: uint = blake3_hash64("()->i64" as *const u8, 7);
+
+    var code_cli: [u8; 32];
+    var code_pa: [u8; 32];
+    var code_pb: [u8; 32];
+    var zi: uint = 0;
+    while zi < 32 {
+        code_cli[zi] = 0x90;
+        code_pa[zi] = 0x90;
+        code_pb[zi] = 0x90;
+        zi = zi + 1;
+    }
+    code_cli[19] = 0xE8;
+    code_cli[31] = 0xC3;
+    code_pa[11] = 0xE8;
+    code_pa[31] = 0xC3;
+    code_pb[31] = 0xC3;
+
+    var vc: ExecutableVessel;
+    vc.code_ptr = (&code_cli[0]) as *const byte; vc.code_len = 32; vc.entry_offset = 0;
+    var vpa: ExecutableVessel;
+    vpa.code_ptr = (&code_pa[0]) as *const byte; vpa.code_len = 32; vpa.entry_offset = 0;
+    var vpb: ExecutableVessel;
+    vpb.code_ptr = (&code_pb[0]) as *const byte; vpb.code_len = 32; vpb.entry_offset = 0;
+
+    var c_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut c_sc[0], sym_cli, sig_fn, 4259840, 32, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut c_sc[1], sym_foo, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var c_hole: EiaRelocHole;
+    eia_reloc_init(&mut c_hole, 20, RelocPatchKind.CALL32, sym_foo, sym_foo);
+
+    var pa_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut pa_sc[0], sym_foo, sig_fn, 4259840, 32, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut pa_sc[1], sym_bar, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var pa_hole: EiaRelocHole;
+    eia_reloc_init(&mut pa_hole, 12, RelocPatchKind.CALL32, sym_bar, sym_bar);
+
+    var pb_sc: SymbolContract;
+    eia_contract_init_ex(&mut pb_sc, sym_bar, sig_fn, 4259840, 32, EIA_SYM_DEFINED, 0, 0);
+
+    let p_cli: *const byte = ".rux_eia_ar_cli.elf" as *const byte;
+    let p_pa: *const byte = ".rux_eia_ar_pa.elf" as *const byte;
+    let p_pb: *const byte = ".rux_eia_ar_pb.elf" as *const byte;
+    let p_ar: *const byte = ".rux_eia_ar_multi.a" as *const byte;
+    let p_out: *const byte = ".rux_eia_ar_out.elf" as *const byte;
+
+    if write_vessel_elf_with_eia(&vc, p_cli as *byte, &c_sc[0], 2, &c_hole, 1, 0 as *const EiaTypeGraphEntry, 0) <= 0 ||
+       write_vessel_elf_with_eia(&vpa, p_pa as *byte, &pa_sc[0], 2, &pa_hole, 1, 0 as *const EiaTypeGraphEntry, 0) <= 0 ||
+       write_vessel_elf_with_eia(&vpb, p_pb as *byte, &pb_sc, 1, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0) <= 0 {
+        println("  [FAIL] Failed writing ELF vessels for GNU .a longname proof");
+        return false;
+    }
+
+    var pa_len: uint = 0;
+    var pb_len: uint = 0;
+    let pa_buf: *mut u8 = eia_test_read_file(p_pa, &mut pa_len);
+    let pb_buf: *mut u8 = eia_test_read_file(p_pb, &mut pb_len);
+    if (pa_buf as int) <= 0 || (pb_buf as int) <= 0 {
+        return false;
+    }
+
+    let ar_cap: uint = 65536;
+    let ar_buf: *mut u8 = @os.mmap(0 as *mut byte, ar_cap, 3, 34, 0 - 1, 0) as *mut u8;
+    if (ar_buf as int) <= 0 {
+        eia_test_free_buf(pa_buf);
+        eia_test_free_buf(pb_buf);
+        return false;
+    }
+    let armag: *const u8 = "!<arch>\n" as *const u8;
+    var ai: uint = 0;
+    while ai < 8 { ar_buf[ai] = armag[ai]; ai = ai + 1; }
+    var ar_pos: uint = 8;
+
+    var symtab_dummy: [u8; 4];
+    symtab_dummy[0] = 0; symtab_dummy[1] = 0; symtab_dummy[2] = 0; symtab_dummy[3] = 0;
+    let longnames: *const u8 = "alpha_mod_1234/\nbeta_long_module.o/\n" as *const u8;
+    if !eia_test_ar_append_member(ar_buf, &mut ar_pos, ar_cap, "/" as *const u8, 1, (&symtab_dummy[0]) as *const u8, 4) ||
+       !eia_test_ar_append_member(ar_buf, &mut ar_pos, ar_cap, "//" as *const u8, 2, longnames, 36) ||
+       !eia_test_ar_append_member(ar_buf, &mut ar_pos, ar_cap, "/0" as *const u8, 2, pa_buf as *const u8, pa_len) ||
+       !eia_test_ar_append_member(ar_buf, &mut ar_pos, ar_cap, "/16" as *const u8, 3, pb_buf as *const u8, pb_len) {
+        println("  [FAIL] Failed building GNU /0+/16 archive");
+        ok = false;
+    }
+    eia_test_free_buf(pa_buf);
+    eia_test_free_buf(pb_buf);
+
+    if ok && eia_ar_count_elf_members(ar_buf as *const u8, ar_pos) != 2 {
+        println("  [FAIL] GNU /0+/16 archive member count != 2");
+        ok = false;
+    }
+    if ok && eia_verify_artifact_bytes(ar_buf as *const u8, ar_pos) != 0 {
+        println("  [FAIL] GNU /0+/16 multi-member archive failed EIA verification");
+        ok = false;
+    }
+    if ok && !eia_test_write_bytes(p_ar, ar_buf as *const u8, ar_pos) {
+        println("  [FAIL] Failed writing GNU multi-member archive to disk");
+        ok = false;
+    }
+    @os.munmap(ar_buf as uint, ar_cap);
+
+    // CLI subprocess checks: eia-check multi.a, link-check transitive, relink multi.a
+    if ok {
+        var argv: [*const byte; 6];
+        argv[0] = "bin/rux"; argv[1] = "eia-check"; argv[2] = p_ar; argv[3] = 0 as *const byte;
+        if eia_test_run_cli((&argv[0]) as *const *const byte) != 0 {
+            println("  [FAIL] CLI eia-check multi.a failed");
+            ok = false;
+        }
+        argv[1] = "eia-link-check"; argv[2] = p_cli; argv[3] = p_ar; argv[4] = 0 as *const byte;
+        if eia_test_run_cli((&argv[0]) as *const *const byte) != 0 {
+            println("  [FAIL] CLI eia-link-check cli.elf multi.a failed");
+            ok = false;
+        }
+        argv[1] = "eia-link-check"; argv[2] = p_cli; argv[3] = p_pa; argv[4] = 0 as *const byte;
+        if eia_test_run_cli((&argv[0]) as *const *const byte) == 0 {
+            println("  [FAIL] CLI eia-link-check unexpectedly accepted missing transitive provider");
+            ok = false;
+        }
+        argv[1] = "eia-link-check"; argv[2] = p_cli; argv[3] = p_pa; argv[4] = p_pb; argv[5] = 0 as *const byte;
+        if eia_test_run_cli((&argv[0]) as *const *const byte) != 0 {
+            println("  [FAIL] CLI eia-link-check cli.elf provA.elf provB.elf failed");
+            ok = false;
+        }
+        argv[1] = "eia-relink"; argv[2] = p_cli; argv[3] = p_ar; argv[4] = "-o"; argv[5] = p_out;
+        var argv6: [*const byte; 7];
+        argv6[0] = "bin/rux"; argv6[1] = "eia-relink"; argv6[2] = p_cli; argv6[3] = p_ar; argv6[4] = "-o"; argv6[5] = p_out; argv6[6] = 0 as *const byte;
+        if eia_test_run_cli((&argv6[0]) as *const *const byte) != 0 {
+            println("  [FAIL] CLI eia-relink cli.elf multi.a failed");
+            ok = false;
+        }
+        argv[1] = "eia-check"; argv[2] = p_out; argv[3] = 0 as *const byte;
+        if eia_test_run_cli((&argv[0]) as *const *const byte) != 0 {
+            println("  [FAIL] CLI eia-check on relinked output failed");
+            ok = false;
+        }
+        var out_len: uint = 0;
+        let out_buf: *mut u8 = eia_test_read_file(p_out, &mut out_len);
+        if (out_buf as int) <= 0 || out_len == 0 {
+            println("  [FAIL] Relinked CLI output unreadable");
+            ok = false;
+        } else {
+            let ohoff: i64 = eia_locate_hologram_offset(out_buf as *const u8, out_len);
+            if ohoff < 0 {
+                ok = false;
+            } else {
+                let oholo: *const UniversalHologramHeader = (out_buf + (ohoff as uint)) as *const UniversalHologramHeader;
+                let oscs: *const SymbolContract = (out_buf + oholo.contracts_offset) as *const SymbolContract;
+                if eia_count_import_contracts(oscs, oholo.contracts_count) != 0 {
+                    println("  [FAIL] CLI eia-relink left unresolved imports");
+                    ok = false;
+                }
+            }
+            eia_test_free_buf(out_buf);
+        }
+    }
+
+    // Mach-O .a member archive verify + tamper rejection (-3)
+    if ok {
+        let mcap: uint = 16384;
+        let mbuf: *mut u8 = @os.mmap(0 as *mut byte, mcap, 3, 34, 0 - 1, 0) as *mut u8;
+        let mar_buf: *mut u8 = @os.mmap(0 as *mut byte, 32768, 3, 34, 0 - 1, 0) as *mut u8;
+        if (mbuf as int) > 0 && (mar_buf as int) > 0 {
+            let mlen: uint = eia_test_build_macho4k(mbuf, mcap, (&code_pb[0]) as *const u8, 32, &pb_sc, 1, 0 as *const EiaRelocHole, 0);
+            var mpos: uint = 8;
+            var mai: uint = 0;
+            while mai < 8 { mar_buf[mai] = armag[mai]; mai = mai + 1; }
+            if mlen == 0 ||
+               !eia_test_ar_append_member(mar_buf, &mut mpos, 32768, "__.SYMDEF" as *const u8, 9, (&symtab_dummy[0]) as *const u8, 4) ||
+               !eia_test_ar_append_member(mar_buf, &mut mpos, 32768, "macho_mod.o/" as *const u8, 12, mbuf as *const u8, mlen) {
+                println("  [FAIL] Failed building Mach-O .a fixture");
+                ok = false;
+            } else if eia_verify_artifact_bytes(mar_buf as *const u8, mpos) != 0 {
+                println("  [FAIL] Valid Mach-O .a member failed verification");
+                ok = false;
+            } else {
+                mar_buf[mpos - (mlen % 2) - 4] = mar_buf[mpos - (mlen % 2) - 4] ^ 1;
+                if eia_verify_artifact_bytes(mar_buf as *const u8, mpos) == 0 {
+                    println("  [FAIL] Tampered Mach-O .a member was not rejected");
+                    ok = false;
+                }
+            }
+        } else {
+            ok = false;
+        }
+        if (mbuf as int) > 0 { @os.munmap(mbuf as uint, mcap); }
+        if (mar_buf as int) > 0 { @os.munmap(mar_buf as uint, 32768); }
+    }
+
+    @os.unlink(p_cli as *byte);
+    @os.unlink(p_pa as *byte);
+    @os.unlink(p_pb as *byte);
+    @os.unlink(p_ar as *byte);
+    @os.unlink(p_out as *byte);
+
+    if ok {
+        println("  [PASS] GNU /0+/16 .a archives, Mach-O .a members & CLI eia-check/link-check/relink verified");
+    }
+    return ok;
+}
+
+fn test_eia_extended_integrity_tamper() -> bool {
+    println("[EIA C4+] Verifying extended tamper rejection (-3) across ELF e_entry/.data, PE .idata, Mach-O LC_MAIN/__DATA & Wasm Type/Import/Export...");
+    var esc: SymbolContract;
+    eia_contract_init_ex(&mut esc, blake3_hash64("ext_fn" as *const u8, 6), blake3_hash64("()->i64" as *const u8, 7), 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+
+    // 1. ELF64 e_entry + .data
+    var ebuf: [u8; 1024];
+    var ei: uint = 0;
+    while ei < 1024 { ebuf[ei] = 0; ei = ei + 1; }
+    let e_holo_off: uint = 128;
+    let e_c_off: uint = 224;
+    let e_code_off: uint = 384;
+    let e_data_off: uint = 400;
+    let e_shstr_off: uint = 416;
+    let e_sh_off: uint = 512;
+    let e_total: uint = e_sh_off + (5 * 64);
+
+    ebuf[0] = 127; ebuf[1] = 69; ebuf[2] = 76; ebuf[3] = 70;
+    ebuf[4] = 2; ebuf[5] = 1; ebuf[6] = 1;
+    eia_patch_write_u16(&mut ebuf[16], 2);
+    eia_patch_write_u16(&mut ebuf[18], 62);
+    eia_patch_write_u32(&mut ebuf[20], 1);
+    eia_patch_write_u64(&mut ebuf[24], 4194304 + (e_code_off as u64));
+    eia_patch_write_u64(&mut ebuf[32], 64);
+    eia_patch_write_u64(&mut ebuf[40], e_sh_off as u64);
+    eia_patch_write_u16(&mut ebuf[52], 64);
+    eia_patch_write_u16(&mut ebuf[54], 56);
+    eia_patch_write_u16(&mut ebuf[56], 1);
+    eia_patch_write_u16(&mut ebuf[58], 64);
+    eia_patch_write_u16(&mut ebuf[60], 5);
+    eia_patch_write_u16(&mut ebuf[62], 4);
+
+    eia_patch_write_u32(&mut ebuf[64], 1);
+    eia_patch_write_u32(&mut ebuf[68], 7);
+    eia_patch_write_u64(&mut ebuf[72], 0);
+    eia_patch_write_u64(&mut ebuf[80], 4194304);
+    eia_patch_write_u64(&mut ebuf[88], 4194304);
+    eia_patch_write_u64(&mut ebuf[96], 512);
+    eia_patch_write_u64(&mut ebuf[104], 512);
+    eia_patch_write_u64(&mut ebuf[112], 4096);
+
+    ebuf[e_code_off] = 0x31; ebuf[e_code_off + 1] = 0xC0; ebuf[e_code_off + 2] = 0xC3;
+    ebuf[e_data_off] = 0x11; ebuf[e_data_off + 1] = 0x22; ebuf[e_data_off + 2] = 0x33; ebuf[e_data_off + 3] = 0x44;
+    ebuf[e_shstr_off + 1] = 46; ebuf[e_shstr_off + 2] = 116; ebuf[e_shstr_off + 3] = 101; ebuf[e_shstr_off + 4] = 120; ebuf[e_shstr_off + 5] = 116;
+    ebuf[e_shstr_off + 7] = 46; ebuf[e_shstr_off + 8] = 100; ebuf[e_shstr_off + 9] = 97; ebuf[e_shstr_off + 10] = 116; ebuf[e_shstr_off + 11] = 97;
+    ebuf[e_shstr_off + 13] = 46; ebuf[e_shstr_off + 14] = 115; ebuf[e_shstr_off + 15] = 104;
+
+    let sh1: uint = e_sh_off + 64;
+    eia_patch_write_u32(&mut ebuf[sh1], 1);
+    eia_patch_write_u32(&mut ebuf[sh1 + 4], 1);
+    eia_patch_write_u64(&mut ebuf[sh1 + 8], 6);
+    eia_patch_write_u64(&mut ebuf[sh1 + 16], 4194304 + (e_code_off as u64));
+    eia_patch_write_u64(&mut ebuf[sh1 + 24], e_code_off as u64);
+    eia_patch_write_u64(&mut ebuf[sh1 + 32], 16);
+
+    let sh2: uint = e_sh_off + 128;
+    eia_patch_write_u32(&mut ebuf[sh2], 7);
+    eia_patch_write_u32(&mut ebuf[sh2 + 4], 1);
+    eia_patch_write_u64(&mut ebuf[sh2 + 8], 3);
+    eia_patch_write_u64(&mut ebuf[sh2 + 16], 4194304 + (e_data_off as u64));
+    eia_patch_write_u64(&mut ebuf[sh2 + 24], e_data_off as u64);
+    eia_patch_write_u64(&mut ebuf[sh2 + 32], 16);
+
+    let sh3: uint = e_sh_off + 192;
+    eia_patch_write_u32(&mut ebuf[sh3 + 4], 1);
+    eia_patch_write_u64(&mut ebuf[sh3 + 8], 2);
+    eia_patch_write_u64(&mut ebuf[sh3 + 16], 4194304 + (e_holo_off as u64));
+    eia_patch_write_u64(&mut ebuf[sh3 + 24], e_holo_off as u64);
+    eia_patch_write_u64(&mut ebuf[sh3 + 32], 144);
+
+    let sh4: uint = e_sh_off + 256;
+    eia_patch_write_u32(&mut ebuf[sh4], 13);
+    eia_patch_write_u32(&mut ebuf[sh4 + 4], 3);
+    eia_patch_write_u64(&mut ebuf[sh4 + 24], e_shstr_off as u64);
+    eia_patch_write_u64(&mut ebuf[sh4 + 32], 16);
+
+    if !eia_populate_and_seal_hologram(&mut ebuf[0], e_total, e_holo_off, e_c_off, &esc, 1, e_c_off + 48, 0 as *const EiaRelocHole, 0, e_c_off + 48, 0 as *const EiaTypeGraphEntry, 0, 1, EIA_FLAG_HAS_CODE_HASH, 4194304 + e_code_off, 4194304 + e_data_off) {
+        return false;
+    }
+    if eia_verify_artifact_bytes((&ebuf[0]) as *const u8, e_total) != 0 {
+        return false;
+    }
+    ebuf[24] = ebuf[24] ^ 1;
+    if eia_verify_artifact_bytes((&ebuf[0]) as *const u8, e_total) != -3 {
+        println("  [FAIL] ELF e_entry tamper was not rejected with -3");
+        return false;
+    }
+    ebuf[24] = ebuf[24] ^ 1;
+    ebuf[e_data_off + 1] = ebuf[e_data_off + 1] ^ 1;
+    if eia_verify_artifact_bytes((&ebuf[0]) as *const u8, e_total) != -3 {
+        println("  [FAIL] ELF SHT .data tamper was not rejected with -3");
+        return false;
+    }
+
+    // 2. PE32+ .idata tamper
+    var pbuf: [u8; 2560];
+    var pi2: uint = 0;
+    while pi2 < 2560 { pbuf[pi2] = 0; pi2 = pi2 + 1; }
+    pbuf[0] = 77; pbuf[1] = 90;
+    eia_patch_write_u32(&mut pbuf[60], 128);
+    pbuf[128] = 80; pbuf[129] = 69;
+    eia_patch_write_u16(&mut pbuf[132], 0x8664);
+    eia_patch_write_u16(&mut pbuf[134], 3);
+    eia_patch_write_u16(&mut pbuf[148], 240);
+    eia_patch_write_u16(&mut pbuf[150], 0x0022);
+    eia_patch_write_u16(&mut pbuf[152], 0x020B);
+    eia_patch_write_u32(&mut pbuf[168], 4096);
+    eia_patch_write_u64(&mut pbuf[176], 5368709120);
+    eia_patch_write_u32(&mut pbuf[184], 4096);
+    eia_patch_write_u32(&mut pbuf[188], 512);
+    eia_patch_write_u32(&mut pbuf[208], 16384);
+    eia_patch_write_u32(&mut pbuf[212], 1024);
+
+    pbuf[392] = 46; pbuf[393] = 116; pbuf[394] = 101; pbuf[395] = 120; pbuf[396] = 116;
+    eia_patch_write_u32(&mut pbuf[400], 16);
+    eia_patch_write_u32(&mut pbuf[404], 4096);
+    eia_patch_write_u32(&mut pbuf[408], 512);
+    eia_patch_write_u32(&mut pbuf[412], 1024);
+    eia_patch_write_u32(&mut pbuf[428], 0x60000020);
+    pbuf[432] = 46; pbuf[433] = 105; pbuf[434] = 100; pbuf[435] = 97; pbuf[436] = 116; pbuf[437] = 97;
+    eia_patch_write_u32(&mut pbuf[440], 20);
+    eia_patch_write_u32(&mut pbuf[444], 8192);
+    eia_patch_write_u32(&mut pbuf[448], 512);
+    eia_patch_write_u32(&mut pbuf[452], 1536);
+    eia_patch_write_u32(&mut pbuf[468], 0xC0000040);
+    pbuf[472] = 46; pbuf[473] = 101; pbuf[474] = 105; pbuf[475] = 97;
+    eia_patch_write_u32(&mut pbuf[480], 144);
+    eia_patch_write_u32(&mut pbuf[484], 12288);
+    eia_patch_write_u32(&mut pbuf[488], 512);
+    eia_patch_write_u32(&mut pbuf[492], 2048);
+    eia_patch_write_u32(&mut pbuf[508], 0x40000040);
+
+    pbuf[1024] = 0x31; pbuf[1025] = 0xC0; pbuf[1026] = 0xC3;
+    pbuf[1536] = 73; pbuf[1537] = 68; pbuf[1538] = 65; pbuf[1539] = 84;
+    if !eia_populate_and_seal_hologram(&mut pbuf[0], 2560, 2048, 2144, &esc, 1, 2192, 0 as *const EiaRelocHole, 0, 2192, 0 as *const EiaTypeGraphEntry, 0, 1, EIA_FLAG_HAS_CODE_HASH, 4096, 8192) {
+        return false;
+    }
+    if eia_verify_artifact_bytes((&pbuf[0]) as *const u8, 2560) != 0 {
+        return false;
+    }
+    pbuf[1537] = pbuf[1537] ^ 1;
+    if eia_verify_artifact_bytes((&pbuf[0]) as *const u8, 2560) != -3 {
+        println("  [FAIL] PE32+ .idata tamper was not rejected with -3");
+        return false;
+    }
+
+    // 3. Mach-O LC_MAIN & __DATA segment tamper
+    let mcap: uint = 16384;
+    let mbuf: *mut u8 = @os.mmap(0 as *mut byte, mcap, 3, 34, 0 - 1, 0) as *mut u8;
+    if (mbuf as int) <= 0 {
+        return false;
+    }
+    var mcode: [u8; 16];
+    var mci: uint = 0;
+    while mci < 16 { mcode[mci] = 0x90; mci = mci + 1; }
+    mcode[15] = 0xC3;
+    let m_total: uint = eia_test_build_macho4k(mbuf, mcap, (&mcode[0]) as *const u8, 16, &esc, 1, 0 as *const EiaRelocHole, 0);
+    if m_total == 0 {
+        @os.munmap(mbuf as uint, mcap);
+        return false;
+    }
+    mbuf[264] = mbuf[264] ^ 1;
+    if eia_verify_artifact_bytes(mbuf as *const u8, m_total) != -3 {
+        @os.munmap(mbuf as uint, mcap);
+        println("  [FAIL] Mach-O LC_MAIN entryoff tamper was not rejected with -3");
+        return false;
+    }
+    mbuf[264] = mbuf[264] ^ 1;
+    eia_patch_write_u32(mbuf + 16, 5);
+    eia_patch_write_u32(mbuf + 20, 392);
+    let dcmd: uint = 352;
+    eia_patch_write_u32(mbuf + dcmd, 25);
+    eia_patch_write_u32(mbuf + dcmd + 4, 72);
+    mbuf[dcmd + 8] = 95; mbuf[dcmd + 9] = 95; mbuf[dcmd + 10] = 68; mbuf[dcmd + 11] = 65;
+    mbuf[dcmd + 12] = 84; mbuf[dcmd + 13] = 65; mbuf[dcmd + 14] = 0;
+    eia_patch_write_u64(mbuf + dcmd + 24, 4294967296 + 3800);
+    eia_patch_write_u64(mbuf + dcmd + 32, 16);
+    eia_patch_write_u64(mbuf + dcmd + 40, 3800);
+    eia_patch_write_u64(mbuf + dcmd + 48, 16);
+    eia_patch_write_u32(mbuf + dcmd + 56, 3);
+    eia_patch_write_u32(mbuf + dcmd + 60, 3);
+    mbuf[3800] = 0xAA; mbuf[3801] = 0xBB;
+    let m_hoff: uint = eia_locate_hologram_offset(mbuf as *const u8, m_total) as uint;
+    if !eia_populate_and_seal_hologram(mbuf, m_total, m_hoff, m_hoff + 96, &esc, 1, m_hoff + 144, 0 as *const EiaRelocHole, 0, m_hoff + 144, 0 as *const EiaTypeGraphEntry, 0, 1, EIA_FLAG_HAS_CODE_HASH, 4294967296 + 4096, 0) {
+        @os.munmap(mbuf as uint, mcap);
+        return false;
+    }
+    if eia_verify_artifact_bytes(mbuf as *const u8, m_total) != 0 {
+        @os.munmap(mbuf as uint, mcap);
+        return false;
+    }
+    mbuf[3800] = mbuf[3800] ^ 1;
+    if eia_verify_artifact_bytes(mbuf as *const u8, m_total) != -3 {
+        @os.munmap(mbuf as uint, mcap);
+        println("  [FAIL] Mach-O __DATA segment tamper was not rejected with -3");
+        return false;
+    }
+    @os.munmap(mbuf as uint, mcap);
+
+    // 4. Wasm Type (1), Import (2), Export (7) tamper
+    var wbuf: [u8; 512];
+    var wi: uint = 0;
+    while wi < 512 { wbuf[wi] = 0; wi = wi + 1; }
+    wbuf[0] = 0; wbuf[1] = 97; wbuf[2] = 115; wbuf[3] = 109; wbuf[4] = 1;
+    // Type sec (id=1) at 8: len=4, payload=[1, 0x60, 0, 0] -> tamper byte 10
+    wbuf[8] = 1; wbuf[9] = 4; wbuf[10] = 1; wbuf[11] = 0x60; wbuf[12] = 0; wbuf[13] = 0;
+    // Import sec (id=2) at 14: len=3, payload=[1, 0x41, 0] -> tamper byte 17
+    wbuf[14] = 2; wbuf[15] = 3; wbuf[16] = 1; wbuf[17] = 0x41; wbuf[18] = 0;
+    // Export sec (id=7) at 19: len=4, payload=[1, 1, 97, 0] -> tamper byte 23
+    wbuf[19] = 7; wbuf[20] = 4; wbuf[21] = 1; wbuf[22] = 1; wbuf[23] = 97; wbuf[24] = 0;
+    // Code sec (id=10) at 25: len=4, payload=[1, 2, 0, 11]
+    wbuf[25] = 10; wbuf[26] = 4; wbuf[27] = 1; wbuf[28] = 2; wbuf[29] = 0; wbuf[30] = 11;
+    let w_sec_len: uint = 4 + 96 + 48;
+    wbuf[31] = 0;
+    wbuf[32] = ((w_sec_len & 127) | 128) as u8;
+    wbuf[33] = ((w_sec_len >> 7) & 127) as u8;
+    wbuf[34] = 3; wbuf[35] = 101; wbuf[36] = 105; wbuf[37] = 97;
+    let w_holo_off: uint = 38;
+    let w_c_off: uint = w_holo_off + 96;
+    let w_total: uint = 34 + w_sec_len;
+
+    if !eia_populate_and_seal_hologram(&mut wbuf[0], w_total, w_holo_off, w_c_off, &esc, 1, w_c_off + 48, 0 as *const EiaRelocHole, 0, w_c_off + 48, 0 as *const EiaTypeGraphEntry, 0, 1, EIA_FLAG_HAS_CODE_HASH, 65536, 65536) {
+        return false;
+    }
+    if eia_verify_artifact_bytes((&wbuf[0]) as *const u8, w_total) != 0 {
+        return false;
+    }
+    wbuf[11] = wbuf[11] ^ 1;
+    if eia_verify_artifact_bytes((&wbuf[0]) as *const u8, w_total) != -3 {
+        println("  [FAIL] Wasm Type section tamper was not rejected with -3");
+        return false;
+    }
+    wbuf[11] = wbuf[11] ^ 1;
+    wbuf[17] = wbuf[17] ^ 1;
+    if eia_verify_artifact_bytes((&wbuf[0]) as *const u8, w_total) != -3 {
+        println("  [FAIL] Wasm Import section tamper was not rejected with -3");
+        return false;
+    }
+    wbuf[17] = wbuf[17] ^ 1;
+    wbuf[23] = wbuf[23] ^ 1;
+    if eia_verify_artifact_bytes((&wbuf[0]) as *const u8, w_total) != -3 {
+        println("  [FAIL] Wasm Export section tamper was not rejected with -3");
+        return false;
+    }
+
+    println("  [PASS] Extended tamper checks (ELF e_entry/.data, PE .idata, Mach-O LC_MAIN/__DATA, Wasm Type/Import/Export) verified (-3)");
+    return true;
+}
+
+fn test_eia_pe_pcode_macho_vmaddr_and_reloc_range() -> bool {
+    println("[EIA C5+] Verifying PE .pcode->.text/.pcode CALL32, Mach-O __PCODE vmaddr >= 0x100000000 & branch range -7 rejections...");
+    var ok: bool = true;
+
+    let sym_cli: uint = blake3_hash64("pe2_cli" as *const u8, 7);
+    let sym_cb: uint = blake3_hash64("pe2_cb" as *const u8, 6);
+    let sym_prv: uint = blake3_hash64("pe2_prv" as *const u8, 7);
+    let sym_hlp: uint = blake3_hash64("pe2_hlp" as *const u8, 7);
+    let sig_fn: uint = blake3_hash64("()->i64" as *const u8, 7);
+
+    var code_c: [u8; 40];
+    var code_p: [u8; 48];
+    var zi: uint = 0;
+    while zi < 48 {
+        if zi < 40 { code_c[zi] = 0x90; }
+        code_p[zi] = 0x90;
+        zi = zi + 1;
+    }
+    code_c[15] = 0xC3;
+    code_c[19] = 0xE8;
+    code_c[39] = 0xC3;
+    code_p[9] = 0xE8;
+    code_p[19] = 0xE8;
+    code_p[31] = 0xC3;
+    code_p[47] = 0xC3;
+
+    let pe_txt_va: uint = 5368709120 + 4096;
+    var vc: ExecutableVessel;
+    vc.code_ptr = (&code_c[0]) as *const byte; vc.code_len = 40; vc.entry_offset = 0;
+    var vp: ExecutableVessel;
+    vp.code_ptr = (&code_p[0]) as *const byte; vp.code_len = 48; vp.entry_offset = 0;
+
+    var c_sc: [SymbolContract; 3];
+    eia_contract_init_ex(&mut c_sc[0], sym_cli, sig_fn, pe_txt_va, 16, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut c_sc[1], sym_cb, sig_fn, pe_txt_va + 16, 24, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut c_sc[2], sym_prv, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var c_hole: EiaRelocHole;
+    eia_reloc_init(&mut c_hole, 20, RelocPatchKind.CALL32, sym_prv, sym_prv);
+
+    var p_sc: [SymbolContract; 3];
+    eia_contract_init_ex(&mut p_sc[0], sym_prv, sig_fn, pe_txt_va, 32, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut p_sc[1], sym_hlp, sig_fn, pe_txt_va + 32, 16, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut p_sc[2], sym_cb, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var p_holes: [EiaRelocHole; 2];
+    eia_reloc_init(&mut p_holes[0], 10, RelocPatchKind.CALL32, sym_hlp, sym_hlp);
+    eia_reloc_init(&mut p_holes[1], 20, RelocPatchKind.CALL32, sym_cb, sym_cb);
+
+    let p_c_pe: *const byte = ".rux_eia_pe2_cli.exe" as *const byte;
+    let p_p_pe: *const byte = ".rux_eia_pe2_prv.exe" as *const byte;
+    if write_vessel_pe_with_eia(&vc, p_c_pe as *byte, &c_sc[0], 3, &c_hole, 1, 0 as *const EiaTypeGraphEntry, 0) <= 0 ||
+       write_vessel_pe_with_eia(&vp, p_p_pe as *byte, &p_sc[0], 3, &p_holes[0], 2, 0 as *const EiaTypeGraphEntry, 0) <= 0 {
+        println("  [FAIL] Failed writing PE fixtures for .pcode->.text/.pcode test");
+        return false;
+    }
+    var pe_c_len: uint = 0;
+    var pe_p_len: uint = 0;
+    let pe_c_tmp: *mut u8 = eia_test_read_file(p_c_pe, &mut pe_c_len);
+    let pe_p_buf: *mut u8 = eia_test_read_file(p_p_pe, &mut pe_p_len);
+    @os.unlink(p_c_pe as *byte);
+    @os.unlink(p_p_pe as *byte);
+    if (pe_c_tmp as int) <= 0 || (pe_p_buf as int) <= 0 {
+        return false;
+    }
+
+    let work_cap: uint = 262144;
+    let work: *mut u8 = @os.mmap(0 as *mut byte, work_cap, 3, 34, 0 - 1, 0) as *mut u8;
+    var wi: uint = 0;
+    while wi < pe_c_len { work[wi] = pe_c_tmp[wi]; wi = wi + 1; }
+    eia_test_free_buf(pe_c_tmp);
+
+    var pe_new_len: uint = 0;
+    let pe_res: int = eia_relink_binary_bytes_ex(work, pe_c_len, work_cap, pe_p_buf as *const u8, pe_p_len, &mut pe_new_len);
+    eia_test_free_buf(pe_p_buf);
+    if pe_res != 2 || eia_verify_artifact_bytes(work as *const u8, pe_new_len) != 0 {
+        println("  [FAIL] PE32+ .pcode->.text/.pcode splice relink failed");
+        ok = false;
+    } else {
+        // .pcode at file_off = 12288, RVA = 12288; .text at RVA = 4096.
+        // p_holes[0]: intra-.pcode call at 10 (next ip RVA = 12298+4 = 12302) -> helper at RVA 12288+32 = 12320 => disp = +18
+        // p_holes[1]: .pcode->.text callback at 20 (next ip RVA = 12308+4 = 12312) -> pe2_cb at RVA 4096+16 = 4112 => disp = 4112 - 12312 = -8200
+        let disp_hlp: i32 = eia_patch_read_u32(work + 12288 + 10) as i32;
+        let disp_cb: i32 = eia_patch_read_u32(work + 12288 + 20) as i32;
+        if disp_hlp != 18 || disp_cb != (4112 - 12312) {
+            println("  [FAIL] PE32+ .pcode->.text or intra-.pcode CALL32 displacement wrong");
+            ok = false;
+        }
+    }
+
+    // Mach-O __PCODE vmaddr >= 0x100000000 verification
+    var mc_c_sc: [SymbolContract; 2];
+    eia_contract_init_ex(&mut mc_c_sc[0], sym_cli, sig_fn, 4294967296 + 4096, 24, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut mc_c_sc[1], sym_prv, sig_fn, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    var mc_p_sc: SymbolContract;
+    eia_contract_init_ex(&mut mc_p_sc, sym_prv, sig_fn, 4294967296 + 4096 + 16, 16, EIA_SYM_DEFINED, 0, 0);
+    let mc_p_buf: *mut u8 = @os.mmap(0 as *mut byte, work_cap, 3, 34, 0 - 1, 0) as *mut u8;
+    let mc_c_len: uint = eia_test_build_macho4k(work, work_cap, (&code_c[0]) as *const u8, 40, &mc_c_sc[0], 2, &c_hole, 1);
+    let mc_p_len: uint = eia_test_build_macho4k(mc_p_buf, work_cap, (&code_p[0]) as *const u8, 48, &mc_p_sc, 1, 0 as *const EiaRelocHole, 0);
+    var mc_new_len: uint = 0;
+    let mc_res: int = eia_relink_binary_bytes_ex(work, mc_c_len, work_cap, mc_p_buf as *const u8, mc_p_len, &mut mc_new_len);
+    @os.munmap(mc_p_buf as uint, work_cap);
+    if mc_res != 1 || eia_verify_artifact_bytes(work as *const u8, mc_new_len) != 0 {
+        println("  [FAIL] Mach-O __PCODE splice relink failed");
+        ok = false;
+    } else {
+        let m_ncmds: uint = eia_patch_read_u32(work as *const u8 + 16) as uint;
+        var mo: uint = 32;
+        var mi: uint = 0;
+        var pcode_va: uint = 0;
+        while mi < m_ncmds {
+            let cmd: u32 = eia_patch_read_u32(work as *const u8 + mo);
+            let cmdsz: uint = eia_patch_read_u32(work as *const u8 + mo + 4) as uint;
+            if cmd == 25 && cmdsz >= 72 && work[mo + 8] == 95 && work[mo + 9] == 95 && work[mo + 10] == 80 && work[mo + 11] == 67 && work[mo + 12] == 79 {
+                pcode_va = eia_patch_read_u64(work as *const u8 + mo + 24) as uint;
+            }
+            mo = mo + cmdsz;
+            mi = mi + 1;
+        }
+        let mhoff: uint = eia_locate_hologram_offset(work as *const u8, mc_new_len) as uint;
+        let mholo: *const UniversalHologramHeader = (work + mhoff) as *const UniversalHologramHeader;
+        let prv_sc_out: *const SymbolContract = eia_find_contract((work + mholo.contracts_offset) as *const SymbolContract, mholo.contracts_count, sym_prv, EIA_SYM_DEFINED);
+        if pcode_va < 4294967296 || prv_sc_out == (0 as *const SymbolContract) || prv_sc_out.vaddr < 4294967296 {
+            println("  [FAIL] Mach-O __PCODE segment or symbol vaddr < 0x100000000");
+            ok = false;
+        }
+    }
+    @os.munmap(work as uint, work_cap);
+
+    // Out-of-range branch reloc rejection (ARM64/RISC-V/x86_64) & span bounds (-7)
+    var scratch4: [u8; 8];
+    if eia_patch_branch_at_offset(&mut scratch4[0], 1, 3, 0) ||
+       eia_patch_branch_at_offset(&mut scratch4[0], 1, 140000000, 0) ||
+       eia_patch_branch_at_offset(&mut scratch4[0], 2, 1, 0) ||
+       eia_patch_branch_at_offset(&mut scratch4[0], 2, 2000000, 0) ||
+       eia_patch_branch_at_offset(&mut scratch4[0], 0, 3000000000, 0) {
+        println("  [FAIL] Out-of-range/unaligned branch reloc unexpectedly succeeded");
+        ok = false;
+    }
+    var tg: EiaTypeGraphEntry;
+    let th: uint = blake3_hash64("RngType" as *const u8, 7);
+    let fh: uint = blake3_hash64("rng_f" as *const u8, 5);
+    eia_type_graph_entry_init(&mut tg, th, fh, 16, 8);
+    var arm_oob: EiaRelocHole;
+    eia_reloc_init(&mut arm_oob, 12, RelocPatchKind.DISP32, th, fh);
+    if eia_verify_relocs_in_span(&arm_oob, 1, &tg, 1, 16, 1, 0 as *const SymbolContract, 0, false) != -7 ||
+       eia_verify_relocs_in_span(&arm_oob, 1, &tg, 1, 16, 2, 0 as *const SymbolContract, 0, false) != -7 {
+        println("  [FAIL] ARM64/RISC-V 8-byte DISP32 past span did not return -7");
+        ok = false;
+    }
+
+    if ok {
+        println("  [PASS] PE32+ .pcode->.text/.pcode, Mach-O __PCODE >= 0x100000000 & branch range -7 rejections verified");
+    }
+    return ok;
+}
+
+fn test_eia_iphee_eia_run_fail_closed() -> bool {
+    println("[EIA C6] Verifying eia-run / IP-HEE fail-closed rejections (non-host arch, ET_REL, imports, OOB entry) & exit 42...");
+    var ok: bool = true;
+
+    let sym_main: uint = 2258945139493307336;
+    let sym_imp: uint = blake3_hash64("missing_ext_fn" as *const u8, 14);
+    let sig_main: uint = blake3_hash64("()->i64" as *const u8, 7);
+    let sig_alt: uint = blake3_hash64("(i64)->i64" as *const u8, 10);
+
+    var code: [u8; 16];
+    var ci: uint = 0;
+    while ci < 16 { code[ci] = 0x90; ci = ci + 1; }
+    code[0] = 0xB8; code[1] = 42; code[2] = 0; code[3] = 0; code[4] = 0; code[5] = 0xC3;
+
+    var vessel: ExecutableVessel;
+    vessel.code_ptr = (&code[0]) as *const byte; vessel.code_len = 16; vessel.entry_offset = 0;
+
+    let p_bin: *const byte = ".rux_eia_run_tmp.elf" as *const byte;
+    var argv: [*const byte; 4];
+    argv[0] = "bin/rux"; argv[1] = "eia-run"; argv[2] = p_bin; argv[3] = 0 as *const byte;
+
+    // 1. Valid ELF returning 42
+    var sc_ok: SymbolContract;
+    eia_contract_init_ex(&mut sc_ok, sym_main, sig_main, 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+    if write_vessel_elf_with_eia(&vessel, p_bin as *byte, &sc_ok, 1, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0) <= 0 {
+        return false;
+    }
+    if eia_test_run_cli((&argv[0]) as *const *const byte) != 42 {
+        println("  [FAIL] CLI eia-run valid host ELF did not return exit code 42");
+        ok = false;
+    }
+
+    // 2. Non-host arch (ARM64 e_machine = 183), ET_REL (e_type = 1)
+    var blen: uint = 0;
+    let bbuf: *mut u8 = eia_test_read_file(p_bin, &mut blen);
+    if (bbuf as int) <= 0 {
+        @os.unlink(p_bin as *byte);
+        return false;
+    }
+    let hoff: uint = eia_locate_hologram_offset(bbuf as *const u8, blen) as uint;
+    let holo: *mut UniversalHologramHeader = (bbuf + hoff) as *mut UniversalHologramHeader;
+
+    eia_patch_write_u16(bbuf + 18, 183);
+    var d1: uint = 0;
+    eia_compute_artifact_sealed_digest(bbuf as *const u8, blen, holo as *const UniversalHologramHeader, &mut d1);
+    eia_hologram_seal_tables_with_digest(holo, bbuf as *const u8, blen, true, d1);
+    eia_test_write_bytes(p_bin, bbuf as *const u8, blen);
+    if eia_test_run_cli((&argv[0]) as *const *const byte) != 253 {
+        println("  [FAIL] eia-run did not fail closed with -3 (253) on ARM64 ELF");
+        ok = false;
+    }
+    eia_patch_write_u16(bbuf + 18, 62);
+
+    eia_patch_write_u16(bbuf + 16, 1);
+    var d2: uint = 0;
+    eia_compute_artifact_sealed_digest(bbuf as *const u8, blen, holo as *const UniversalHologramHeader, &mut d2);
+    eia_hologram_seal_tables_with_digest(holo, bbuf as *const u8, blen, true, d2);
+    eia_test_write_bytes(p_bin, bbuf as *const u8, blen);
+    if eia_test_run_cli((&argv[0]) as *const *const byte) != 254 {
+        println("  [FAIL] eia-run did not fail closed with -2 (254) on ET_REL ELF");
+        ok = false;
+    }
+    eia_test_free_buf(bbuf);
+
+    // 3. Unresolved import (-5 -> 251)
+    var sc_imp: [SymbolContract; 2];
+    eia_contract_init_ex(&mut sc_imp[0], sym_main, sig_main, 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut sc_imp[1], sym_imp, sig_main, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    write_vessel_elf_with_eia(&vessel, p_bin as *byte, &sc_imp[0], 2, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0);
+    if eia_test_run_cli((&argv[0]) as *const *const byte) != 251 {
+        println("  [FAIL] eia-run did not fail closed with -5 (251) on unresolved import");
+        ok = false;
+    }
+
+    // 4. Mismatched self-resolved import (-5 -> 251)
+    eia_contract_init_ex(&mut sc_imp[0], sym_main, sig_main, 4259840, 16, EIA_SYM_DEFINED, 0, 0);
+    eia_contract_init_ex(&mut sc_imp[1], sym_main, sig_alt, 0, 0, EIA_SYM_IMPORT, 0, 0);
+    write_vessel_elf_with_eia(&vessel, p_bin as *byte, &sc_imp[0], 2, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0);
+    if eia_test_run_cli((&argv[0]) as *const *const byte) != 251 {
+        println("  [FAIL] eia-run did not fail closed with -5 (251) on mismatched self-import");
+        ok = false;
+    }
+
+    // 5. Out-of-bounds main_off (-2 -> 254)
+    var sc_oob: SymbolContract;
+    eia_contract_init_ex(&mut sc_oob, sym_main, sig_main, 4259840 + 4096, 16, EIA_SYM_DEFINED, 0, 0);
+    write_vessel_elf_with_eia(&vessel, p_bin as *byte, &sc_oob, 1, 0 as *const EiaRelocHole, 0, 0 as *const EiaTypeGraphEntry, 0);
+    if eia_test_run_cli((&argv[0]) as *const *const byte) != 254 {
+        println("  [FAIL] eia-run did not fail closed with -2 (254) on out-of-bounds main_off");
+        ok = false;
+    }
+
+    @os.unlink(p_bin as *byte);
+    if ok {
+        println("  [PASS] eia-run / IP-HEE fail-closed checks (ARM64, ET_REL, imports, OOB entry) & exit 42 verified");
+    }
+    return ok;
+}
+
+fn test_eia_sig2_fallback_and_target_smoke() -> bool {
+    println("[EIA C3/C6] Verifying EIA_SIG2 ret_is_ptr, fallback sys_exit contract & target/mode CLI smoke...");
+    var ok: bool = true;
+
+    let p_src: *const byte = ".rux_eia_smk.rx" as *const byte;
+    let p_sx_src: *const byte = ".rux_eia_smk_sx.rx" as *const byte;
+    let p_elf: *const byte = ".rux_eia_smk_lnx.elf" as *const byte;
+    let p_mac: *const byte = ".rux_eia_smk_mac.bin" as *const byte;
+    let p_rv: *const byte = ".rux_eia_smk_rv.elf" as *const byte;
+    let p_obj: *const byte = ".rux_eia_smk.o" as *const byte;
+    let p_so: *const byte = ".rux_eia_smk.so" as *const byte;
+
+    let src: *const byte = "fn mk_ptr(x: u64) -> *u8 { return x as *u8; }\nfn mk_u8(x: u64) -> u8 { return x as u8; }\nfn main() -> int { let p: *u8 = mk_ptr(0); let v: u8 = mk_u8(0); return (p as int) + (v as int); }\n" as *const byte;
+    let sx_src: *const byte = "fn mk_ptr(x: u64) -> *u8 { return x as *u8; }\nfn mk_u8(x: u64) -> u8 { return x as u8; }\nfn maybe_exit(flag: int) { if flag != 0 { sys_exit(1); } }\nfn main() -> int { maybe_exit(0); let p: *u8 = mk_ptr(0); let v: u8 = mk_u8(0); return (p as int) + (v as int); }\n" as *const byte;
+    var slen: uint = 0;
+    while (src as *const u8)[slen] != 0 { slen = slen + 1; }
+    var sx_slen: uint = 0;
+    while (sx_src as *const u8)[sx_slen] != 0 { sx_slen = sx_slen + 1; }
+    if !eia_test_write_temp_source(p_src, src, slen) || !eia_test_write_temp_source(p_sx_src, sx_src, sx_slen) {
+        return false;
+    }
+
+    var av_build: [*const byte; 7];
+    var av_chk: [*const byte; 4];
+    av_chk[0] = "bin/rux"; av_chk[1] = "eia-check"; av_chk[3] = 0 as *const byte;
+
+    av_build[0] = "bin/rux"; av_build[1] = p_src; av_build[2] = "-target"; av_build[3] = "arm64-macos"; av_build[4] = "-o"; av_build[5] = p_mac; av_build[6] = 0 as *const byte;
+    if eia_test_run_cli((&av_build[0]) as *const *const byte) != 0 {
+        println("  [FAIL] -target arm64-macos build failed");
+        ok = false;
+    } else {
+        av_chk[2] = p_mac;
+        if eia_test_run_cli((&av_chk[0]) as *const *const byte) != 0 {
+            println("  [FAIL] eia-check failed on -target arm64-macos output");
+            ok = false;
+        }
+    }
+
+    av_build[3] = "riscv64"; av_build[5] = p_rv;
+    if eia_test_run_cli((&av_build[0]) as *const *const byte) != 0 {
+        println("  [FAIL] -target riscv64 build failed");
+        ok = false;
+    } else {
+        av_chk[2] = p_rv;
+        if eia_test_run_cli((&av_chk[0]) as *const *const byte) != 0 {
+            println("  [FAIL] eia-check failed on -target riscv64 output");
+            ok = false;
+        }
+    }
+
+    var av_m: [*const byte; 6];
+    av_m[0] = "bin/rux"; av_m[1] = p_src; av_m[2] = "-c"; av_m[3] = "-o"; av_m[4] = p_obj; av_m[5] = 0 as *const byte;
+    if eia_test_run_cli((&av_m[0]) as *const *const byte) != 0 {
+        println("  [FAIL] -c ET_REL build failed");
+        ok = false;
+    } else {
+        av_chk[2] = p_obj;
+        if eia_test_run_cli((&av_chk[0]) as *const *const byte) != 0 {
+            println("  [FAIL] eia-check failed on -c ET_REL output");
+            ok = false;
+        }
+        av_chk[1] = "eia-run";
+        if eia_test_run_cli((&av_chk[0]) as *const *const byte) != 254 {
+            println("  [FAIL] eia-run did not reject compiled -c ET_REL .o with -2 (254)");
+            ok = false;
+        }
+        av_chk[1] = "eia-check";
+    }
+
+    av_m[2] = "-shared"; av_m[4] = p_so;
+    if eia_test_run_cli((&av_m[0]) as *const *const byte) != 0 {
+        println("  [FAIL] -shared build failed");
+        ok = false;
+    } else {
+        av_chk[2] = p_so;
+        if eia_test_run_cli((&av_chk[0]) as *const *const byte) != 0 {
+            println("  [FAIL] eia-check failed on -shared .so output");
+            ok = false;
+        }
+    }
+
+    var av_lnx: [*const byte; 5];
+    av_lnx[0] = "bin/rux"; av_lnx[1] = p_sx_src; av_lnx[2] = "-o"; av_lnx[3] = p_elf; av_lnx[4] = 0 as *const byte;
+    if eia_test_run_cli((&av_lnx[0]) as *const *const byte) != 0 {
+        println("  [FAIL] Native x86_64 linux build failed");
+        ok = false;
+    } else {
+        av_chk[2] = p_elf;
+        if eia_test_run_cli((&av_chk[0]) as *const *const byte) != 0 {
+            println("  [FAIL] eia-check failed on native x86_64 build");
+            ok = false;
+        }
+        var elen: uint = 0;
+        let ebuf: *mut u8 = eia_test_read_file(p_elf, &mut elen);
+        if (ebuf as int) <= 0 {
+            ok = false;
+        } else {
+            let ehoff: i64 = eia_locate_hologram_offset(ebuf as *const u8, elen);
+            if ehoff < 0 {
+                ok = false;
+            } else {
+                let eholo: *const UniversalHologramHeader = (ebuf + (ehoff as uint)) as *const UniversalHologramHeader;
+                let escs: *const SymbolContract = (ebuf + eholo.contracts_offset) as *const SymbolContract;
+                let sc_ptr: *const SymbolContract = eia_find_contract(escs, eholo.contracts_count, eia_test_fnv1a("mk_ptr" as *const u8, 6), EIA_SYM_DEFINED);
+                let sc_u8: *const SymbolContract = eia_find_contract(escs, eholo.contracts_count, eia_test_fnv1a("mk_u8" as *const u8, 5), EIA_SYM_DEFINED);
+                let sc_exit: *const SymbolContract = eia_find_contract(escs, eholo.contracts_count, eia_test_fnv1a("sys_exit" as *const u8, 8), EIA_SYM_DEFINED);
+                if sc_ptr == (0 as *const SymbolContract) || sc_u8 == (0 as *const SymbolContract) || sc_ptr.type_sig_hash == sc_u8.type_sig_hash {
+                    println("  [FAIL] EIA_SIG2 ret_is_ptr distinction missing in compiler output");
+                    ok = false;
+                }
+                if sc_exit == (0 as *const SymbolContract) || (sc_exit.flags & EIA_SYM_IMPORT) != 0 {
+                    println("  [FAIL] Fallback sys_exit contract missing or still marked EIA_SYM_IMPORT");
+                    ok = false;
+                }
+            }
+            eia_test_free_buf(ebuf);
+        }
+    }
+
+    @os.unlink(p_src as *byte);
+    @os.unlink(p_sx_src as *byte);
+    @os.unlink(p_elf as *byte);
+    @os.unlink(p_mac as *byte);
+    @os.unlink(p_rv as *byte);
+    @os.unlink(p_obj as *byte);
+    @os.unlink(p_so as *byte);
+    if ok {
+        println("  [PASS] EIA_SIG2 ret_is_ptr, fallback sys_exit contract & target/mode CLI smoke verified");
+    }
+    return ok;
+}
+
+fn main() -> int {
+    println("=================================================================");
+    println("     EIA END-TO-END PROOF SUITE (C1-C6 ARCHITECTURE TESTS)       ");
+    println("=================================================================");
+
+    if !verify_gate1_syscalls() { return 1; }
+    if !verify_gate2_memory_cacheline() { return 2; }
+    if !verify_gate3_hologram_blake3() { return 3; }
+    if !verify_gate4_rxd_vitrification() { return 4; }
+    if !test_eia_binary_vessels_and_tamper() { return 6; }
+    if !test_eia_pipeline_real_emission() { return 7; }
+    if !test_eia_cross_unit_contracts() { return 8; }
+    if !test_eia_multiarch_reloc_layout_permutation() { return 9; }
+    if !test_eia_wasm_and_relink_proof() { return 10; }
+    if !test_eia_multi_image_relink_splice() { return 11; }
+    if !test_eia_pe_macho_ar_and_epoch_proof() { return 12; }
+    if !test_eia_pipeline_extended_proof() { return 13; }
+    if !test_eia_malformed_hologram_rejection() { return 14; }
+    if !test_eia_rodata_and_wasm_data_tamper() { return 15; }
+    if !test_eia_chained_relink_and_negatives() { return 16; }
+    if !test_eia_archive_longnames_and_cli_multi() { return 17; }
+    if !test_eia_extended_integrity_tamper() { return 18; }
+    if !test_eia_pe_pcode_macho_vmaddr_and_reloc_range() { return 19; }
+    if !test_eia_iphee_eia_run_fail_closed() { return 20; }
+    if !test_eia_sig2_fallback_and_target_smoke() { return 21; }
+
+    var gate5_ok: bool = verify_gate5_fixpoint();
+    if !gate5_ok { return 5; }
+
+    println("=================================================================");
+    println(">>> ALL EIA PROOFS & 5-GATE HARDWARE VERIFICATION PASSED <<<");
+    println("=================================================================");
+    return 0;
+}

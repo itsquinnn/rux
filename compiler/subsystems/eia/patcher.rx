@@ -1,8 +1,776 @@
+include "compiler/subsystems/eia/header.rx";
+include "compiler/subsystems/eia/contracts.rx";
 include "compiler/subsystems/eia/relocations.rx";
 include "compiler/subsystems/eia/type_graph.rx";
 
-fn eia_patch_displacement_holes(
-    write_base: *mut byte,
+fn eia_rng_ok(off: uint, sz: uint, total: uint) -> bool {
+    return off <= total && sz <= (total - off);
+}
+
+fn eia_patch_read_u32(ptr: *const u8) -> u32 {
+    let b0: u32 = ptr[0] as u32;
+    let b1: u32 = ptr[1] as u32;
+    let b2: u32 = ptr[2] as u32;
+    let b3: u32 = ptr[3] as u32;
+    return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+}
+
+fn eia_patch_read_u16(ptr: *const u8) -> u32 {
+    let b0: u32 = ptr[0] as u32;
+    let b1: u32 = ptr[1] as u32;
+    return b0 | (b1 << 8);
+}
+
+fn eia_patch_read_u64(ptr: *const u8) -> u64 {
+    var v: u64 = 0;
+    var i: u64 = 0;
+    while i < 8 {
+        v = v | ((ptr[i] as u64) << (i * 8));
+        i = i + 1;
+    }
+    return v;
+}
+
+fn eia_patch_write_u16(ptr: *mut u8, val: u32) {
+    ptr[0] = (val & 255) as u8;
+    ptr[1] = ((val >> 8) & 255) as u8;
+}
+
+fn eia_patch_write_u32(ptr: *mut u8, val: u32) {
+    ptr[0] = (val & 255) as u8;
+    ptr[1] = ((val >> 8) & 255) as u8;
+    ptr[2] = ((val >> 16) & 255) as u8;
+    ptr[3] = ((val >> 24) & 255) as u8;
+}
+
+fn eia_patch_write_u64(ptr: *mut u8, val: u64) {
+    var i: u64 = 0;
+    while i < 8 {
+        ptr[i] = ((val >> (i * 8)) & 255) as u8;
+        i = i + 1;
+    }
+}
+
+fn eia_patch_single_hole(
+    write_base: *mut u8,
+    target_arch: u64,
+    hole: *const EiaRelocHole,
+    graph: *const EiaTypeGraphEntry,
+    graph_count: uint
+) -> bool {
+    if hole.patch_kind == EIA_RELOC_CALL32 {
+        return false;
+    }
+    let offset: u32 = eia_resolve_field_displacement(
+        graph,
+        graph_count,
+        hole.type_sig_hash,
+        hole.field_or_sym_hash
+    );
+    if offset == 0xFFFFFFFF {
+        return false;
+    }
+
+    if target_arch == 65535 || target_arch == 11 {
+        return false;
+    }
+
+    let target_ptr: *mut u8 = ((write_base as uint) + (hole.insn_offset as uint)) as *mut u8;
+    if target_arch == 1 || target_arch == 8 || target_arch == 10 {
+        let w0: u32 = eia_patch_read_u32(target_ptr as *const u8);
+        let w1: u32 = eia_patch_read_u32((target_ptr + 4) as *const u8);
+        if hole.patch_kind == EIA_RELOC_WIDEN_STENCIL {
+            return false;
+        }
+        if (w0 & 0x7F800000) != 0x52800000 || (w1 & 0x7F800000) != 0x72800000 {
+            return false;
+        }
+        let imm_lo: u32 = (offset & 65535) << 5;
+        let imm_hi: u32 = ((offset >> 16) & 65535) << 5;
+        eia_patch_write_u32(target_ptr, (w0 & 4292870175) | imm_lo);
+        eia_patch_write_u32(target_ptr + 4, (w1 & 4292870175) | imm_hi);
+        return true;
+    }
+    if target_arch == 2 || target_arch == 9 {
+        let w0: u32 = eia_patch_read_u32(target_ptr as *const u8);
+        let w1: u32 = eia_patch_read_u32((target_ptr + 4) as *const u8);
+        if hole.patch_kind == EIA_RELOC_WIDEN_STENCIL || offset >= 0x7FFFF800 {
+            return false;
+        }
+        if (w0 & 127) != 55 || (w1 & 0x707F) != 19 {
+            return false;
+        }
+        let hi: u32 = (offset + 2048) >> 12;
+        let lo: u32 = offset - (hi << 12);
+        eia_patch_write_u32(target_ptr, (w0 & 4095) | ((hi & 1048575) << 12));
+        eia_patch_write_u32(target_ptr + 4, (w1 & 1048575) | ((lo & 4095) << 20));
+        return true;
+    }
+
+    if hole.patch_kind == EIA_RELOC_WIDEN_STENCIL {
+        eia_patch_write_u64(target_ptr, offset as u64);
+        return true;
+    }
+
+    eia_patch_write_u32(target_ptr, offset);
+    return true;
+}
+
+fn eia_pe_img_base(buf: *const u8, len: uint) -> uint {
+    if buf == (0 as *const u8) || len < 128 || buf[0] != 77 || buf[1] != 90 {
+        return 0;
+    }
+    let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+    if (lfanew + 120) > len || buf[lfanew] != 80 || buf[lfanew + 1] != 69 {
+        return 0;
+    }
+    return eia_patch_read_u64(buf + lfanew + 48) as uint;
+}
+
+fn eia_pe_file_off_to_rva(buf: *const u8, len: uint, file_off: uint) -> i64 {
+    if buf == (0 as *const u8) || len < 128 || buf[0] != 77 || buf[1] != 90 {
+        return -1;
+    }
+    let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+    if (lfanew + 24) > len || buf[lfanew] != 80 || buf[lfanew + 1] != 69 {
+        return -1;
+    }
+    let nsec: uint = eia_patch_read_u16(buf + lfanew + 6) as uint;
+    let opt_sz: uint = eia_patch_read_u16(buf + lfanew + 20) as uint;
+    let sec_base: uint = lfanew + 24 + opt_sz;
+    var psi: uint = 0;
+    while psi < nsec && (sec_base + (psi * 40) + 40) <= len {
+        let psh: *const u8 = buf + sec_base + (psi * 40);
+        let vsize: uint = eia_patch_read_u32(psh + 8) as uint;
+        let va: uint = eia_patch_read_u32(psh + 12) as uint;
+        let raw_sz: uint = eia_patch_read_u32(psh + 16) as uint;
+        let raw_ptr: uint = eia_patch_read_u32(psh + 20) as uint;
+        var span: uint = raw_sz;
+        if vsize > span {
+            span = vsize;
+        }
+        if raw_ptr > 0 && span > 0 && file_off >= raw_ptr && file_off < (raw_ptr + span) {
+            return (va + (file_off - raw_ptr)) as i64;
+        }
+        psi = psi + 1;
+    }
+    return -1;
+}
+
+fn eia_pe_exec_rva_bounds(buf: *const u8, len: uint, out_min_rva: *mut uint, out_max_rva: *mut uint) -> bool {
+    out_min_rva[0] = 0;
+    out_max_rva[0] = 0;
+    if buf == (0 as *const u8) || len < 128 || buf[0] != 77 || buf[1] != 90 {
+        return false;
+    }
+    let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+    if (lfanew + 24) > len || buf[lfanew] != 80 || buf[lfanew + 1] != 69 {
+        return false;
+    }
+    let nsec: uint = eia_patch_read_u16(buf + lfanew + 6) as uint;
+    let opt_sz: uint = eia_patch_read_u16(buf + lfanew + 20) as uint;
+    let sec_base: uint = lfanew + 24 + opt_sz;
+    var found: bool = false;
+    var min_r: uint = 0;
+    var max_r: uint = 0;
+    var psi: uint = 0;
+    while psi < nsec && (sec_base + (psi * 40) + 40) <= len {
+        let psh: *const u8 = buf + sec_base + (psi * 40);
+        let chars: u32 = eia_patch_read_u32(psh + 36);
+        if (chars & 536870912) != 0 {
+            let vsize: uint = eia_patch_read_u32(psh + 8) as uint;
+            let va: uint = eia_patch_read_u32(psh + 12) as uint;
+            let raw_sz: uint = eia_patch_read_u32(psh + 16) as uint;
+            var span: uint = vsize;
+            if span == 0 || (raw_sz > 0 && span > raw_sz) {
+                span = raw_sz;
+            }
+            let rva_end: uint = va + span;
+            if !found || va < min_r {
+                min_r = va;
+            }
+            if !found || rva_end > max_r {
+                max_r = rva_end;
+            }
+            found = true;
+        }
+        psi = psi + 1;
+    }
+    out_min_rva[0] = min_r;
+    out_max_rva[0] = max_r;
+    return found;
+}
+
+fn eia_patch_branch_at_offset(
+    target_ptr: *mut u8,
+    target_arch: u64,
+    target_off: i64,
+    insn_off: i64
+) -> bool {
+    if target_arch == 1 || target_arch == 8 || target_arch == 10 {
+        let bdelta: i64 = target_off - insn_off;
+        if (bdelta & 3) != 0 {
+            return false;
+        }
+        let adisp: i64 = bdelta / 4;
+        if adisp < -33554432 || adisp > 33554431 {
+            return false;
+        }
+        if (eia_patch_read_u32(target_ptr as *const u8) & 0xFC000000) != 0x94000000 {
+            return false;
+        }
+        let bl_op: u32 = 2483027968 | ((adisp as u32) & 67108863);
+        eia_patch_write_u32(target_ptr, bl_op);
+        return true;
+    }
+    if target_arch == 2 || target_arch == 9 {
+        let rdisp: i64 = target_off - insn_off;
+        if (rdisp & 1) != 0 {
+            return false;
+        }
+        let op0: u32 = eia_patch_read_u32(target_ptr as *const u8) & 127;
+        if op0 == 23 {
+            if rdisp < -2147483648 || rdisp > 2147481600 {
+                return false;
+            }
+            let rdisp_i: i32 = rdisp as i32;
+            let rhi: u32 = ((rdisp_i + 2048) >> 12) as u32;
+            let rlo: u32 = (rdisp_i - ((rhi as i32) << 12)) as u32;
+            eia_patch_write_u32(target_ptr, 791 | ((rhi & 1048575) << 12));
+            eia_patch_write_u32(target_ptr + 4, 196839 | ((rlo & 4095) << 20));
+            return true;
+        }
+        if rdisp < -1048576 || rdisp > 1048574 {
+            return false;
+        }
+        if op0 != 111 {
+            return false;
+        }
+        let rdisp_u: u32 = (rdisp as i32) as u32;
+        let rimm20: u32 = (rdisp_u >> 20) & 1;
+        let rimm10_1: u32 = (rdisp_u >> 1) & 1023;
+        let rimm11: u32 = (rdisp_u >> 11) & 1;
+        let rimm19_12: u32 = (rdisp_u >> 12) & 255;
+        let jal_op: u32 = 239 | (rimm19_12 << 12) | (rimm11 << 20) | (rimm10_1 << 21) | (rimm20 << 31);
+        eia_patch_write_u32(target_ptr, jal_op);
+        return true;
+    }
+    if target_arch == 0 || target_arch == 3 || target_arch == 4 || target_arch == 6 || target_arch == 7 {
+        let disp: i64 = target_off - (insn_off + 4);
+        if disp < -2147483648 || disp > 2147483647 {
+            return false;
+        }
+        eia_patch_write_u32(target_ptr, (disp as i32) as u32);
+        return true;
+    }
+    return false;
+}
+
+fn eia_resolve_call_contract(
+    contracts: *const SymbolContract,
+    contract_count: uint,
+    sym_hash: uint
+) -> *const SymbolContract {
+    var sc: *const SymbolContract = eia_find_contract(contracts, contract_count, sym_hash, EIA_SYM_DEFINED);
+    if sc == (0 as *const SymbolContract) {
+        let alt: *const SymbolContract = eia_find_contract(contracts, contract_count, sym_hash, 0);
+        if alt != (0 as *const SymbolContract) && (alt.flags & EIA_SYM_IMPORT) == 0 {
+            sc = alt;
+        }
+    }
+    return sc;
+}
+
+fn eia_patch_call_hole_span(
+    write_base: *mut u8,
+    insn_code_len: uint,
+    max_target_span: uint,
+    target_arch: u64,
+    hole: *const EiaRelocHole,
+    text_vaddr: uint,
+    contracts: *const SymbolContract,
+    contract_count: uint
+) -> bool {
+    if hole == (0 as *const EiaRelocHole) || hole.patch_kind != EIA_RELOC_CALL32 {
+        return false;
+    }
+    if target_arch == 65535 || target_arch == 11 || write_base == (0 as *mut u8) || contracts == (0 as *const SymbolContract) || contract_count == 0 {
+        return false;
+    }
+    let insn_off: uint = hole.insn_offset as uint;
+    if (insn_off + 4) > insn_code_len {
+        return false;
+    }
+    let sc: *const SymbolContract = eia_resolve_call_contract(contracts, contract_count, hole.field_or_sym_hash);
+    if sc == (0 as *const SymbolContract) || sc.vaddr < text_vaddr {
+        return false;
+    }
+    let target_off: uint = sc.vaddr - text_vaddr;
+    if target_off >= max_target_span {
+        return false;
+    }
+    let target_ptr: *mut u8 = ((write_base as uint) + insn_off) as *mut u8;
+    return eia_patch_branch_at_offset(target_ptr, target_arch, target_off as i64, insn_off as i64);
+}
+
+fn eia_patch_call_hole_pe(
+    full_buf: *const u8,
+    full_len: uint,
+    c_code_off: uint,
+    write_base: *mut u8,
+    insn_code_len: uint,
+    target_arch: u64,
+    hole: *const EiaRelocHole,
+    contracts: *const SymbolContract,
+    contract_count: uint
+) -> bool {
+    if hole == (0 as *const EiaRelocHole) || hole.patch_kind != EIA_RELOC_CALL32 {
+        return false;
+    }
+    if target_arch == 65535 || target_arch == 11 || write_base == (0 as *mut u8) || contracts == (0 as *const SymbolContract) || contract_count == 0 {
+        return false;
+    }
+    let insn_off: uint = hole.insn_offset as uint;
+    if (insn_off + 4) > insn_code_len {
+        return false;
+    }
+    let hole_rva: i64 = eia_pe_file_off_to_rva(full_buf, full_len, c_code_off + insn_off);
+    if hole_rva < 0 {
+        return false;
+    }
+    let img_base: uint = eia_pe_img_base(full_buf, full_len);
+    let sc: *const SymbolContract = eia_resolve_call_contract(contracts, contract_count, hole.field_or_sym_hash);
+    if sc == (0 as *const SymbolContract) || sc.vaddr < img_base {
+        return false;
+    }
+    let target_rva: uint = sc.vaddr - img_base;
+    var min_rva: uint = 0;
+    var max_rva: uint = 0;
+    if !eia_pe_exec_rva_bounds(full_buf, full_len, &mut min_rva, &mut max_rva) {
+        return false;
+    }
+    if target_rva < min_rva || target_rva >= max_rva {
+        return false;
+    }
+    let target_ptr: *mut u8 = ((write_base as uint) + insn_off) as *mut u8;
+    return eia_patch_branch_at_offset(target_ptr, target_arch, target_rva as i64, hole_rva);
+}
+
+fn eia_patch_call_hole(
+    write_base: *mut u8,
+    code_len: uint,
+    target_arch: u64,
+    hole: *const EiaRelocHole,
+    text_vaddr: uint,
+    contracts: *const SymbolContract,
+    contract_count: uint
+) -> bool {
+    return eia_patch_call_hole_span(write_base, code_len, code_len, target_arch, hole, text_vaddr, contracts, contract_count);
+}
+
+fn eia_patch_binary_relocs_span_ex(
+    write_base: *mut u8,
+    insn_code_len: uint,
+    max_target_span: uint,
+    target_arch: u64,
+    holes: *const EiaRelocHole,
+    hole_count: uint,
+    graph: *const EiaTypeGraphEntry,
+    graph_count: uint,
+    contracts: *const SymbolContract,
+    contract_count: uint,
+    text_vaddr: uint,
+    full_buf: *const u8,
+    full_len: uint,
+    c_code_off: uint
+) -> uint {
+    if write_base == (0 as *mut u8) || holes == (0 as *const EiaRelocHole) || insn_code_len == 0 {
+        return 0;
+    }
+    if target_arch == 65535 || target_arch == 11 {
+        return 0;
+    }
+    let is_pe_ctx: bool = (full_buf != (0 as *const u8) && eia_container_kind(full_buf, full_len) == 2);
+    var patched: uint = 0;
+    var i: uint = 0;
+    while i < hole_count {
+        let hole: *const EiaRelocHole = ((holes as uint) + (i * 24)) as *const EiaRelocHole;
+        if hole.patch_kind == EIA_RELOC_CALL32 {
+            var ok_call: bool = false;
+            if is_pe_ctx {
+                ok_call = eia_patch_call_hole_pe(full_buf, full_len, c_code_off, write_base, insn_code_len, target_arch, hole, contracts, contract_count);
+            } else {
+                ok_call = eia_patch_call_hole_span(write_base, insn_code_len, max_target_span, target_arch, hole, text_vaddr, contracts, contract_count);
+            }
+            if ok_call {
+                patched = patched + 1;
+            }
+        } else {
+            var req_sz: uint = 4;
+            if target_arch == 1 || target_arch == 8 || target_arch == 10 || target_arch == 2 || target_arch == 9 {
+                req_sz = 8;
+            } else if hole.patch_kind == EIA_RELOC_WIDEN_STENCIL {
+                req_sz = 8;
+            }
+            if ((hole.insn_offset as uint) + req_sz) <= insn_code_len {
+                if eia_patch_single_hole(write_base, target_arch, hole, graph, graph_count) {
+                    patched = patched + 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    return patched;
+}
+
+fn eia_patch_binary_relocs_span(
+    write_base: *mut u8,
+    insn_code_len: uint,
+    max_target_span: uint,
+    target_arch: u64,
+    holes: *const EiaRelocHole,
+    hole_count: uint,
+    graph: *const EiaTypeGraphEntry,
+    graph_count: uint,
+    contracts: *const SymbolContract,
+    contract_count: uint,
+    text_vaddr: uint
+) -> uint {
+    return eia_patch_binary_relocs_span_ex(
+        write_base,
+        insn_code_len,
+        max_target_span,
+        target_arch,
+        holes,
+        hole_count,
+        graph,
+        graph_count,
+        contracts,
+        contract_count,
+        text_vaddr,
+        0 as *const u8,
+        0,
+        0
+    );
+}
+
+fn eia_patch_binary_relocs(
+    write_base: *mut u8,
+    code_len: uint,
+    target_arch: u64,
+    holes: *const EiaRelocHole,
+    hole_count: uint,
+    graph: *const EiaTypeGraphEntry,
+    graph_count: uint,
+    contracts: *const SymbolContract,
+    contract_count: uint,
+    text_vaddr: uint
+) -> uint {
+    return eia_patch_binary_relocs_span(
+        write_base,
+        code_len,
+        code_len,
+        target_arch,
+        holes,
+        hole_count,
+        graph,
+        graph_count,
+        contracts,
+        contract_count,
+        text_vaddr
+    );
+}
+
+fn eia_wasm_read_uleb(buf: *const u8, len: uint, pos_ptr: *mut uint) -> i64 {
+    var pos: uint = pos_ptr[0];
+    var val: uint = 0;
+    var shift: uint = 0;
+    var step: uint = 0;
+    while pos < len && step < 9 {
+        let b: uint = buf[pos] as uint;
+        pos = pos + 1;
+        val = val | ((b & 127) << shift);
+        if (b & 128) == 0 {
+            pos_ptr[0] = pos;
+            return val as i64;
+        }
+        shift = shift + 7;
+        step = step + 1;
+    }
+    return -1;
+}
+
+fn eia_wasm_find_sections(
+    buf: *const u8,
+    len: uint,
+    out_holo_off: *mut i64,
+    out_code_off: *mut uint,
+    out_code_len: *mut uint
+) -> bool {
+    out_holo_off[0] = -1;
+    out_code_off[0] = 0;
+    out_code_len[0] = 0;
+    if buf == (0 as *const u8) || len < 8 {
+        return false;
+    }
+    if buf[0] != 0 || buf[1] != 97 || buf[2] != 115 || buf[3] != 109 || buf[4] != 1 {
+        return false;
+    }
+    var pos: uint = 8;
+    while pos < len {
+        let sec_id: u8 = buf[pos];
+        pos = pos + 1;
+        let slen_i: i64 = eia_wasm_read_uleb(buf, len, &mut pos);
+        if slen_i < 0 {
+            return false;
+        }
+        let slen: uint = slen_i as uint;
+        if (pos + slen) > len {
+            return false;
+        }
+        if sec_id == 0 {
+            var npos: uint = pos;
+            let nlen_i: i64 = eia_wasm_read_uleb(buf, pos + slen, &mut npos);
+            if nlen_i == 3 && (npos + 3 + 96) <= (pos + slen) {
+                if buf[npos] == 101 && buf[npos + 1] == 105 && buf[npos + 2] == 97 {
+                    out_holo_off[0] = (npos + 3) as i64;
+                }
+            }
+        } else if sec_id == 10 && slen > 0 {
+            out_code_off[0] = pos;
+            out_code_len[0] = slen;
+        }
+        pos = pos + slen;
+    }
+    return true;
+}
+
+fn eia_locate_elf_code_span(
+    buf: *const u8,
+    len: uint,
+    ehdr_off: uint,
+    holo: *const UniversalHologramHeader,
+    out_off: *mut uint,
+    out_len: *mut uint
+) -> bool {
+    if (ehdr_off + 64) > len || buf[ehdr_off] != 127 || buf[ehdr_off + 1] != 69 || buf[ehdr_off + 2] != 76 || buf[ehdr_off + 3] != 70 {
+        return false;
+    }
+    let e_shoff: uint = eia_patch_read_u64(buf + ehdr_off + 40) as uint;
+    let e_shentsize: uint = eia_patch_read_u16(buf + ehdr_off + 58) as uint;
+    let e_shnum: uint = eia_patch_read_u16(buf + ehdr_off + 60) as uint;
+    if e_shoff > 0 && e_shnum >= 2 && e_shentsize >= 64 && eia_rng_ok(e_shoff, (e_shnum * e_shentsize), len) {
+        var si: uint = 1;
+        while si < e_shnum {
+            let sh: *const u8 = buf + e_shoff + (si * e_shentsize);
+            let sh_type: u32 = eia_patch_read_u32(sh + 4);
+            let sh_flags: uint = eia_patch_read_u64(sh + 8) as uint;
+            if sh_type == 1 && (sh_flags & 6) == 6 {
+                let sh_off: uint = eia_patch_read_u64(sh + 24) as uint;
+                let sh_sz: uint = eia_patch_read_u64(sh + 32) as uint;
+                if sh_off > 0 && sh_sz > 0 && eia_rng_ok(sh_off, sh_sz, len) {
+                    out_off[0] = sh_off;
+                    out_len[0] = sh_sz;
+                    return true;
+                }
+            }
+            si = si + 1;
+        }
+    }
+    if holo == (0 as *const UniversalHologramHeader) {
+        return false;
+    }
+    let holo_off: uint = (holo as uint) - (buf as uint);
+    var tables_end: uint = holo_off + 96;
+    if holo.contracts_count > 0 && (holo.contracts_offset + (holo.contracts_count * 48)) > tables_end {
+        tables_end = holo.contracts_offset + (holo.contracts_count * 48);
+    }
+    if holo.relocs_count > 0 && (holo.relocs_offset + (holo.relocs_count * 24)) > tables_end {
+        tables_end = holo.relocs_offset + (holo.relocs_count * 24);
+    }
+    if holo.type_graph_size > 0 && (holo.type_graph_offset + holo.type_graph_size) > tables_end {
+        tables_end = holo.type_graph_offset + holo.type_graph_size;
+    }
+    var code_off: uint = ((tables_end + 15) / 16) * 16;
+    let e_phoff: uint = ehdr_off + (eia_patch_read_u64(buf + ehdr_off + 32) as uint);
+    let e_phentsize: uint = eia_patch_read_u16(buf + ehdr_off + 54) as uint;
+    let e_phnum: uint = eia_patch_read_u16(buf + ehdr_off + 56) as uint;
+    if e_phnum > 0 && e_phentsize >= 56 && eia_rng_ok(e_phoff, 56, len) && eia_patch_read_u32(buf + e_phoff) == 1 {
+        let p_off: uint = eia_patch_read_u64(buf + e_phoff + 8) as uint;
+        let p_vaddr: uint = eia_patch_read_u64(buf + e_phoff + 16) as uint;
+        if p_vaddr >= p_off {
+            let base_va: uint = p_vaddr - p_off;
+            if holo.reserved0 >= (base_va + holo_off + 96) {
+                let cand: uint = holo.reserved0 - base_va;
+                if cand < len {
+                    code_off = cand;
+                }
+            }
+        }
+    }
+    var code_len: uint = 0;
+    if holo.reserved1 > holo.reserved0 {
+        code_len = holo.reserved1 - holo.reserved0;
+    } else if len > code_off {
+        code_len = len - code_off;
+    }
+    if code_off > 0 && code_len > 0 && eia_rng_ok(code_off, code_len, len) {
+        out_off[0] = code_off;
+        out_len[0] = code_len;
+        return true;
+    }
+    return false;
+}
+
+fn eia_locate_code_span(
+    buf: *const u8,
+    len: uint,
+    holo: *const UniversalHologramHeader,
+    out_off: *mut uint,
+    out_len: *mut uint
+) -> bool {
+    out_off[0] = 0;
+    out_len[0] = 0;
+    if buf == (0 as *const u8) || len < 64 {
+        return false;
+    }
+    if buf[0] == 77 && buf[1] == 90 {
+        if len >= 1248 && eia_patch_read_u32(buf + 1152) == EIA_MAGIC && buf[128] == 127 && buf[129] == 69 && buf[130] == 76 && buf[131] == 70 {
+            return eia_locate_elf_code_span(buf, len, 128, holo, out_off, out_len);
+        }
+        let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+        if eia_rng_ok(lfanew, 24, len) && buf[lfanew] == 80 && buf[lfanew + 1] == 69 && buf[lfanew + 2] == 0 && buf[lfanew + 3] == 0 {
+            let nsec: uint = eia_patch_read_u16(buf + lfanew + 6) as uint;
+            let opt_sz: uint = eia_patch_read_u16(buf + lfanew + 20) as uint;
+            let sec_base: uint = lfanew + 24 + opt_sz;
+            var si: uint = 0;
+            while si < nsec && (sec_base + (si * 40) + 40) <= len {
+                let sh: *const u8 = buf + sec_base + (si * 40);
+                if sh[0] == 46 && sh[1] == 116 && sh[2] == 101 && sh[3] == 120 && sh[4] == 116 && sh[5] == 0 {
+                    let vsize: uint = eia_patch_read_u32(sh + 8) as uint;
+                    let raw_sz: uint = eia_patch_read_u32(sh + 16) as uint;
+                    let raw_ptr: uint = eia_patch_read_u32(sh + 20) as uint;
+                    var span_len: uint = vsize;
+                    if span_len == 0 || (raw_sz > 0 && span_len > raw_sz) {
+                        span_len = raw_sz;
+                    }
+                    if raw_ptr > 0 && span_len > 0 && eia_rng_ok(raw_ptr, span_len, len) {
+                        out_off[0] = raw_ptr;
+                        out_len[0] = span_len;
+                        return true;
+                    }
+                }
+                si = si + 1;
+            }
+        }
+        return false;
+    }
+    if buf[0] == 127 && buf[1] == 69 && buf[2] == 76 && buf[3] == 70 {
+        return eia_locate_elf_code_span(buf, len, 0, holo, out_off, out_len);
+    }
+    let m32: u32 = eia_patch_read_u32(buf);
+    if m32 == 4277009103 || m32 == 3489328638 {
+        if len >= 32 {
+            let ncmds: uint = eia_patch_read_u32(buf + 16) as uint;
+            var cmd_off: uint = 32;
+            var ci: uint = 0;
+            while ci < ncmds && eia_rng_ok(cmd_off, 8, len) {
+                let cmd: u32 = eia_patch_read_u32(buf + cmd_off);
+                let cmdsz: uint = eia_patch_read_u32(buf + cmd_off + 4) as uint;
+                if cmdsz < 8 || (cmd_off + cmdsz) > len {
+                    return false;
+                }
+                if cmd == 25 && cmdsz >= 72 {
+                    let seg: *const u8 = buf + cmd_off + 8;
+                    if seg[0] == 95 && seg[1] == 95 && seg[2] == 84 && seg[3] == 69 && seg[4] == 88 && seg[5] == 84 && seg[6] == 0 {
+                        let nsects: uint = eia_patch_read_u32(buf + cmd_off + 64) as uint;
+                        var si: uint = 0;
+                        while si < nsects && (72 + (si * 80) + 80) <= cmdsz {
+                            let sc: *const u8 = buf + cmd_off + 72 + (si * 80);
+                            if sc[0] == 95 && sc[1] == 95 && sc[2] == 116 && sc[3] == 101 && sc[4] == 120 && sc[5] == 116 && sc[6] == 0 {
+                                let sec_sz: uint = eia_patch_read_u64(sc + 40) as uint;
+                                let sec_off: uint = eia_patch_read_u32(sc + 48) as uint;
+                                if sec_off > 0 && sec_sz > 0 && eia_rng_ok(sec_off, sec_sz, len) {
+                                    out_off[0] = sec_off;
+                                    out_len[0] = sec_sz;
+                                    return true;
+                                }
+                            }
+                            si = si + 1;
+                        }
+                    }
+                }
+                cmd_off = cmd_off + cmdsz;
+                ci = ci + 1;
+            }
+        }
+        return false;
+    }
+    if buf[0] == 0 && buf[1] == 97 && buf[2] == 115 && buf[3] == 109 {
+        var dummy_holo: i64 = -1;
+        if eia_wasm_find_sections(buf, len, &mut dummy_holo, out_off, out_len) {
+            return out_len[0] > 0;
+        }
+    }
+    return false;
+}
+
+fn eia_detect_arch_from_binary(buf: *const u8, len: uint) -> u64 {
+    if buf == (0 as *const u8) || len < 8 {
+        return 65535;
+    }
+    if buf[0] == 0 && buf[1] == 97 && buf[2] == 115 && buf[3] == 109 {
+        return 11;
+    }
+    if len < 64 {
+        return 65535;
+    }
+    if eia_is_ar_archive(buf, len) {
+        var am_off: uint = 0;
+        var am_len: uint = 0;
+        if eia_ar_first_elf_member(buf, len, &mut am_off, &mut am_len) {
+            return eia_detect_arch_from_binary(buf + am_off, am_len);
+        }
+        return 65535;
+    }
+    if buf[0] == 77 && buf[1] == 90 {
+        if len >= 1248 && eia_patch_read_u32(buf + 1152) == EIA_MAGIC && buf[128] == 127 && buf[129] == 69 && buf[130] == 76 && buf[131] == 70 {
+            let em_u: u32 = eia_patch_read_u16(buf + 128 + 18);
+            if em_u == 62 { return 0; }
+            if em_u == 183 { return 1; }
+            if em_u == 243 { return 2; }
+            return 65535;
+        }
+        let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+        if eia_rng_ok(lfanew, 24, len) && buf[lfanew] == 80 && buf[lfanew + 1] == 69 && buf[lfanew + 2] == 0 && buf[lfanew + 3] == 0 {
+            let mach: u32 = eia_patch_read_u16(buf + lfanew + 4);
+            if mach == 34404 { return 0; }
+            if mach == 43620 { return 1; }
+            if mach == 20580 { return 2; }
+            return 65535;
+        }
+        return 65535;
+    }
+    if buf[0] == 127 && buf[1] == 69 && buf[2] == 76 && buf[3] == 70 {
+        let em: u32 = eia_patch_read_u16(buf + 18);
+        if em == 62 { return 0; }
+        if em == 183 { return 1; }
+        if em == 243 { return 2; }
+        return 65535;
+    }
+    let m32: u32 = eia_patch_read_u32(buf);
+    if m32 == 4277009103 || m32 == 3489328638 {
+        let cputype: u32 = eia_patch_read_u32(buf + 4);
+        if cputype == 16777223 { return 0; }
+        if cputype == 16777228 { return 10; }
+        return 65535;
+    }
+    return 65535;
+}
+
+fn eia_patch_reloc_holes_arch(
+    write_base: *mut u8,
+    target_arch: u64,
     holes: *const EiaRelocHole,
     hole_count: uint,
     graph: *const EiaTypeGraphEntry,
@@ -10,26 +778,2622 @@ fn eia_patch_displacement_holes(
 ) -> uint {
     var patched: uint = 0;
     var i: uint = 0;
-
     while i < hole_count {
-        let hole: *const EiaRelocHole = &holes[i];
-        let offset: u32 = eia_resolve_field_displacement(
-            graph,
-            graph_count,
-            hole.type_sig_hash,
-            hole.field_or_sym_hash
-        );
-
-        if offset != 0xFFFFFFFF {
-            let target_ptr: *mut byte = (write_base as uint + hole.insn_offset as uint) as *mut byte;
-            target_ptr[0] = (offset & 0xFF) as byte;
-            target_ptr[1] = ((offset >> 8) & 0xFF) as byte;
-            target_ptr[2] = ((offset >> 16) & 0xFF) as byte;
-            target_ptr[3] = ((offset >> 24) & 0xFF) as byte;
+        let hole: *const EiaRelocHole = ((holes as uint) + (i * 24)) as *const EiaRelocHole;
+        if eia_patch_single_hole(write_base, target_arch, hole, graph, graph_count) {
             patched = patched + 1;
         }
         i = i + 1;
     }
-
     return patched;
+}
+
+fn eia_patch_displacement_holes(
+    write_base: *mut u8,
+    holes: *const EiaRelocHole,
+    hole_count: uint,
+    graph: *const EiaTypeGraphEntry,
+    graph_count: uint
+) -> uint {
+    return eia_patch_reloc_holes_arch(write_base, 0, holes, hole_count, graph, graph_count);
+}
+
+fn eia_populate_and_seal_hologram(
+    file_buf: *mut u8,
+    file_len: uint,
+    holo_offset: uint,
+    contracts_offset: uint,
+    contracts_src: *const SymbolContract,
+    contracts_count: uint,
+    relocs_offset: uint,
+    relocs_src: *const EiaRelocHole,
+    relocs_count: uint,
+    tg_offset: uint,
+    tg_src: *const EiaTypeGraphEntry,
+    tg_count: uint,
+    abi_epoch: uint,
+    flags: uint,
+    text_vaddr: uint,
+    rodata_vaddr: uint
+) -> bool {
+    if file_buf == (0 as *mut u8) || (holo_offset + 96) > file_len {
+        return false;
+    }
+    let holo: *mut UniversalHologramHeader = (file_buf + holo_offset) as *mut UniversalHologramHeader;
+    eia_hologram_init(holo, abi_epoch);
+    holo.contracts_offset = contracts_offset;
+    holo.contracts_count = contracts_count;
+    holo.relocs_offset = relocs_offset;
+    holo.relocs_count = relocs_count;
+    holo.type_graph_offset = tg_offset;
+    holo.type_graph_size = tg_count * 24;
+    holo.flags = flags & (0 - 2);
+    holo.reserved0 = text_vaddr;
+    holo.reserved1 = rodata_vaddr;
+
+    let contracts_bytes: uint = contracts_count * 48;
+    let relocs_bytes: uint = relocs_count * 24;
+    let tg_bytes: uint = tg_count * 24;
+
+    if contracts_bytes > 0 {
+        if (contracts_offset + contracts_bytes) > file_len || contracts_src == (0 as *const SymbolContract) {
+            return false;
+        }
+        let sc_src_bytes: *const u8 = contracts_src as *const u8;
+        var bi: uint = 0;
+        while bi < contracts_bytes {
+            file_buf[contracts_offset + bi] = sc_src_bytes[bi];
+            bi = bi + 1;
+        }
+        var si: uint = 0;
+        while si < contracts_count {
+            let sc_out: *mut SymbolContract = (file_buf + contracts_offset + (si * 48)) as *mut SymbolContract;
+            if (sc_out.flags == 0 || (sc_out.flags & EIA_SYM_DEFINED) != 0) && sc_out.vaddr >= 4259840 && sc_out.vaddr < 2147483648 {
+                let fn_off: uint = sc_out.vaddr - 4259840;
+                sc_out.vaddr = text_vaddr + fn_off;
+            }
+            eia_contract_seal(sc_out);
+            si = si + 1;
+        }
+    }
+
+    if relocs_bytes > 0 {
+        if (relocs_offset + relocs_bytes) > file_len || relocs_src == (0 as *const EiaRelocHole) {
+            return false;
+        }
+        let rel_src_bytes: *const u8 = relocs_src as *const u8;
+        var ri: uint = 0;
+        while ri < relocs_bytes {
+            file_buf[relocs_offset + ri] = rel_src_bytes[ri];
+            ri = ri + 1;
+        }
+    }
+
+    if tg_bytes > 0 {
+        if (tg_offset + tg_bytes) > file_len || tg_src == (0 as *const EiaTypeGraphEntry) {
+            return false;
+        }
+        let tg_src_bytes: *const u8 = tg_src as *const u8;
+        var ti: uint = 0;
+        while ti < tg_bytes {
+            file_buf[tg_offset + ti] = tg_src_bytes[ti];
+            ti = ti + 1;
+        }
+    }
+
+    var sealed_b3: uint = 0;
+    if eia_compute_artifact_sealed_digest(file_buf as *const u8, file_len, holo as *const UniversalHologramHeader, &mut sealed_b3) {
+        return eia_hologram_seal_tables_with_digest(
+            holo,
+            file_buf as *const u8,
+            file_len,
+            true,
+            sealed_b3
+        );
+    }
+    if (flags & EIA_FLAG_HAS_CODE_HASH) != 0 {
+        return false;
+    }
+    return eia_hologram_seal_tables(holo, file_buf as *const u8, file_len);
+}
+
+fn eia_locate_hologram_offset(buf: *const u8, len: uint) -> i64 {
+    if buf == (0 as *const u8) || len < 96 {
+        return -1;
+    }
+    if eia_patch_read_u32(buf) == EIA_MAGIC {
+        return 0;
+    }
+    if buf[0] == 77 && buf[1] == 90 {
+        if len >= 1248 && eia_patch_read_u32(buf + 1152) == EIA_MAGIC {
+            return 1152;
+        }
+        if len >= 64 {
+            let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+            if eia_rng_ok(lfanew, 24, len) && buf[lfanew] == 80 && buf[lfanew + 1] == 69 && buf[lfanew + 2] == 0 && buf[lfanew + 3] == 0 {
+                let nsec: uint = eia_patch_read_u16(buf + lfanew + 6) as uint;
+                let opt_sz: uint = eia_patch_read_u16(buf + lfanew + 20) as uint;
+                let sec_base: uint = lfanew + 24 + opt_sz;
+                var si: uint = 0;
+                while si < nsec && (sec_base + (si * 40) + 40) <= len {
+                    let sh: *const u8 = buf + sec_base + (si * 40);
+                    if sh[0] == 46 && sh[1] == 101 && sh[2] == 105 && sh[3] == 97 && sh[4] == 0 {
+                        let raw_ptr: uint = eia_patch_read_u32(sh + 20) as uint;
+                        if eia_rng_ok(raw_ptr, 96, len) {
+                            return raw_ptr as i64;
+                        }
+                    }
+                    si = si + 1;
+                }
+            }
+        }
+        return -1;
+    }
+    if buf[0] == 127 && buf[1] == 69 && buf[2] == 76 && buf[3] == 70 {
+        if len >= 224 && eia_patch_read_u32(buf + 128) == EIA_MAGIC {
+            return 128;
+        }
+        if len >= 1248 && eia_patch_read_u32(buf + 1152) == EIA_MAGIC {
+            return 1152;
+        }
+        return -1;
+    }
+    let m32: u32 = eia_patch_read_u32(buf);
+    if m32 == 4277009103 || m32 == 3489328638 {
+        if len >= 32 {
+            let ncmds: uint = eia_patch_read_u32(buf + 16) as uint;
+            var cmd_off: uint = 32;
+            var ci: uint = 0;
+            while ci < ncmds && eia_rng_ok(cmd_off, 8, len) {
+                let cmd: u32 = eia_patch_read_u32(buf + cmd_off);
+                let cmdsz: uint = eia_patch_read_u32(buf + cmd_off + 4) as uint;
+                if cmdsz < 8 || (cmd_off + cmdsz) > len {
+                    return -1;
+                }
+                if cmd == 25 && cmdsz >= 72 {
+                    let seg: *const u8 = buf + cmd_off + 8;
+                    if seg[0] == 95 && seg[1] == 95 && seg[2] == 69 && seg[3] == 73 && seg[4] == 65 && seg[5] == 0 {
+                        let fileoff: uint = eia_patch_read_u64(buf + cmd_off + 40);
+                        if eia_rng_ok(fileoff, 96, len) {
+                            return fileoff as i64;
+                        }
+                    }
+                }
+                cmd_off = cmd_off + cmdsz;
+                ci = ci + 1;
+            }
+        }
+        return -1;
+    }
+    if buf[0] == 0 && buf[1] == 97 && buf[2] == 115 && buf[3] == 109 {
+        var wholo_off: i64 = -1;
+        var wcode_off: uint = 0;
+        var wcode_len: uint = 0;
+        if eia_wasm_find_sections(buf, len, &mut wholo_off, &mut wcode_off, &mut wcode_len) {
+            return wholo_off;
+        }
+        return -1;
+    }
+    if eia_is_ar_archive(buf, len) {
+        var m_off: uint = 0;
+        var m_len: uint = 0;
+        if eia_ar_first_elf_member(buf, len, &mut m_off, &mut m_len) {
+            let inner: i64 = eia_locate_hologram_offset(buf + m_off, m_len);
+            if inner >= 0 {
+                return (m_off as i64) + inner;
+            }
+        }
+        return -1;
+    }
+    return -1;
+}
+
+fn eia_is_ar_archive(buf: *const u8, len: uint) -> bool {
+    if buf == (0 as *const u8) || len < 68 {
+        return false;
+    }
+    return buf[0] == 33 && buf[1] == 60 && buf[2] == 97 && buf[3] == 114 && buf[4] == 99 && buf[5] == 104 && buf[6] == 62 && buf[7] == 10;
+}
+
+fn eia_ar_parse_member(
+    buf: *const u8,
+    len: uint,
+    hdr_pos: uint,
+    out_data_off: *mut uint,
+    out_data_len: *mut uint,
+    out_next_pos: *mut uint
+) -> bool {
+    if !eia_rng_ok(hdr_pos, 60, len) {
+        return false;
+    }
+    if buf[hdr_pos + 58] != 96 || buf[hdr_pos + 59] != 10 {
+        return false;
+    }
+    var sz: uint = 0;
+    var saw_digit: bool = false;
+    var saw_space_after: bool = false;
+    var i: uint = 0;
+    while i < 10 {
+        let ch: u8 = buf[hdr_pos + 48 + i];
+        if ch >= 48 && ch <= 57 {
+            if saw_space_after {
+                return false;
+            }
+            sz = (sz * 10) + ((ch - 48) as uint);
+            saw_digit = true;
+        } else if ch == 32 {
+            if saw_digit {
+                saw_space_after = true;
+            }
+        } else {
+            return false;
+        }
+        i = i + 1;
+    }
+    if !saw_digit {
+        return false;
+    }
+    let raw_off: uint = hdr_pos + 60;
+    if !eia_rng_ok(raw_off, sz, len) {
+        return false;
+    }
+    var data_off: uint = raw_off;
+    var data_len: uint = sz;
+    if buf[hdr_pos] == 35 && buf[hdr_pos + 1] == 49 && buf[hdr_pos + 2] == 47 {
+        var nlen: uint = 0;
+        var nsaw: bool = false;
+        var ni: uint = 3;
+        while ni < 16 {
+            let nc: u8 = buf[hdr_pos + ni];
+            if nc >= 48 && nc <= 57 {
+                nlen = (nlen * 10) + ((nc - 48) as uint);
+                nsaw = true;
+            } else if nc != 32 {
+                return false;
+            }
+            ni = ni + 1;
+        }
+        if !nsaw || nlen > sz {
+            return false;
+        }
+        data_off = raw_off + nlen;
+        data_len = sz - nlen;
+    }
+    var next_pos: uint = raw_off + sz + (sz & 1);
+    if next_pos > len {
+        if (sz & 1) == 1 && (raw_off + sz) == len {
+            next_pos = len;
+        } else {
+            return false;
+        }
+    }
+    out_data_off[0] = data_off;
+    out_data_len[0] = data_len;
+    out_next_pos[0] = next_pos;
+    return true;
+}
+
+fn eia_ar_member_is_object(buf: *const u8, m_off: uint, m_len: uint) -> bool {
+    if m_len < 64 {
+        return false;
+    }
+    if buf[m_off] == 127 && buf[m_off + 1] == 69 && buf[m_off + 2] == 76 && buf[m_off + 3] == 70 {
+        return true;
+    }
+    if buf[m_off] == 207 && buf[m_off + 1] == 250 && buf[m_off + 2] == 237 && buf[m_off + 3] == 254 {
+        return true;
+    }
+    return false;
+}
+
+fn eia_ar_is_member_header_at(buf: *const u8, len: uint, target: uint) -> bool {
+    var pos: uint = 8;
+    while eia_rng_ok(pos, 60, len) {
+        if pos == target {
+            return true;
+        }
+        if pos > target {
+            return false;
+        }
+        var m_off: uint = 0;
+        var m_len: uint = 0;
+        var next_pos: uint = 0;
+        if !eia_ar_parse_member(buf, len, pos, &mut m_off, &mut m_len, &mut next_pos) || next_pos <= pos {
+            return false;
+        }
+        pos = next_pos;
+    }
+    return false;
+}
+
+fn eia_ar_read_be32(p: *const u8) -> uint {
+    return ((p[0] as uint) << 24) | ((p[1] as uint) << 16) | ((p[2] as uint) << 8) | (p[3] as uint);
+}
+
+fn eia_ar_validate_gnu_symtab(buf: *const u8, len: uint, m_off: uint, m_len: uint) -> bool {
+    if m_len < 4 {
+        return m_len == 0;
+    }
+    let n: uint = eia_ar_read_be32(buf + m_off);
+    if n > ((m_len - 4) / 4) {
+        return false;
+    }
+    let names_off: uint = 4 + (n * 4);
+    var nul_cnt: uint = 0;
+    var bi: uint = names_off;
+    while bi < m_len {
+        if buf[m_off + bi] == 0 {
+            nul_cnt = nul_cnt + 1;
+        }
+        bi = bi + 1;
+    }
+    if nul_cnt < n {
+        return false;
+    }
+    var k: uint = 0;
+    while k < n {
+        let t: uint = eia_ar_read_be32(buf + m_off + 4 + (k * 4));
+        if !eia_ar_is_member_header_at(buf, len, t) {
+            return false;
+        }
+        k = k + 1;
+    }
+    return true;
+}
+
+fn eia_ar_is_special_member(buf: *const u8, pos: uint) -> bool {
+    if buf[pos] == 47 {
+        if buf[pos + 1] == 32 || buf[pos + 1] == 47 {
+            return true;
+        }
+        if buf[pos + 1] == 83 && buf[pos + 2] == 89 && buf[pos + 3] == 77 && buf[pos + 4] == 54 && buf[pos + 5] == 52 && buf[pos + 6] == 47 {
+            return true;
+        }
+    }
+    if buf[pos] == 95 && buf[pos + 1] == 95 && buf[pos + 2] == 46 && buf[pos + 3] == 83 && buf[pos + 4] == 89 && buf[pos + 5] == 77 && buf[pos + 6] == 68 && buf[pos + 7] == 69 && buf[pos + 8] == 70 {
+        return true;
+    }
+    return false;
+}
+
+fn eia_ar_get_elf_member(
+    buf: *const u8,
+    len: uint,
+    target_idx: uint,
+    out_off: *mut uint,
+    out_len: *mut uint
+) -> bool {
+    if !eia_is_ar_archive(buf, len) {
+        return false;
+    }
+    var pos: uint = 8;
+    var cur_idx: uint = 0;
+    while eia_rng_ok(pos, 60, len) {
+        var m_off: uint = 0;
+        var m_len: uint = 0;
+        var next_pos: uint = 0;
+        if !eia_ar_parse_member(buf, len, pos, &mut m_off, &mut m_len, &mut next_pos) {
+            return false;
+        }
+        if !eia_ar_is_special_member(buf, pos) && eia_ar_member_is_object(buf, m_off, m_len) {
+            if cur_idx == target_idx {
+                out_off[0] = m_off;
+                out_len[0] = m_len;
+                return true;
+            }
+            cur_idx = cur_idx + 1;
+        }
+        if next_pos <= pos {
+            return false;
+        }
+        pos = next_pos;
+    }
+    return false;
+}
+
+fn eia_ar_count_elf_members(buf: *const u8, len: uint) -> uint {
+    if !eia_is_ar_archive(buf, len) {
+        return 0;
+    }
+    var pos: uint = 8;
+    var count: uint = 0;
+    while eia_rng_ok(pos, 60, len) {
+        var m_off: uint = 0;
+        var m_len: uint = 0;
+        var next_pos: uint = 0;
+        if !eia_ar_parse_member(buf, len, pos, &mut m_off, &mut m_len, &mut next_pos) {
+            return 0;
+        }
+        if !eia_ar_is_special_member(buf, pos) && eia_ar_member_is_object(buf, m_off, m_len) {
+            count = count + 1;
+        }
+        if next_pos <= pos {
+            break;
+        }
+        pos = next_pos;
+    }
+    return count;
+}
+
+fn eia_ar_first_elf_member(
+    buf: *const u8,
+    len: uint,
+    out_off: *mut uint,
+    out_len: *mut uint
+) -> bool {
+    return eia_ar_get_elf_member(buf, len, 0, out_off, out_len);
+}
+
+fn eia_verify_relocs_in_span(
+    holes: *const EiaRelocHole,
+    hole_count: uint,
+    graph: *const EiaTypeGraphEntry,
+    graph_count: uint,
+    insn_span: uint,
+    target_arch: u64,
+    contracts: *const SymbolContract,
+    contract_count: uint,
+    check_calls: bool
+) -> int {
+    if holes == (0 as *const EiaRelocHole) && hole_count > 0 {
+        return -7;
+    }
+    var i: uint = 0;
+    while i < hole_count {
+        let hole: *const EiaRelocHole = ((holes as uint) + (i * 24)) as *const EiaRelocHole;
+        if hole.patch_kind < EIA_RELOC_DISP32 || hole.patch_kind > EIA_RELOC_WIDEN_STENCIL {
+            return -7;
+        }
+        var req_sz: uint = 4;
+        if hole.patch_kind != EIA_RELOC_CALL32 {
+            if target_arch == 1 || target_arch == 8 || target_arch == 10 || target_arch == 2 || target_arch == 9 || hole.patch_kind == EIA_RELOC_WIDEN_STENCIL {
+                req_sz = 8;
+            }
+        }
+        if ((hole.insn_offset as uint) + req_sz) > insn_span {
+            return -7;
+        }
+        if hole.patch_kind == EIA_RELOC_CALL32 {
+            if check_calls {
+                if contracts == (0 as *const SymbolContract) || eia_resolve_call_contract(contracts, contract_count, hole.field_or_sym_hash) == (0 as *const SymbolContract) {
+                    return -5;
+                }
+            }
+        } else {
+            let disp: u32 = eia_resolve_field_displacement(
+                graph,
+                graph_count,
+                hole.type_sig_hash,
+                hole.field_or_sym_hash
+            );
+            if disp == 0xFFFFFFFF {
+                return -7;
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn eia_verify_relocs_resolvable(
+    holes: *const EiaRelocHole,
+    hole_count: uint,
+    graph: *const EiaTypeGraphEntry,
+    graph_count: uint
+) -> int {
+    var i: uint = 0;
+    while i < hole_count {
+        let hole: *const EiaRelocHole = ((holes as uint) + (i * 24)) as *const EiaRelocHole;
+        if hole.patch_kind < EIA_RELOC_DISP32 || hole.patch_kind > EIA_RELOC_WIDEN_STENCIL {
+            return -7;
+        }
+        if hole.patch_kind == EIA_RELOC_DISP32 || hole.patch_kind == EIA_RELOC_LEA32 || hole.patch_kind == EIA_RELOC_WIDEN_STENCIL {
+            let disp: u32 = eia_resolve_field_displacement(
+                graph,
+                graph_count,
+                hole.type_sig_hash,
+                hole.field_or_sym_hash
+            );
+            if disp == 0xFFFFFFFF {
+                return -7;
+            }
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn eia_elf_hdr_offset(buf: *const u8, len: uint) -> i64 {
+    if buf == (0 as *const u8) || len < 64 {
+        return -1;
+    }
+    if buf[0] == 127 && buf[1] == 69 && buf[2] == 76 && buf[3] == 70 {
+        return 0;
+    }
+    if buf[0] == 77 && buf[1] == 90 && len >= 1248 && eia_patch_read_u32(buf + 1152) == EIA_MAGIC && buf[128] == 127 && buf[129] == 69 && buf[130] == 76 && buf[131] == 70 {
+        return 128;
+    }
+    return -1;
+}
+
+fn eia_elf_base_vaddr(buf: *const u8, len: uint, ehdr_off: uint) -> i64 {
+    if (ehdr_off + 64) > len {
+        return -1;
+    }
+    let e_phoff: uint = ehdr_off + (eia_patch_read_u64(buf + ehdr_off + 32) as uint);
+    let e_phentsize: uint = eia_patch_read_u16(buf + ehdr_off + 54) as uint;
+    let e_phnum: uint = eia_patch_read_u16(buf + ehdr_off + 56) as uint;
+    var pi: uint = 0;
+    while pi < e_phnum && (e_phoff + (pi * e_phentsize) + 56) <= len {
+        let ph: *const u8 = buf + e_phoff + (pi * e_phentsize);
+        if eia_patch_read_u32(ph) == 1 {
+            let p_off: uint = eia_patch_read_u64(ph + 8) as uint;
+            let p_vaddr: uint = eia_patch_read_u64(ph + 16) as uint;
+            if p_vaddr >= p_off {
+                return (p_vaddr - p_off) as i64;
+            }
+        }
+        pi = pi + 1;
+    }
+    return -1;
+}
+
+fn eia_acc_digest(cur: uint, sec_cnt: *mut uint, sb3: uint) -> uint {
+    let idx: uint = sec_cnt[0];
+    sec_cnt[0] = idx + 1;
+    if idx == 0 {
+        return sb3;
+    }
+    return eia_header_combine_digests(cur, sb3);
+}
+
+fn eia_compute_artifact_code_digest(
+    buf: *const u8,
+    len: uint,
+    holo: *const UniversalHologramHeader,
+    out_digest: *mut uint
+) -> bool {
+    out_digest[0] = 0;
+    if buf == (0 as *const u8) || len < 64 {
+        return false;
+    }
+    let ehdr_off_i: i64 = eia_elf_hdr_offset(buf, len);
+    if ehdr_off_i >= 0 {
+        let ehdr_off: uint = ehdr_off_i as uint;
+        let e_shoff: uint = eia_patch_read_u64(buf + ehdr_off + 40) as uint;
+        let e_shentsize: uint = eia_patch_read_u16(buf + ehdr_off + 58) as uint;
+        let e_shnum: uint = eia_patch_read_u16(buf + ehdr_off + 60) as uint;
+        if e_shoff > 0 && e_shnum >= 2 && e_shentsize >= 64 && eia_rng_ok(e_shoff, (e_shnum * e_shentsize), len) {
+            var acc: uint = 0;
+            var sec_cnt: uint = 0;
+            var si: uint = 1;
+            while si < e_shnum {
+                let sh: *const u8 = buf + e_shoff + (si * e_shentsize);
+                let sh_type: u32 = eia_patch_read_u32(sh + 4);
+                let sh_flags: uint = eia_patch_read_u64(sh + 8) as uint;
+                if sh_type == 1 && (sh_flags & 6) == 6 {
+                    let sh_off: uint = eia_patch_read_u64(sh + 24) as uint;
+                    let sh_sz: uint = eia_patch_read_u64(sh + 32) as uint;
+                    if sh_off > 0 && sh_sz > 0 && eia_rng_ok(sh_off, sh_sz, len) {
+                        acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf + sh_off, sh_sz));
+                    }
+                }
+                si = si + 1;
+            }
+            if sec_cnt > 0 {
+                out_digest[0] = acc;
+                return true;
+            }
+        }
+    } else if buf[0] == 77 && buf[1] == 90 {
+        let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+        if eia_rng_ok(lfanew, 24, len) && buf[lfanew] == 80 && buf[lfanew + 1] == 69 && buf[lfanew + 2] == 0 && buf[lfanew + 3] == 0 {
+            let nsec: uint = eia_patch_read_u16(buf + lfanew + 6) as uint;
+            let opt_sz: uint = eia_patch_read_u16(buf + lfanew + 20) as uint;
+            let sec_base: uint = lfanew + 24 + opt_sz;
+            var acc_p: uint = 0;
+            var sec_cnt_p: uint = 0;
+            var psi: uint = 0;
+            while psi < nsec && (sec_base + (psi * 40) + 40) <= len {
+                let psh: *const u8 = buf + sec_base + (psi * 40);
+                let chars: u32 = eia_patch_read_u32(psh + 36);
+                if (chars & 536870912) != 0 {
+                    let vsize: uint = eia_patch_read_u32(psh + 8) as uint;
+                    let raw_sz: uint = eia_patch_read_u32(psh + 16) as uint;
+                    let raw_ptr: uint = eia_patch_read_u32(psh + 20) as uint;
+                    var span_len: uint = vsize;
+                    if span_len == 0 || (raw_sz > 0 && span_len > raw_sz) {
+                        span_len = raw_sz;
+                    }
+                    if raw_ptr > 0 && span_len > 0 && eia_rng_ok(raw_ptr, span_len, len) {
+                        acc_p = eia_acc_digest(acc_p, &mut sec_cnt_p, blake3_hash64(buf + raw_ptr, span_len));
+                    }
+                }
+                psi = psi + 1;
+            }
+            if sec_cnt_p > 0 {
+                out_digest[0] = acc_p;
+                return true;
+            }
+        }
+    }
+    let m32: u32 = eia_patch_read_u32(buf);
+    if (m32 == 4277009103 || m32 == 3489328638) && len >= 32 {
+        let ncmds: uint = eia_patch_read_u32(buf + 16) as uint;
+        var cmd_off: uint = 32;
+        var ci: uint = 0;
+        var acc_m: uint = 0;
+        var sec_cnt_m: uint = 0;
+        while ci < ncmds && eia_rng_ok(cmd_off, 8, len) {
+            let cmd: u32 = eia_patch_read_u32(buf + cmd_off);
+            let cmdsz: uint = eia_patch_read_u32(buf + cmd_off + 4) as uint;
+            if cmdsz < 8 || (cmd_off + cmdsz) > len {
+                return false;
+            }
+            if cmd == 25 && cmdsz >= 72 {
+                let seg: *const u8 = buf + cmd_off + 8;
+                let is_t: bool = (seg[0] == 95 && seg[1] == 95 && seg[2] == 84 && seg[3] == 69 && seg[4] == 88 && seg[5] == 84 && seg[6] == 0);
+                let is_p: bool = (seg[0] == 95 && seg[1] == 95 && seg[2] == 80 && seg[3] == 67 && seg[4] == 79 && seg[5] == 68 && seg[6] == 69 && seg[7] == 0);
+                if is_t || is_p {
+                    let nsects: uint = eia_patch_read_u32(buf + cmd_off + 64) as uint;
+                    var msi: uint = 0;
+                    while msi < nsects && (72 + (msi * 80) + 80) <= cmdsz {
+                        let msc: *const u8 = buf + cmd_off + 72 + (msi * 80);
+                        let sec_sz: uint = eia_patch_read_u64(msc + 40) as uint;
+                        let sec_off: uint = eia_patch_read_u32(msc + 48) as uint;
+                        if sec_off > 0 && sec_sz > 0 && eia_rng_ok(sec_off, sec_sz, len) {
+                            acc_m = eia_acc_digest(acc_m, &mut sec_cnt_m, blake3_hash64(buf + sec_off, sec_sz));
+                        }
+                        msi = msi + 1;
+                    }
+                }
+            }
+            cmd_off = cmd_off + cmdsz;
+            ci = ci + 1;
+        }
+        if sec_cnt_m > 0 {
+            out_digest[0] = acc_m;
+            return true;
+        }
+    }
+    var code_off: uint = 0;
+    var code_len: uint = 0;
+    if !eia_locate_code_span(buf, len, holo, &mut code_off, &mut code_len) || code_len == 0 {
+        return false;
+    }
+    out_digest[0] = blake3_hash64(buf + code_off, code_len);
+    return true;
+}
+
+fn eia_container_kind(buf: *const u8, len: uint) -> int {
+    if buf == (0 as *const u8) || len < 64 {
+        return 0;
+    }
+    if eia_elf_hdr_offset(buf, len) >= 0 {
+        return 1;
+    }
+    if buf[0] == 77 && buf[1] == 90 {
+        let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+        if eia_rng_ok(lfanew, 24, len) && buf[lfanew] == 80 && buf[lfanew + 1] == 69 && buf[lfanew + 2] == 0 && buf[lfanew + 3] == 0 {
+            return 2;
+        }
+    }
+    let m32: u32 = eia_patch_read_u32(buf);
+    if (m32 == 4277009103 || m32 == 3489328638) && len >= 32 {
+        return 3;
+    }
+    if buf[0] == 0 && buf[1] == 97 && buf[2] == 115 && buf[3] == 109 {
+        return 4;
+    }
+    return 0;
+}
+
+fn eia_pe_sec_is_data(psh: *const u8) -> bool {
+    let is_rdata: bool = (psh[0] == 46 && psh[1] == 114 && psh[2] == 100 && psh[3] == 97 && psh[4] == 116 && psh[5] == 97 && psh[6] == 0);
+    let is_rodata: bool = (psh[0] == 46 && psh[1] == 114 && psh[2] == 111 && psh[3] == 100 && psh[4] == 97 && psh[5] == 116 && psh[6] == 97 && psh[7] == 0);
+    let is_data: bool = (psh[0] == 46 && psh[1] == 100 && psh[2] == 97 && psh[3] == 116 && psh[4] == 97 && psh[5] == 0);
+    return is_rdata || is_rodata || is_data;
+}
+
+fn eia_find_prov_rodata_elf(prov_buf: *const u8, prov_len: uint, out_off: *mut uint, out_sz: *mut uint) -> bool {
+    out_off[0] = 0;
+    out_sz[0] = 0;
+    let ehdr_i: i64 = eia_elf_hdr_offset(prov_buf, prov_len);
+    if ehdr_i < 0 {
+        return false;
+    }
+    let ehdr_off: uint = ehdr_i as uint;
+    let e_shoff: uint = eia_patch_read_u64(prov_buf + ehdr_off + 40) as uint;
+    let e_shentsize: uint = eia_patch_read_u16(prov_buf + ehdr_off + 58) as uint;
+    let e_shnum: uint = eia_patch_read_u16(prov_buf + ehdr_off + 60) as uint;
+    if e_shoff == 0 || e_shnum < 2 || e_shentsize < 64 || (e_shoff + (e_shnum * e_shentsize)) > prov_len {
+        return false;
+    }
+    var si: uint = 1;
+    while si < e_shnum {
+        let sh: *const u8 = prov_buf + e_shoff + (si * e_shentsize);
+        let sh_type: u32 = eia_patch_read_u32(sh + 4);
+        let sh_flags: uint = eia_patch_read_u64(sh + 8) as uint;
+        if sh_type == 1 && (sh_flags & 7) == 2 {
+            let sh_off: uint = eia_patch_read_u64(sh + 24) as uint;
+            let sh_sz: uint = eia_patch_read_u64(sh + 32) as uint;
+            if sh_off > 0 && sh_sz > 0 && eia_rng_ok(sh_off, sh_sz, prov_len) {
+                out_off[0] = sh_off;
+                out_sz[0] = sh_sz;
+                return true;
+            }
+        }
+        si = si + 1;
+    }
+    return false;
+}
+
+fn eia_max_code_span(buf: *const u8, len: uint, c_code_off: uint, c_code_len: uint) -> uint {
+    var max_end: uint = c_code_off + c_code_len;
+    let kind: int = eia_container_kind(buf, len);
+    if kind == 1 {
+        let ehdr_off: uint = eia_elf_hdr_offset(buf, len) as uint;
+        let e_shoff: uint = eia_patch_read_u64(buf + ehdr_off + 40) as uint;
+        let e_shentsize: uint = eia_patch_read_u16(buf + ehdr_off + 58) as uint;
+        let e_shnum: uint = eia_patch_read_u16(buf + ehdr_off + 60) as uint;
+        if e_shoff > 0 && e_shnum >= 2 && e_shentsize >= 64 && eia_rng_ok(e_shoff, (e_shnum * e_shentsize), len) {
+            var si: uint = 1;
+            while si < e_shnum {
+                let sh: *const u8 = buf + e_shoff + (si * e_shentsize);
+                let sh_type: u32 = eia_patch_read_u32(sh + 4);
+                let sh_flags: uint = eia_patch_read_u64(sh + 8) as uint;
+                if sh_type == 1 && (sh_flags & 6) == 6 {
+                    let sh_off: uint = eia_patch_read_u64(sh + 24) as uint;
+                    let sh_sz: uint = eia_patch_read_u64(sh + 32) as uint;
+                    if sh_off > 0 && sh_sz > 0 && eia_rng_ok(sh_off, sh_sz, len) && (sh_off + sh_sz) > max_end {
+                        max_end = sh_off + sh_sz;
+                    }
+                }
+                si = si + 1;
+            }
+        }
+    } else if kind == 2 {
+        let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+        let nsec: uint = eia_patch_read_u16(buf + lfanew + 6) as uint;
+        let opt_sz: uint = eia_patch_read_u16(buf + lfanew + 20) as uint;
+        let sec_base: uint = lfanew + 24 + opt_sz;
+        var psi: uint = 0;
+        while psi < nsec && (sec_base + (psi * 40) + 40) <= len {
+            let psh: *const u8 = buf + sec_base + (psi * 40);
+            let chars: u32 = eia_patch_read_u32(psh + 36);
+            if (chars & 536870912) != 0 {
+                let vsize: uint = eia_patch_read_u32(psh + 8) as uint;
+                let raw_sz: uint = eia_patch_read_u32(psh + 16) as uint;
+                let raw_ptr: uint = eia_patch_read_u32(psh + 20) as uint;
+                var span_len: uint = vsize;
+                if span_len == 0 || (raw_sz > 0 && span_len > raw_sz) {
+                    span_len = raw_sz;
+                }
+                if raw_ptr > 0 && span_len > 0 && eia_rng_ok(raw_ptr, span_len, len) && (raw_ptr + span_len) > max_end {
+                    max_end = raw_ptr + span_len;
+                }
+            }
+            psi = psi + 1;
+        }
+    } else if kind == 3 {
+        let ncmds: uint = eia_patch_read_u32(buf + 16) as uint;
+        var cmd_off: uint = 32;
+        var ci: uint = 0;
+        while ci < ncmds && eia_rng_ok(cmd_off, 8, len) {
+            let cmd: u32 = eia_patch_read_u32(buf + cmd_off);
+            let cmdsz: uint = eia_patch_read_u32(buf + cmd_off + 4) as uint;
+            if cmdsz < 8 || (cmd_off + cmdsz) > len {
+                break;
+            }
+            if cmd == 25 && cmdsz >= 72 {
+                let seg: *const u8 = buf + cmd_off + 8;
+                let is_t: bool = (seg[0] == 95 && seg[1] == 95 && seg[2] == 84 && seg[3] == 69 && seg[4] == 88 && seg[5] == 84 && seg[6] == 0);
+                let is_p: bool = (seg[0] == 95 && seg[1] == 95 && seg[2] == 80 && seg[3] == 67 && seg[4] == 79 && seg[5] == 68 && seg[6] == 69 && seg[7] == 0);
+                if is_t || is_p {
+                    let nsects: uint = eia_patch_read_u32(buf + cmd_off + 64) as uint;
+                    var msi: uint = 0;
+                    while msi < nsects && (72 + (msi * 80) + 80) <= cmdsz {
+                        let msc: *const u8 = buf + cmd_off + 72 + (msi * 80);
+                        let sec_sz: uint = eia_patch_read_u64(msc + 40) as uint;
+                        let sec_off: uint = eia_patch_read_u32(msc + 48) as uint;
+                        if sec_off > 0 && sec_sz > 0 && eia_rng_ok(sec_off, sec_sz, len) && (sec_off + sec_sz) > max_end {
+                            max_end = sec_off + sec_sz;
+                        }
+                        msi = msi + 1;
+                    }
+                }
+            }
+            cmd_off = cmd_off + cmdsz;
+            ci = ci + 1;
+        }
+    }
+    if max_end <= c_code_off {
+        return c_code_len;
+    }
+    return max_end - c_code_off;
+}
+
+fn eia_span_overlaps_holo(
+    span_off: uint,
+    span_len: uint,
+    buf: *const u8,
+    holo: *const UniversalHologramHeader
+) -> bool {
+    if holo == (0 as *const UniversalHologramHeader) {
+        return false;
+    }
+    let holo_u: uint = holo as uint;
+    let base_u: uint = buf as uint;
+    if holo_u < base_u {
+        return false;
+    }
+    let holo_off: uint = holo_u - base_u;
+    if span_len == 0 {
+        return false;
+    }
+    if span_off > (0 - 1) - span_len {
+        return true;
+    }
+    let span_end: uint = span_off + span_len;
+    let holo_end: uint = holo_off + 96;
+    if span_off < holo_end && holo_off < span_end {
+        return true;
+    }
+    return false;
+}
+
+fn eia_macho_codesig_limit(buf: *const u8, len: uint) -> uint {
+    if eia_container_kind(buf, len) != 3 || len < 32 {
+        return len;
+    }
+    let ncmds: uint = eia_patch_read_u32(buf + 16) as uint;
+    var cmd_off: uint = 32;
+    var ci: uint = 0;
+    while ci < ncmds && eia_rng_ok(cmd_off, 8, len) {
+        let cmd: u32 = eia_patch_read_u32(buf + cmd_off);
+        let cmdsz: uint = eia_patch_read_u32(buf + cmd_off + 4) as uint;
+        if cmdsz < 8 || !eia_rng_ok(cmd_off, cmdsz, len) {
+            break;
+        }
+        if cmd == 29 && cmdsz >= 16 {
+            let cs_off: uint = eia_patch_read_u32(buf + cmd_off + 8) as uint;
+            let cs_sz: uint = eia_patch_read_u32(buf + cmd_off + 12) as uint;
+            if cs_off > 0 && cs_sz > 0 && eia_rng_ok(cs_off, cs_sz, len) && (cs_off + cs_sz) == len {
+                return cs_off;
+            }
+        }
+        cmd_off = cmd_off + cmdsz;
+        ci = ci + 1;
+    }
+    return len;
+}
+
+fn eia_acc_whole_artifact(
+    acc_in: uint,
+    sec_cnt: *mut uint,
+    buf: *const u8,
+    len: uint,
+    holo: *const UniversalHologramHeader,
+    out_ok: *mut bool
+) -> uint {
+    out_ok[0] = false;
+    if holo == (0 as *const UniversalHologramHeader) || buf == (0 as *const u8) {
+        return acc_in;
+    }
+    let holo_u: uint = holo as uint;
+    let base_u: uint = buf as uint;
+    if holo_u < base_u {
+        return acc_in;
+    }
+    let holo_off: uint = holo_u - base_u;
+    let cov_len: uint = eia_macho_codesig_limit(buf, len);
+    if !eia_rng_ok(holo_off, 96, cov_len) {
+        return acc_in;
+    }
+    var acc: uint = acc_in;
+    var meta: [u8; 40];
+    eia_patch_write_u64(&mut meta[0], 0x4549415748304C45);
+    eia_patch_write_u64(&mut meta[8], cov_len as u64);
+    eia_patch_write_u64(&mut meta[16], holo.contracts_offset as u64);
+    eia_patch_write_u64(&mut meta[24], holo.relocs_offset as u64);
+    eia_patch_write_u64(&mut meta[32], holo.type_graph_offset as u64);
+    acc = eia_acc_digest(acc, sec_cnt, blake3_hash64((&mut meta[0]) as *const u8, 40));
+    if holo_off > 0 {
+        acc = eia_acc_digest(acc, sec_cnt, blake3_hash64(buf, holo_off));
+    }
+    let tail: uint = holo_off + 96;
+    if tail < cov_len {
+        acc = eia_acc_digest(acc, sec_cnt, blake3_hash64(buf + tail, cov_len - tail));
+    }
+    out_ok[0] = true;
+    return acc;
+}
+
+fn eia_compute_artifact_sealed_digest(
+    buf: *const u8,
+    len: uint,
+    holo: *const UniversalHologramHeader,
+    out_digest: *mut uint
+) -> bool {
+    var acc: uint = 0;
+    if !eia_compute_artifact_code_digest(buf, len, holo, &mut acc) {
+        out_digest[0] = 0;
+        return false;
+    }
+    var sec_cnt: uint = 1;
+    let kind: int = eia_container_kind(buf, len);
+    if kind == 1 {
+        let ehdr_off: uint = eia_elf_hdr_offset(buf, len) as uint;
+        if ehdr_off == 128 && len >= 128 {
+            acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf, 128));
+        }
+        if eia_rng_ok(ehdr_off, 64, len) {
+            var emeta: [u8; 32];
+            eia_patch_write_u32(&mut emeta[0], eia_patch_read_u32(buf + ehdr_off + 16));
+            eia_patch_write_u32(&mut emeta[4], eia_patch_read_u32(buf + ehdr_off + 20));
+            eia_patch_write_u64(&mut emeta[8], eia_patch_read_u64(buf + ehdr_off + 24));
+            eia_patch_write_u64(&mut emeta[16], eia_patch_read_u64(buf + ehdr_off + 32));
+            eia_patch_write_u64(&mut emeta[24], eia_patch_read_u64(buf + ehdr_off + 40));
+            acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64((&mut emeta[0]) as *const u8, 32));
+            var eext: [u8; 8];
+            eia_patch_write_u64(&mut eext[0], eia_patch_read_u64(buf + ehdr_off + 54));
+            acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64((&mut eext[0]) as *const u8, 8));
+        }
+        let e_phoff_rel: uint = eia_patch_read_u64(buf + ehdr_off + 32) as uint;
+        let e_phentsize: uint = eia_patch_read_u16(buf + ehdr_off + 54) as uint;
+        let e_phnum: uint = eia_patch_read_u16(buf + ehdr_off + 56) as uint;
+        let e_phoff: uint = ehdr_off + e_phoff_rel;
+        if e_phoff_rel > 0 && e_phnum > 0 && e_phentsize >= 56 && eia_rng_ok(e_phoff, (e_phnum * e_phentsize), len) {
+            acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf + e_phoff, e_phnum * e_phentsize));
+        }
+        let e_shoff: uint = eia_patch_read_u64(buf + ehdr_off + 40) as uint;
+        let e_shentsize: uint = eia_patch_read_u16(buf + ehdr_off + 58) as uint;
+        let e_shnum: uint = eia_patch_read_u16(buf + ehdr_off + 60) as uint;
+        let has_sht: bool = (ehdr_off == 0 && e_shoff > 0 && e_shnum >= 2 && e_shentsize >= 64 && eia_rng_ok(e_shoff, (e_shnum * e_shentsize), len));
+        if has_sht {
+            var si: uint = 1;
+            while si < e_shnum {
+                let sh: *const u8 = buf + e_shoff + (si * e_shentsize);
+                let sh_type: u32 = eia_patch_read_u32(sh + 4);
+                let sh_flags: uint = eia_patch_read_u64(sh + 8) as uint;
+                let sh_off: uint = eia_patch_read_u64(sh + 24) as uint;
+                let sh_sz: uint = eia_patch_read_u64(sh + 32) as uint;
+                let is_exec_prog: bool = (sh_type == 1 && (sh_flags & 6) == 6);
+                let is_alloc: bool = ((sh_flags & 2) != 0);
+                if is_alloc && !is_exec_prog && sh_type != 8 && sh_off > 0 && sh_sz > 0 && eia_rng_ok(sh_off, sh_sz, len) {
+                    if !eia_span_overlaps_holo(sh_off, sh_sz, buf, holo) {
+                        var shmeta: [u8; 24];
+                        eia_patch_write_u32(&mut shmeta[0], sh_type);
+                        eia_patch_write_u32(&mut shmeta[4], sh_flags as u32);
+                        eia_patch_write_u64(&mut shmeta[8], eia_patch_read_u64(sh + 16));
+                        eia_patch_write_u64(&mut shmeta[16], sh_sz as u64);
+                        acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64((&mut shmeta[0]) as *const u8, 24));
+                        acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf + sh_off, sh_sz));
+                    }
+                }
+                si = si + 1;
+            }
+        } else if holo != (0 as *const UniversalHologramHeader) && (holo.flags & EIA_FLAG_FREESTANDING) != 0 {
+            var fcode_off: uint = 0;
+            var fcode_len: uint = 0;
+            if eia_locate_elf_code_span(buf, len, ehdr_off, holo, &mut fcode_off, &mut fcode_len) {
+                let tail_off: uint = fcode_off + fcode_len;
+                if tail_off < len {
+                    acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf + tail_off, len - tail_off));
+                }
+            }
+        }
+    } else if kind == 2 {
+        let lfanew: uint = eia_patch_read_u32(buf + 60) as uint;
+        let nsec: uint = eia_patch_read_u16(buf + lfanew + 6) as uint;
+        let opt_sz: uint = eia_patch_read_u16(buf + lfanew + 20) as uint;
+        if (lfanew + 24 + opt_sz) <= len && opt_sz >= 96 {
+            var pemeta: [u8; 32];
+            eia_patch_write_u16(&mut pemeta[0], eia_patch_read_u16(buf + lfanew + 4));
+            eia_patch_write_u16(&mut pemeta[2], nsec as u32);
+            eia_patch_write_u16(&mut pemeta[4], eia_patch_read_u16(buf + lfanew + 24));
+            eia_patch_write_u16(&mut pemeta[6], eia_patch_read_u16(buf + lfanew + 92));
+            eia_patch_write_u32(&mut pemeta[8], eia_patch_read_u32(buf + lfanew + 40));
+            eia_patch_write_u32(&mut pemeta[12], eia_patch_read_u32(buf + lfanew + 80));
+            eia_patch_write_u64(&mut pemeta[16], eia_patch_read_u64(buf + lfanew + 48));
+            eia_patch_write_u64(&mut pemeta[24], 0);
+            acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64((&mut pemeta[0]) as *const u8, 32));
+        }
+        let sec_base: uint = lfanew + 24 + opt_sz;
+        var psi: uint = 0;
+        while psi < nsec && (sec_base + (psi * 40) + 40) <= len {
+            let psh: *const u8 = buf + sec_base + (psi * 40);
+            let is_eia: bool = (psh[0] == 46 && psh[1] == 101 && psh[2] == 105 && psh[3] == 97 && psh[4] == 0);
+            let chars: u32 = eia_patch_read_u32(psh + 36);
+            let is_exec: bool = ((chars & 536870912) != 0);
+            let vsize: uint = eia_patch_read_u32(psh + 8) as uint;
+            let raw_sz: uint = eia_patch_read_u32(psh + 16) as uint;
+            let raw_ptr: uint = eia_patch_read_u32(psh + 20) as uint;
+            var span_len: uint = vsize;
+            if span_len == 0 || (raw_sz > 0 && span_len > raw_sz) {
+                span_len = raw_sz;
+            }
+            if !is_eia && !is_exec && raw_ptr > 0 && span_len > 0 && eia_rng_ok(raw_ptr, span_len, len) {
+                if !eia_span_overlaps_holo(raw_ptr, span_len, buf, holo) {
+                    var shdr_meta: [u8; 16];
+                    eia_patch_write_u32(&mut shdr_meta[0], eia_patch_read_u32(psh + 12));
+                    eia_patch_write_u32(&mut shdr_meta[4], vsize as u32);
+                    eia_patch_write_u32(&mut shdr_meta[8], span_len as u32);
+                    eia_patch_write_u32(&mut shdr_meta[12], chars);
+                    acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64((&mut shdr_meta[0]) as *const u8, 16));
+                    acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf + raw_ptr, span_len));
+                }
+            }
+            psi = psi + 1;
+        }
+    } else if kind == 3 {
+        if len >= 32 {
+            var machmeta: [u8; 24];
+            eia_patch_write_u32(&mut machmeta[0], eia_patch_read_u32(buf + 4));
+            eia_patch_write_u32(&mut machmeta[4], eia_patch_read_u32(buf + 8));
+            eia_patch_write_u32(&mut machmeta[8], eia_patch_read_u32(buf + 12));
+            eia_patch_write_u32(&mut machmeta[12], eia_patch_read_u32(buf + 16));
+            eia_patch_write_u32(&mut machmeta[16], eia_patch_read_u32(buf + 20));
+            eia_patch_write_u32(&mut machmeta[20], eia_patch_read_u32(buf + 24));
+            acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64((&mut machmeta[0]) as *const u8, 24));
+        }
+        var mach_base: uint = 4294967296;
+        let ncmds: uint = eia_patch_read_u32(buf + 16) as uint;
+        var cmd_off: uint = 32;
+        var ci: uint = 0;
+        while ci < ncmds && eia_rng_ok(cmd_off, 8, len) {
+            let cmd: u32 = eia_patch_read_u32(buf + cmd_off);
+            let cmdsz: uint = eia_patch_read_u32(buf + cmd_off + 4) as uint;
+            if cmdsz < 8 || (cmd_off + cmdsz) > len {
+                break;
+            }
+            if cmd == 2147483688 && cmdsz >= 24 {
+                acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf + cmd_off + 8, 16));
+            } else if cmd == 25 && cmdsz >= 72 {
+                let seg: *const u8 = buf + cmd_off + 8;
+                let is_t: bool = (seg[0] == 95 && seg[1] == 95 && seg[2] == 84 && seg[3] == 69 && seg[4] == 88 && seg[5] == 84 && seg[6] == 0);
+                let is_p: bool = (seg[0] == 95 && seg[1] == 95 && seg[2] == 80 && seg[3] == 67 && seg[4] == 79 && seg[5] == 68 && seg[6] == 69 && seg[7] == 0);
+                let is_e: bool = (seg[0] == 95 && seg[1] == 95 && seg[2] == 69 && seg[3] == 73 && seg[4] == 65 && seg[5] == 0);
+                let is_pz: bool = (seg[0] == 95 && seg[1] == 95 && seg[2] == 80 && seg[3] == 65 && seg[4] == 71 && seg[5] == 69 && seg[6] == 90);
+                let is_le: bool = (seg[0] == 95 && seg[1] == 95 && seg[2] == 76 && seg[3] == 73 && seg[4] == 78 && seg[5] == 75 && seg[6] == 69 && seg[7] == 68);
+                let vmaddr: uint = eia_patch_read_u64(buf + cmd_off + 24) as uint;
+                let fileoff: uint = eia_patch_read_u64(buf + cmd_off + 40) as uint;
+                let filesz: uint = eia_patch_read_u64(buf + cmd_off + 48) as uint;
+                if is_t && vmaddr >= fileoff {
+                    mach_base = vmaddr - fileoff;
+                }
+                if !is_t && !is_p && !is_e && !is_pz && !is_le && filesz > 0 && eia_rng_ok(fileoff, filesz, len) {
+                    if !eia_span_overlaps_holo(fileoff, filesz, buf, holo) {
+                        acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf + fileoff, filesz));
+                    }
+                }
+            }
+            cmd_off = cmd_off + cmdsz;
+            ci = ci + 1;
+        }
+        if holo != (0 as *const UniversalHologramHeader) {
+            let holo_u: uint = holo as uint;
+            let base_u: uint = buf as uint;
+            if holo_u >= base_u && (holo_u - base_u) <= len {
+                let holo_off: uint = holo_u - base_u;
+                var mcode_off: uint = 0;
+                var mcode_len: uint = 0;
+                if eia_locate_code_span(buf, len, holo, &mut mcode_off, &mut mcode_len) {
+                    let mcode_end: uint = mcode_off + mcode_len;
+                    var ro_off: uint = holo.reserved1;
+                    if ro_off >= mach_base && mach_base > 0 {
+                        ro_off = ro_off - mach_base;
+                    }
+                    if ro_off >= mcode_end && ro_off < holo_off {
+                        acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf + ro_off, holo_off - ro_off));
+                    }
+                }
+            }
+        }
+    } else if kind == 4 {
+        if len >= 8 {
+            acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf, 8));
+        }
+        var pos: uint = 8;
+        while pos < len {
+            let sec_id: u8 = buf[pos];
+            pos = pos + 1;
+            let slen_i: i64 = eia_wasm_read_uleb(buf, len, &mut pos);
+            if slen_i < 0 {
+                break;
+            }
+            let slen: uint = slen_i as uint;
+            if (pos + slen) > len {
+                break;
+            }
+            if sec_id >= 1 && sec_id <= 12 && sec_id != 10 && slen > 0 {
+                var wsec_hdr: [u8; 16];
+                eia_patch_write_u64(&mut wsec_hdr[0], sec_id as u64);
+                eia_patch_write_u64(&mut wsec_hdr[8], slen as u64);
+                acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64((&mut wsec_hdr[0]) as *const u8, 16));
+                acc = eia_acc_digest(acc, &mut sec_cnt, blake3_hash64(buf + pos, slen));
+            }
+            pos = pos + slen;
+        }
+    }
+    var whole_ok: bool = false;
+    acc = eia_acc_whole_artifact(acc, &mut sec_cnt, buf, len, holo, &mut whole_ok);
+    if !whole_ok {
+        out_digest[0] = 0;
+        return false;
+    }
+    out_digest[0] = acc;
+    return true;
+}
+
+fn eia_verify_artifact_bytes(buf: *const u8, len: uint) -> int {
+    if eia_is_ar_archive(buf, len) {
+        var pos: uint = 8;
+        var verified_members: uint = 0;
+        while eia_rng_ok(pos, 60, len) {
+            var m_off: uint = 0;
+            var m_len: uint = 0;
+            var next_pos: uint = 0;
+            if !eia_ar_parse_member(buf, len, pos, &mut m_off, &mut m_len, &mut next_pos) {
+                return -2;
+            }
+            if !eia_ar_is_special_member(buf, pos) {
+                if m_len < 64 {
+                    return -1;
+                }
+                let mk: int = eia_container_kind(buf + m_off, m_len);
+                if mk != 1 && mk != 3 {
+                    return -1;
+                }
+                let m_res: int = eia_verify_artifact_bytes(buf + m_off, m_len);
+                if m_res != 0 {
+                    return m_res;
+                }
+                verified_members = verified_members + 1;
+            } else if buf[pos] == 47 && buf[pos + 1] == 32 {
+                if !eia_ar_validate_gnu_symtab(buf, len, m_off, m_len) {
+                    return -2;
+                }
+            }
+            if next_pos <= pos {
+                return -2;
+            }
+            pos = next_pos;
+        }
+        if pos != len {
+            return -2;
+        }
+        if verified_members == 0 {
+            return -1;
+        }
+        return 0;
+    }
+    let holo_off_i: i64 = eia_locate_hologram_offset(buf, len);
+    if holo_off_i < 0 {
+        return -1;
+    }
+    let holo_off: uint = holo_off_i as uint;
+    let holo: *const UniversalHologramHeader = (buf + holo_off) as *const UniversalHologramHeader;
+    var blob_res: int = 0;
+    let art_kind: int = eia_container_kind(buf, len);
+    if art_kind >= 1 && art_kind <= 4 && (holo.flags & EIA_FLAG_HAS_CODE_HASH) == 0 {
+        return -3;
+    }
+    if (holo.flags & EIA_FLAG_HAS_CODE_HASH) != 0 {
+        var code_b3: uint = 0;
+        if !eia_compute_artifact_sealed_digest(buf, len, holo, &mut code_b3) {
+            return -2;
+        }
+        blob_res = eia_hologram_verify_blob_with_digest(holo, buf, len, true, code_b3);
+    } else {
+        blob_res = eia_hologram_verify_blob_with_digest(holo, buf, len, false, 0);
+    }
+    if blob_res != 0 {
+        return blob_res;
+    }
+    if holo.contracts_count > 0 {
+        let contracts_ptr: *const SymbolContract = (buf + holo.contracts_offset) as *const SymbolContract;
+        let c_res: int = eia_verify_contracts_table(contracts_ptr, holo.contracts_count);
+        if c_res != 0 {
+            return c_res;
+        }
+    }
+    if holo.relocs_count > 0 {
+        let holes_ptr: *const EiaRelocHole = (buf + holo.relocs_offset) as *const EiaRelocHole;
+        var graph_ptr: *const EiaTypeGraphEntry = 0 as *const EiaTypeGraphEntry;
+        if holo.type_graph_size > 0 {
+            graph_ptr = (buf + holo.type_graph_offset) as *const EiaTypeGraphEntry;
+        }
+        let tg_cnt: uint = holo.type_graph_size / 24;
+        let r_res: int = eia_verify_relocs_resolvable(holes_ptr, holo.relocs_count, graph_ptr, tg_cnt);
+        if r_res != 0 {
+            return r_res;
+        }
+    }
+    return 0;
+}
+
+fn eia_verify_units_compat_step(
+    c_holo: *const UniversalHologramHeader,
+    c_buf: *const u8,
+    p_holo: *const UniversalHologramHeader,
+    p_buf: *const u8,
+    allow_partial_imports: bool
+) -> int {
+    if !eia_epochs_compatible(c_holo.abi_epoch, p_holo.abi_epoch) {
+        return -9;
+    }
+    var c_contracts: *const SymbolContract = 0 as *const SymbolContract;
+    if c_holo.contracts_count > 0 {
+        c_contracts = (c_buf + c_holo.contracts_offset) as *const SymbolContract;
+    }
+    var p_contracts: *const SymbolContract = 0 as *const SymbolContract;
+    if p_holo.contracts_count > 0 {
+        p_contracts = (p_buf + p_holo.contracts_offset) as *const SymbolContract;
+    }
+    var imp_cnt: uint = 0;
+    var i: uint = 0;
+    while i < c_holo.contracts_count {
+        let sc: *const SymbolContract = ((c_contracts as uint) + (i * 48)) as *const SymbolContract;
+        if (sc.flags & EIA_SYM_IMPORT) != 0 {
+            imp_cnt = imp_cnt + 1;
+        }
+        i = i + 1;
+    }
+    if imp_cnt > 0 && p_holo.contracts_count == 0 {
+        if !allow_partial_imports {
+            return -5;
+        }
+        return 0;
+    }
+    if c_holo.contracts_count > 0 && p_holo.contracts_count > 0 {
+        return eia_verify_cross_unit_contracts_step(
+            c_contracts,
+            c_holo.contracts_count,
+            p_contracts,
+            p_holo.contracts_count,
+            allow_partial_imports
+        );
+    }
+    return 0;
+}
+
+fn eia_verify_units_compat(
+    c_holo: *const UniversalHologramHeader,
+    c_buf: *const u8,
+    p_holo: *const UniversalHologramHeader,
+    p_buf: *const u8
+) -> int {
+    return eia_verify_units_compat_step(c_holo, c_buf, p_holo, p_buf, false);
+}
+
+fn eia_patch_promote_imports_step(
+    c_contracts: *mut SymbolContract,
+    c_count: uint,
+    p_contracts: *const SymbolContract,
+    p_count: uint,
+    new_base_va: uint,
+    p_old_text_va: uint,
+    p_code_len: uint,
+    allow_partial: bool
+) -> int {
+    var sci: uint = 0;
+    while sci < c_count {
+        let c_sc: *mut SymbolContract = ((c_contracts as uint) + (sci * 48)) as *mut SymbolContract;
+        if (c_sc.flags & EIA_SYM_IMPORT) != 0 {
+            let p_sc: *const SymbolContract = eia_find_contract(
+                p_contracts,
+                p_count,
+                c_sc.symbol_hash,
+                EIA_SYM_DEFINED
+            );
+            if p_sc == (0 as *const SymbolContract) {
+                if !allow_partial {
+                    return -5;
+                }
+            } else {
+                if p_sc.vaddr < p_old_text_va {
+                    return -5;
+                }
+                let fn_rel: uint = p_sc.vaddr - p_old_text_va;
+                if fn_rel >= p_code_len {
+                    return -8;
+                }
+                c_sc.vaddr = new_base_va + fn_rel;
+                c_sc.code_size = p_sc.code_size;
+                c_sc.flags = (c_sc.flags - EIA_SYM_IMPORT) | EIA_SYM_DEFINED;
+                eia_contract_seal(c_sc);
+            }
+        }
+        sci = sci + 1;
+    }
+    return 0;
+}
+
+fn eia_patch_promote_imports(
+    c_contracts: *mut SymbolContract,
+    c_count: uint,
+    p_contracts: *const SymbolContract,
+    p_count: uint,
+    new_base_va: uint,
+    p_old_text_va: uint,
+    p_code_len: uint
+) -> int {
+    return eia_patch_promote_imports_step(c_contracts, c_count, p_contracts, p_count, new_base_va, p_old_text_va, p_code_len, false);
+}
+
+fn eia_patch_prov_relocs_at(
+    dst_text: *mut u8,
+    prov_buf: *const u8,
+    prov_len: uint,
+    p_holo: *const UniversalHologramHeader,
+    p_tg: *const EiaTypeGraphEntry,
+    p_tg_cnt: uint,
+    p_contracts: *const SymbolContract,
+    p_code_off: uint,
+    p_code_len: uint,
+    p_arch: u64,
+    p_old_text_va: uint
+) -> int {
+    if p_holo.relocs_count == 0 {
+        return 0;
+    }
+    let p_relocs: *const EiaRelocHole = (prov_buf + p_holo.relocs_offset) as *const EiaRelocHole;
+    let v_res: int = eia_verify_relocs_in_span(
+        p_relocs,
+        p_holo.relocs_count,
+        p_tg,
+        p_tg_cnt,
+        p_code_len,
+        p_arch,
+        p_contracts,
+        p_holo.contracts_count,
+        false
+    );
+    if v_res != 0 {
+        return v_res;
+    }
+    var expected_p: uint = 0;
+    var pi: uint = 0;
+    while pi < p_holo.relocs_count {
+        let ph: *const EiaRelocHole = ((p_relocs as uint) + (pi * 24)) as *const EiaRelocHole;
+        if ph.patch_kind != EIA_RELOC_CALL32 {
+            expected_p = expected_p + 1;
+        } else if eia_resolve_call_contract(p_contracts, p_holo.contracts_count, ph.field_or_sym_hash) != (0 as *const SymbolContract) {
+            expected_p = expected_p + 1;
+        }
+        pi = pi + 1;
+    }
+    let patched_p: uint = eia_patch_binary_relocs_span_ex(
+        dst_text,
+        p_code_len,
+        p_code_len,
+        p_arch,
+        p_relocs,
+        p_holo.relocs_count,
+        p_tg,
+        p_tg_cnt,
+        p_contracts,
+        p_holo.contracts_count,
+        p_old_text_va,
+        prov_buf,
+        prov_len,
+        p_code_off
+    );
+    if patched_p != expected_p {
+        return -7;
+    }
+    return 0;
+}
+
+fn eia_relink_try_splice_pe(
+    client_buf: *mut u8,
+    client_len: uint,
+    client_cap: uint,
+    c_holo: *mut UniversalHologramHeader,
+    c_contracts: *mut SymbolContract,
+    c_code_off: uint,
+    c_code_len: uint,
+    prov_buf: *const u8,
+    prov_len: uint,
+    p_holo: *const UniversalHologramHeader,
+    p_contracts: *const SymbolContract,
+    p_tg: *const EiaTypeGraphEntry,
+    p_tg_cnt: uint,
+    allow_partial: bool,
+    out_final_len: *mut uint,
+    out_max_span: *mut uint,
+    out_splice_off: *mut uint,
+    out_splice_va: *mut uint,
+    out_p_old_va: *mut uint,
+    out_p_code_len: *mut uint
+) -> int {
+    if client_buf[0] != 77 || client_buf[1] != 90 || prov_buf[0] != 77 || prov_buf[1] != 90 {
+        return 0;
+    }
+    let c_lfanew: uint = eia_patch_read_u32(client_buf as *const u8 + 60) as uint;
+    let p_lfanew: uint = eia_patch_read_u32(prov_buf + 60) as uint;
+    if (c_lfanew + 264) > client_len || (p_lfanew + 264) > prov_len {
+        return 0;
+    }
+    if client_buf[c_lfanew] != 80 || client_buf[c_lfanew + 1] != 69 || prov_buf[p_lfanew] != 80 || prov_buf[p_lfanew + 1] != 69 {
+        return 0;
+    }
+    let c_nsec: uint = eia_patch_read_u16(client_buf as *const u8 + c_lfanew + 6) as uint;
+    let p_nsec: uint = eia_patch_read_u16(prov_buf + p_lfanew + 6) as uint;
+    let c_opt_base: uint = c_lfanew + 24;
+    let c_opt_sz: uint = eia_patch_read_u16(client_buf as *const u8 + c_lfanew + 20) as uint;
+    let p_opt_base: uint = p_lfanew + 24;
+    let p_opt_sz: uint = eia_patch_read_u16(prov_buf + p_lfanew + 20) as uint;
+    if eia_patch_read_u16(client_buf as *const u8 + c_opt_base) != 523 || eia_patch_read_u16(prov_buf + p_opt_base) != 523 {
+        return 0;
+    }
+    let c_sec_base: uint = c_opt_base + c_opt_sz;
+    if (c_sec_base + ((c_nsec + 1) * 40)) > c_code_off {
+        return -8;
+    }
+    let c_arch: u64 = eia_detect_arch_from_binary(client_buf as *const u8, client_len);
+    let p_arch: u64 = eia_detect_arch_from_binary(prov_buf, prov_len);
+    if c_arch != p_arch {
+        return -6;
+    }
+    var p_code_off: uint = 0;
+    var p_code_len: uint = 0;
+    if !eia_locate_code_span(prov_buf, prov_len, p_holo, &mut p_code_off, &mut p_code_len) || p_code_len == 0 {
+        return -8;
+    }
+    let c_img_base: uint = eia_patch_read_u64(client_buf as *const u8 + c_opt_base + 24) as uint;
+    let p_img_base: uint = eia_patch_read_u64(prov_buf + p_opt_base + 24) as uint;
+    var p_old_text_va: uint = p_holo.reserved0;
+    if p_old_text_va == 0 {
+        let p_rva_i: i64 = eia_pe_file_off_to_rva(prov_buf, prov_len, p_code_off);
+        if p_rva_i >= 0 {
+            p_old_text_va = p_img_base + (p_rva_i as uint);
+        } else {
+            p_old_text_va = p_img_base + p_code_off;
+        }
+    }
+    var p_tail_end: uint = prov_len;
+    let p_sec_base: uint = p_opt_base + p_opt_sz;
+    var psi: uint = 0;
+    while psi < p_nsec && (p_sec_base + (psi * 40) + 40) <= prov_len {
+        let psh: *const u8 = prov_buf + p_sec_base + (psi * 40);
+        let is_id: bool = (psh[0] == 46 && psh[1] == 105 && psh[2] == 100 && psh[3] == 97 && psh[4] == 116 && psh[5] == 97);
+        let is_ea: bool = (psh[0] == 46 && psh[1] == 101 && psh[2] == 105 && psh[3] == 97 && psh[4] == 0);
+        if is_id || is_ea {
+            let rp: uint = eia_patch_read_u32(psh + 20) as uint;
+            if rp > p_code_off && rp < p_tail_end {
+                p_tail_end = rp;
+            }
+        }
+        psi = psi + 1;
+    }
+    if p_tail_end <= p_code_off {
+        p_tail_end = p_code_off + p_code_len;
+    }
+    let p_tail_len: uint = p_tail_end - p_code_off;
+    let c_img_sz: uint = eia_patch_read_u32(client_buf as *const u8 + c_opt_base + 56) as uint;
+    var splice_off: uint = ((client_len + 4095) / 4096) * 4096;
+    let aligned_isz: uint = ((c_img_sz + 4095) / 4096) * 4096;
+    if aligned_isz > splice_off {
+        splice_off = aligned_isz;
+    }
+    var max_c_va_end: uint = splice_off;
+    var csi: uint = 0;
+    while csi < c_nsec && (c_sec_base + (csi * 40) + 40) <= client_len {
+        let csh: *const u8 = client_buf as *const u8 + c_sec_base + (csi * 40);
+        let c_vsz: uint = eia_patch_read_u32(csh + 8) as uint;
+        let c_va: uint = eia_patch_read_u32(csh + 12) as uint;
+        let c_rsz: uint = eia_patch_read_u32(csh + 16) as uint;
+        var c_span: uint = c_vsz;
+        if c_rsz > c_span {
+            c_span = c_rsz;
+        }
+        let c_end: uint = (((c_va + c_span) + 4095) / 4096) * 4096;
+        if c_end > max_c_va_end {
+            max_c_va_end = c_end;
+        }
+        csi = csi + 1;
+    }
+    let splice_rva: uint = max_c_va_end;
+    let p_aligned: uint = ((p_tail_len + 4095) / 4096) * 4096;
+    let final_len: uint = splice_off + p_aligned;
+    if final_len > client_cap {
+        return -8;
+    }
+    var zi: uint = client_len;
+    while zi < final_len {
+        client_buf[zi] = 0;
+        zi = zi + 1;
+    }
+    var ci: uint = 0;
+    while ci < p_tail_len {
+        client_buf[splice_off + ci] = prov_buf[p_code_off + ci];
+        ci = ci + 1;
+    }
+    let prov_rel_res: int = eia_patch_prov_relocs_at(
+        client_buf + splice_off,
+        prov_buf,
+        prov_len,
+        p_holo,
+        p_tg,
+        p_tg_cnt,
+        p_contracts,
+        p_code_off,
+        p_code_len,
+        p_arch,
+        p_old_text_va
+    );
+    if prov_rel_res != 0 {
+        return prov_rel_res;
+    }
+    let prom_res: int = eia_patch_promote_imports_step(
+        c_contracts,
+        c_holo.contracts_count,
+        p_contracts,
+        p_holo.contracts_count,
+        c_img_base + splice_rva,
+        p_old_text_va,
+        p_code_len,
+        allow_partial
+    );
+    if prom_res != 0 {
+        return prom_res;
+    }
+    let new_sec: *mut u8 = client_buf + c_sec_base + (c_nsec * 40);
+    new_sec[0] = 46; new_sec[1] = 112; new_sec[2] = 99; new_sec[3] = 111; new_sec[4] = 100; new_sec[5] = 101;
+    eia_patch_write_u32(new_sec + 8, p_tail_len as u32);
+    eia_patch_write_u32(new_sec + 12, splice_rva as u32);
+    eia_patch_write_u32(new_sec + 16, p_aligned as u32);
+    eia_patch_write_u32(new_sec + 20, splice_off as u32);
+    eia_patch_write_u32(new_sec + 36, 1610612768);
+    eia_patch_write_u16(client_buf + c_lfanew + 6, (c_nsec + 1) as u32);
+    let old_csz: u32 = eia_patch_read_u32(client_buf as *const u8 + c_opt_base + 4);
+    eia_patch_write_u32(client_buf + c_opt_base + 4, old_csz + (p_aligned as u32));
+    let final_img_sz: uint = ((splice_rva + p_aligned + 4095) / 4096) * 4096;
+    eia_patch_write_u32(client_buf + c_opt_base + 56, final_img_sz as u32);
+    out_final_len[0] = final_len;
+    out_max_span[0] = (splice_off + p_code_len) - c_code_off;
+    out_splice_off[0] = splice_off;
+    out_splice_va[0] = c_img_base + splice_rva;
+    out_p_old_va[0] = p_old_text_va;
+    out_p_code_len[0] = p_code_len;
+    return 1;
+}
+
+fn eia_relink_try_splice_macho(
+    client_buf: *mut u8,
+    client_len: uint,
+    client_cap: uint,
+    c_holo: *mut UniversalHologramHeader,
+    c_contracts: *mut SymbolContract,
+    c_code_off: uint,
+    prov_buf: *const u8,
+    prov_len: uint,
+    p_holo: *const UniversalHologramHeader,
+    p_contracts: *const SymbolContract,
+    p_tg: *const EiaTypeGraphEntry,
+    p_tg_cnt: uint,
+    allow_partial: bool,
+    out_final_len: *mut uint,
+    out_max_span: *mut uint,
+    out_splice_off: *mut uint,
+    out_splice_va: *mut uint,
+    out_p_old_va: *mut uint,
+    out_p_code_len: *mut uint
+) -> int {
+    let cm32: u32 = eia_patch_read_u32(client_buf as *const u8);
+    let pm32: u32 = eia_patch_read_u32(prov_buf);
+    if (cm32 != 4277009103 && cm32 != 3489328638) || (pm32 != 4277009103 && pm32 != 3489328638) {
+        return 0;
+    }
+    let c_arch: u64 = eia_detect_arch_from_binary(client_buf as *const u8, client_len);
+    let p_arch: u64 = eia_detect_arch_from_binary(prov_buf, prov_len);
+    if c_arch != p_arch {
+        return -6;
+    }
+    let c_ncmds: uint = eia_patch_read_u32(client_buf as *const u8 + 16) as uint;
+    let c_szcmds: uint = eia_patch_read_u32(client_buf as *const u8 + 20) as uint;
+    if (32 + c_szcmds + 152) > c_code_off {
+        return -8;
+    }
+    var c_mach_base: uint = 4294967296;
+    var highest_vmend: uint = 4294967296;
+    var scan_off: uint = 32;
+    var scan_i: uint = 0;
+    while scan_i < c_ncmds && eia_rng_ok(scan_off, 8, client_len) {
+        let cmd: u32 = eia_patch_read_u32(client_buf as *const u8 + scan_off);
+        let cmdsz: uint = eia_patch_read_u32(client_buf as *const u8 + scan_off + 4) as uint;
+        if cmdsz < 8 || (scan_off + cmdsz) > client_len {
+            break;
+        }
+        if cmd == 25 && cmdsz >= 72 {
+            let seg: *const u8 = client_buf as *const u8 + scan_off + 8;
+            let vmaddr: uint = eia_patch_read_u64(client_buf as *const u8 + scan_off + 24) as uint;
+            let vmsize: uint = eia_patch_read_u64(client_buf as *const u8 + scan_off + 32) as uint;
+            let fileoff: uint = eia_patch_read_u64(client_buf as *const u8 + scan_off + 40) as uint;
+            if seg[0] == 95 && seg[1] == 95 && seg[2] == 84 && seg[3] == 69 && seg[4] == 88 && seg[5] == 84 && seg[6] == 0 {
+                if vmaddr >= fileoff && vmaddr >= 4294967296 {
+                    c_mach_base = vmaddr - fileoff;
+                }
+            }
+            if (vmaddr + vmsize) > highest_vmend {
+                highest_vmend = vmaddr + vmsize;
+            }
+        }
+        scan_off = scan_off + cmdsz;
+        scan_i = scan_i + 1;
+    }
+    var p_mach_base: uint = 4294967296;
+    let p_ncmds: uint = eia_patch_read_u32(prov_buf + 16) as uint;
+    var p_scan_off: uint = 32;
+    var p_scan_i: uint = 0;
+    while p_scan_i < p_ncmds && eia_rng_ok(p_scan_off, 8, prov_len) {
+        let pcmd: u32 = eia_patch_read_u32(prov_buf + p_scan_off);
+        let pcmdsz: uint = eia_patch_read_u32(prov_buf + p_scan_off + 4) as uint;
+        if pcmdsz < 8 || (p_scan_off + pcmdsz) > prov_len {
+            break;
+        }
+        if pcmd == 25 && pcmdsz >= 72 {
+            let pseg: *const u8 = prov_buf + p_scan_off + 8;
+            if pseg[0] == 95 && pseg[1] == 95 && pseg[2] == 84 && pseg[3] == 69 && pseg[4] == 88 && pseg[5] == 84 && pseg[6] == 0 {
+                let pvm: uint = eia_patch_read_u64(prov_buf + p_scan_off + 24) as uint;
+                let pfo: uint = eia_patch_read_u64(prov_buf + p_scan_off + 40) as uint;
+                if pvm >= pfo && pvm >= 4294967296 {
+                    p_mach_base = pvm - pfo;
+                }
+            }
+        }
+        p_scan_off = p_scan_off + pcmdsz;
+        p_scan_i = p_scan_i + 1;
+    }
+    var p_code_off: uint = 0;
+    var p_code_len: uint = 0;
+    if !eia_locate_code_span(prov_buf, prov_len, p_holo, &mut p_code_off, &mut p_code_len) || p_code_len == 0 {
+        return -8;
+    }
+    var p_old_text_va: uint = p_holo.reserved0;
+    if p_old_text_va == 0 {
+        p_old_text_va = p_mach_base + p_code_off;
+    }
+    var p_tail_end: uint = p_code_off + p_code_len;
+    let p_eia_i: i64 = eia_locate_hologram_offset(prov_buf, prov_len);
+    if p_eia_i > (p_code_off as i64) && (p_eia_i as uint) <= prov_len {
+        p_tail_end = p_eia_i as uint;
+    }
+    let p_tail_len: uint = p_tail_end - p_code_off;
+    var align: uint = 4096;
+    if c_arch == 10 {
+        align = 16384;
+    }
+    let splice_off: uint = ((client_len + align - 1) / align) * align;
+    let p_aligned: uint = ((p_tail_len + align - 1) / align) * align;
+    let final_len: uint = splice_off + p_aligned;
+    if final_len > client_cap {
+        return -8;
+    }
+    var cand_va: uint = c_mach_base + splice_off;
+    if highest_vmend > cand_va {
+        cand_va = highest_vmend;
+    }
+    let splice_va: uint = ((cand_va + align - 1) / align) * align;
+    var zi: uint = client_len;
+    while zi < final_len {
+        client_buf[zi] = 0;
+        zi = zi + 1;
+    }
+    var ci: uint = 0;
+    while ci < p_tail_len {
+        client_buf[splice_off + ci] = prov_buf[p_code_off + ci];
+        ci = ci + 1;
+    }
+    let prov_rel_res: int = eia_patch_prov_relocs_at(
+        client_buf + splice_off,
+        prov_buf,
+        prov_len,
+        p_holo,
+        p_tg,
+        p_tg_cnt,
+        p_contracts,
+        p_code_off,
+        p_code_len,
+        p_arch,
+        p_old_text_va
+    );
+    if prov_rel_res != 0 {
+        return prov_rel_res;
+    }
+    let prom_res: int = eia_patch_promote_imports_step(
+        c_contracts,
+        c_holo.contracts_count,
+        p_contracts,
+        p_holo.contracts_count,
+        splice_va,
+        p_old_text_va,
+        p_code_len,
+        allow_partial
+    );
+    if prom_res != 0 {
+        return prom_res;
+    }
+    let lc: *mut u8 = client_buf + 32 + c_szcmds;
+    eia_patch_write_u32(lc + 0, 25);
+    eia_patch_write_u32(lc + 4, 152);
+    lc[8] = 95; lc[9] = 95; lc[10] = 80; lc[11] = 67; lc[12] = 79; lc[13] = 68; lc[14] = 69;
+    eia_patch_write_u64(lc + 24, splice_va as u64);
+    eia_patch_write_u64(lc + 32, p_aligned as u64);
+    eia_patch_write_u64(lc + 40, splice_off as u64);
+    eia_patch_write_u64(lc + 48, p_aligned as u64);
+    eia_patch_write_u32(lc + 56, 7);
+    eia_patch_write_u32(lc + 60, 7);
+    eia_patch_write_u32(lc + 64, 1);
+    let sec: *mut u8 = lc + 72;
+    sec[0] = 95; sec[1] = 95; sec[2] = 112; sec[3] = 99; sec[4] = 111; sec[5] = 100; sec[6] = 101;
+    sec[16] = 95; sec[17] = 95; sec[18] = 80; sec[19] = 67; sec[20] = 79; sec[21] = 68; sec[22] = 69;
+    eia_patch_write_u64(sec + 32, splice_va as u64);
+    eia_patch_write_u64(sec + 40, p_code_len as u64);
+    eia_patch_write_u32(sec + 48, splice_off as u32);
+    eia_patch_write_u32(sec + 52, 4);
+    eia_patch_write_u32(sec + 64, 2147484672);
+    eia_patch_write_u32(client_buf + 16, (c_ncmds + 1) as u32);
+    eia_patch_write_u32(client_buf + 20, (c_szcmds + 152) as u32);
+    out_final_len[0] = final_len;
+    out_max_span[0] = (splice_off + p_code_len) - c_code_off;
+    out_splice_off[0] = splice_off;
+    out_splice_va[0] = splice_va;
+    out_p_old_va[0] = p_old_text_va;
+    out_p_code_len[0] = p_code_len;
+    return 1;
+}
+
+fn eia_relink_try_splice_elf(
+    client_buf: *mut u8,
+    client_len: uint,
+    client_cap: uint,
+    c_holo: *mut UniversalHologramHeader,
+    c_contracts: *mut SymbolContract,
+    c_code_off: uint,
+    prov_buf: *const u8,
+    prov_len: uint,
+    p_holo: *const UniversalHologramHeader,
+    p_contracts: *const SymbolContract,
+    p_tg: *const EiaTypeGraphEntry,
+    p_tg_cnt: uint,
+    allow_partial: bool,
+    out_final_len: *mut uint,
+    out_max_span: *mut uint,
+    out_splice_off: *mut uint,
+    out_splice_va: *mut uint,
+    out_p_old_va: *mut uint,
+    out_p_code_len: *mut uint
+) -> int {
+    let c_ehdr_i: i64 = eia_elf_hdr_offset(client_buf as *const u8, client_len);
+    let p_ehdr_i: i64 = eia_elf_hdr_offset(prov_buf, prov_len);
+    if c_ehdr_i < 0 || p_ehdr_i < 0 {
+        return 0;
+    }
+    let c_ehdr: uint = c_ehdr_i as uint;
+    let c_arch: u64 = eia_detect_arch_from_binary(client_buf as *const u8, client_len);
+    let p_arch: u64 = eia_detect_arch_from_binary(prov_buf, prov_len);
+    if c_arch != p_arch {
+        return -6;
+    }
+    let c_base_i: i64 = eia_elf_base_vaddr(client_buf as *const u8, client_len, c_ehdr);
+    let p_base_i: i64 = eia_elf_base_vaddr(prov_buf, prov_len, p_ehdr_i as uint);
+    var c_base_va: uint = 4194304;
+    if c_base_i >= 0 {
+        c_base_va = c_base_i as uint;
+    }
+    var p_base_va: uint = 4194304;
+    if p_base_i >= 0 {
+        p_base_va = p_base_i as uint;
+    }
+    var p_code_off: uint = 0;
+    var p_code_len: uint = 0;
+    if !eia_locate_code_span(prov_buf, prov_len, p_holo, &mut p_code_off, &mut p_code_len) || p_code_len == 0 || p_code_off >= prov_len {
+        return -8;
+    }
+    var p_old_text_va: uint = p_holo.reserved0;
+    if p_old_text_va == 0 {
+        p_old_text_va = p_base_va + p_code_off;
+    }
+
+    let splice_off: uint = ((client_len + 4095) / 4096) * 4096;
+    let splice_va: uint = c_base_va + splice_off;
+    let p_tail_len: uint = prov_len - p_code_off;
+    let raw_end: uint = splice_off + p_tail_len;
+    let new_shoff: uint = ((raw_end + 15) / 16) * 16;
+
+    var p_ro_off: uint = 0;
+    var p_ro_sz: uint = 0;
+    let has_p_ro: bool = eia_find_prov_rodata_elf(prov_buf, prov_len, &mut p_ro_off, &mut p_ro_sz) && p_ro_off >= p_code_off;
+
+    let c_shoff: uint = eia_patch_read_u64((client_buf + c_ehdr + 40) as *const u8) as uint;
+    let c_shentsize: uint = eia_patch_read_u16((client_buf + c_ehdr + 58) as *const u8) as uint;
+    let c_shnum: uint = eia_patch_read_u16((client_buf + c_ehdr + 60) as *const u8) as uint;
+    let has_sht: bool = (c_shoff > 0 && c_shnum >= 2 && c_shentsize == 64 && eia_rng_ok(c_shoff, (c_shnum * 64), client_len));
+    var extra_sh: uint = 1;
+    if has_p_ro {
+        extra_sh = 2;
+    }
+    var final_len: uint = new_shoff;
+    if has_sht {
+        final_len = new_shoff + ((c_shnum + extra_sh) * 64);
+    }
+    if final_len > client_cap {
+        return -8;
+    }
+    var zi: uint = client_len;
+    while zi < final_len {
+        client_buf[zi] = 0;
+        zi = zi + 1;
+    }
+    var ci: uint = 0;
+    while ci < p_tail_len {
+        client_buf[splice_off + ci] = prov_buf[p_code_off + ci];
+        ci = ci + 1;
+    }
+    let prov_rel_res: int = eia_patch_prov_relocs_at(
+        client_buf + splice_off,
+        prov_buf,
+        prov_len,
+        p_holo,
+        p_tg,
+        p_tg_cnt,
+        p_contracts,
+        p_code_off,
+        p_code_len,
+        p_arch,
+        p_old_text_va
+    );
+    if prov_rel_res != 0 {
+        return prov_rel_res;
+    }
+    let prom_res: int = eia_patch_promote_imports_step(c_contracts, c_holo.contracts_count, p_contracts, p_holo.contracts_count, splice_va, p_old_text_va, p_code_len, allow_partial);
+    if prom_res != 0 {
+        return prom_res;
+    }
+
+    if has_sht {
+        let sht_bytes: uint = c_shnum * 64;
+        var shi: uint = 0;
+        while shi < sht_bytes {
+            client_buf[new_shoff + shi] = client_buf[c_shoff + shi];
+            shi = shi + 1;
+        }
+        let new_sec: *mut u8 = client_buf + new_shoff + sht_bytes;
+        eia_patch_write_u32(new_sec + 0, 1);
+        eia_patch_write_u32(new_sec + 4, 1);
+        eia_patch_write_u64(new_sec + 8, 6);
+        eia_patch_write_u64(new_sec + 16, splice_va as u64);
+        eia_patch_write_u64(new_sec + 24, splice_off as u64);
+        eia_patch_write_u64(new_sec + 32, p_code_len as u64);
+        eia_patch_write_u64(new_sec + 48, 16);
+        if has_p_ro {
+            let ro_sec: *mut u8 = new_sec + 64;
+            let sp_ro_off: uint = splice_off + (p_ro_off - p_code_off);
+            let sp_ro_va: uint = c_base_va + sp_ro_off;
+            eia_patch_write_u32(ro_sec + 0, 7);
+            eia_patch_write_u32(ro_sec + 4, 1);
+            eia_patch_write_u64(ro_sec + 8, 2);
+            eia_patch_write_u64(ro_sec + 16, sp_ro_va as u64);
+            eia_patch_write_u64(ro_sec + 24, sp_ro_off as u64);
+            eia_patch_write_u64(ro_sec + 32, p_ro_sz as u64);
+            eia_patch_write_u64(ro_sec + 48, 8);
+        }
+        eia_patch_write_u64(client_buf + c_ehdr + 40, new_shoff as u64);
+        eia_patch_write_u16(client_buf + c_ehdr + 60, (c_shnum + extra_sh) as u32);
+    }
+
+    let c_phoff: uint = c_ehdr + (eia_patch_read_u64((client_buf + c_ehdr + 32) as *const u8) as uint);
+    let c_phentsize: uint = eia_patch_read_u16((client_buf + c_ehdr + 54) as *const u8) as uint;
+    let c_phnum: uint = eia_patch_read_u16((client_buf + c_ehdr + 56) as *const u8) as uint;
+    var phi: uint = 0;
+    while phi < c_phnum && (c_phoff + (phi * c_phentsize) + 56) <= client_len {
+        let ph_ptr: *mut u8 = client_buf + c_phoff + (phi * c_phentsize);
+        if eia_patch_read_u32(ph_ptr as *const u8) == 1 {
+            eia_patch_write_u64(ph_ptr + 32, final_len as u64);
+            let cur_memsz: uint = eia_patch_read_u64((ph_ptr + 40) as *const u8) as uint;
+            let min_memsz: uint = final_len + 1048576;
+            if cur_memsz < min_memsz {
+                eia_patch_write_u64(ph_ptr + 40, min_memsz as u64);
+            }
+        }
+        phi = phi + 1;
+    }
+
+    out_final_len[0] = final_len;
+    out_max_span[0] = (splice_off + p_code_len) - c_code_off;
+    out_splice_off[0] = splice_off;
+    out_splice_va[0] = splice_va;
+    out_p_old_va[0] = p_old_text_va;
+    out_p_code_len[0] = p_code_len;
+    return 1;
+}
+
+fn eia_relink_append_provider_tables(
+    client_buf: *mut u8,
+    client_cap: uint,
+    c_holo: *mut UniversalHologramHeader,
+    c_code_off: uint,
+    splice_off: uint,
+    splice_va: uint,
+    p_old_text_va: uint,
+    p_code_len: uint,
+    prov_buf: *const u8,
+    p_holo: *const UniversalHologramHeader,
+    p_contracts: *const SymbolContract,
+    p_tg: *const EiaTypeGraphEntry,
+    p_tg_cnt: uint,
+    cur_final_len: *mut uint
+) -> int {
+    let orig_c_cnt: uint = c_holo.contracts_count;
+    let orig_r_cnt: uint = c_holo.relocs_count;
+    let orig_tg_cnt: uint = c_holo.type_graph_size / 24;
+    var orig_c_ptr: *const SymbolContract = 0 as *const SymbolContract;
+    if orig_c_cnt > 0 {
+        orig_c_ptr = (client_buf + c_holo.contracts_offset) as *const SymbolContract;
+    }
+    var orig_r_ptr: *const EiaRelocHole = 0 as *const EiaRelocHole;
+    if orig_r_cnt > 0 {
+        orig_r_ptr = (client_buf + c_holo.relocs_offset) as *const EiaRelocHole;
+    }
+    var orig_tg_ptr: *const EiaTypeGraphEntry = 0 as *const EiaTypeGraphEntry;
+    if orig_tg_cnt > 0 {
+        orig_tg_ptr = (client_buf + c_holo.type_graph_offset) as *const EiaTypeGraphEntry;
+    }
+
+    var extra_c: uint = 0;
+    var pi: uint = 0;
+    while pi < p_holo.contracts_count {
+        let p_sc: *const SymbolContract = ((p_contracts as uint) + (pi * 48)) as *const SymbolContract;
+        if p_sc.symbol_hash != 0 && eia_find_contract(orig_c_ptr, orig_c_cnt, p_sc.symbol_hash, 0) == (0 as *const SymbolContract) {
+            extra_c = extra_c + 1;
+        }
+        pi = pi + 1;
+    }
+
+    var p_relocs: *const EiaRelocHole = 0 as *const EiaRelocHole;
+    if p_holo.relocs_count > 0 {
+        p_relocs = (prov_buf + p_holo.relocs_offset) as *const EiaRelocHole;
+    }
+    var extra_r: uint = 0;
+    var ri: uint = 0;
+    while ri < p_holo.relocs_count {
+        let pr: *const EiaRelocHole = ((p_relocs as uint) + (ri * 24)) as *const EiaRelocHole;
+        if (pr.insn_offset as uint) < p_code_len {
+            if pr.patch_kind == EIA_RELOC_CALL32 {
+                if eia_find_contract(p_contracts, p_holo.contracts_count, pr.field_or_sym_hash, EIA_SYM_DEFINED) == (0 as *const SymbolContract) {
+                    extra_r = extra_r + 1;
+                }
+            } else if eia_resolve_field_displacement(p_tg, p_tg_cnt, pr.type_sig_hash, pr.field_or_sym_hash) == 0xFFFFFFFF {
+                extra_r = extra_r + 1;
+            }
+        }
+        ri = ri + 1;
+    }
+
+    var extra_tg: uint = 0;
+    var tgi: uint = 0;
+    while tgi < p_tg_cnt {
+        let pe: *const EiaTypeGraphEntry = ((p_tg as uint) + (tgi * 24)) as *const EiaTypeGraphEntry;
+        if orig_tg_cnt == 0 || eia_resolve_field_displacement(orig_tg_ptr, orig_tg_cnt, pe.type_sig_hash, pe.field_hash) == 0xFFFFFFFF {
+            extra_tg = extra_tg + 1;
+        }
+        tgi = tgi + 1;
+    }
+
+    if extra_c == 0 && extra_r == 0 && extra_tg == 0 {
+        return 0;
+    }
+
+    let new_c_cnt: uint = orig_c_cnt + extra_c;
+    let new_r_cnt: uint = orig_r_cnt + extra_r;
+    let new_tg_cnt: uint = orig_tg_cnt + extra_tg;
+    let new_c_sz: uint = new_c_cnt * 48;
+    let new_r_sz: uint = new_r_cnt * 24;
+    let new_tg_sz: uint = new_tg_cnt * 24;
+    let new_total_sz: uint = new_c_sz + new_r_sz + new_tg_sz;
+
+    let base_end: uint = cur_final_len[0];
+    let tbl_base: uint = ((base_end + 15) / 16) * 16;
+    let final_len: uint = tbl_base + new_total_sz;
+    if final_len > client_cap {
+        return -8;
+    }
+    var zi: uint = base_end;
+    while zi < final_len {
+        client_buf[zi] = 0;
+        zi = zi + 1;
+    }
+
+    let new_c_off: uint = tbl_base;
+    let new_r_off: uint = new_c_off + new_c_sz;
+    let new_tg_off: uint = new_r_off + new_r_sz;
+
+    var ci: uint = 0;
+    while ci < orig_c_cnt {
+        let src_c: *const SymbolContract = ((orig_c_ptr as uint) + (ci * 48)) as *const SymbolContract;
+        let dst_c: *mut SymbolContract = (client_buf + new_c_off + (ci * 48)) as *mut SymbolContract;
+        dst_c[0] = src_c[0];
+        ci = ci + 1;
+    }
+    var wc: uint = orig_c_cnt;
+    pi = 0;
+    while pi < p_holo.contracts_count {
+        let p_sc2: *const SymbolContract = ((p_contracts as uint) + (pi * 48)) as *const SymbolContract;
+        if p_sc2.symbol_hash != 0 && eia_find_contract(orig_c_ptr, orig_c_cnt, p_sc2.symbol_hash, 0) == (0 as *const SymbolContract) {
+            let dst_c2: *mut SymbolContract = (client_buf + new_c_off + (wc * 48)) as *mut SymbolContract;
+            dst_c2[0] = p_sc2[0];
+            if (dst_c2.flags & EIA_SYM_DEFINED) != 0 && dst_c2.vaddr >= p_old_text_va {
+                let rel_v: uint = dst_c2.vaddr - p_old_text_va;
+                if rel_v < p_code_len {
+                    dst_c2.vaddr = splice_va + rel_v;
+                }
+            }
+            eia_contract_seal(dst_c2);
+            wc = wc + 1;
+        }
+        pi = pi + 1;
+    }
+
+    var rci: uint = 0;
+    while rci < orig_r_cnt {
+        let src_r: *const EiaRelocHole = ((orig_r_ptr as uint) + (rci * 24)) as *const EiaRelocHole;
+        let dst_r: *mut EiaRelocHole = (client_buf + new_r_off + (rci * 24)) as *mut EiaRelocHole;
+        dst_r[0] = src_r[0];
+        rci = rci + 1;
+    }
+    var wr: uint = orig_r_cnt;
+    ri = 0;
+    while ri < p_holo.relocs_count {
+        let pr2: *const EiaRelocHole = ((p_relocs as uint) + (ri * 24)) as *const EiaRelocHole;
+        if (pr2.insn_offset as uint) < p_code_len {
+            var keep_r: bool = false;
+            if pr2.patch_kind == EIA_RELOC_CALL32 {
+                if eia_find_contract(p_contracts, p_holo.contracts_count, pr2.field_or_sym_hash, EIA_SYM_DEFINED) == (0 as *const SymbolContract) {
+                    keep_r = true;
+                }
+            } else if eia_resolve_field_displacement(p_tg, p_tg_cnt, pr2.type_sig_hash, pr2.field_or_sym_hash) == 0xFFFFFFFF {
+                keep_r = true;
+            }
+            if keep_r {
+                let dst_r2: *mut EiaRelocHole = (client_buf + new_r_off + (wr * 24)) as *mut EiaRelocHole;
+                dst_r2[0] = pr2[0];
+                dst_r2.insn_offset = ((splice_off - c_code_off) + (pr2.insn_offset as uint)) as u32;
+                wr = wr + 1;
+            }
+        }
+        ri = ri + 1;
+    }
+
+    var tci: uint = 0;
+    while tci < orig_tg_cnt {
+        let src_t: *const EiaTypeGraphEntry = ((orig_tg_ptr as uint) + (tci * 24)) as *const EiaTypeGraphEntry;
+        let dst_t: *mut EiaTypeGraphEntry = (client_buf + new_tg_off + (tci * 24)) as *mut EiaTypeGraphEntry;
+        dst_t[0] = src_t[0];
+        tci = tci + 1;
+    }
+    var wt: uint = orig_tg_cnt;
+    tgi = 0;
+    while tgi < p_tg_cnt {
+        let pe2: *const EiaTypeGraphEntry = ((p_tg as uint) + (tgi * 24)) as *const EiaTypeGraphEntry;
+        if orig_tg_cnt == 0 || eia_resolve_field_displacement(orig_tg_ptr, orig_tg_cnt, pe2.type_sig_hash, pe2.field_hash) == 0xFFFFFFFF {
+            let dst_t2: *mut EiaTypeGraphEntry = (client_buf + new_tg_off + (wt * 24)) as *mut EiaTypeGraphEntry;
+            dst_t2[0] = pe2[0];
+            wt = wt + 1;
+        }
+        tgi = tgi + 1;
+    }
+
+    c_holo.contracts_offset = new_c_off;
+    c_holo.contracts_count = new_c_cnt;
+    c_holo.relocs_offset = new_r_off;
+    c_holo.relocs_count = new_r_cnt;
+    c_holo.type_graph_offset = new_tg_off;
+    c_holo.type_graph_size = new_tg_sz;
+
+    let c_ehdr_i: i64 = eia_elf_hdr_offset(client_buf as *const u8, final_len);
+    if c_ehdr_i >= 0 {
+        let c_ehdr: uint = c_ehdr_i as uint;
+        let c_phoff: uint = c_ehdr + (eia_patch_read_u64((client_buf + c_ehdr + 32) as *const u8) as uint);
+        let c_phentsize: uint = eia_patch_read_u16((client_buf + c_ehdr + 54) as *const u8) as uint;
+        let c_phnum: uint = eia_patch_read_u16((client_buf + c_ehdr + 56) as *const u8) as uint;
+        var phi: uint = 0;
+        while phi < c_phnum && (c_phoff + (phi * c_phentsize) + 56) <= final_len {
+            let ph_ptr: *mut u8 = client_buf + c_phoff + (phi * c_phentsize);
+            if eia_patch_read_u32(ph_ptr as *const u8) == 1 {
+                eia_patch_write_u64(ph_ptr + 32, final_len as u64);
+                let cur_memsz: uint = eia_patch_read_u64((ph_ptr + 40) as *const u8) as uint;
+                let min_memsz: uint = final_len + 1048576;
+                if cur_memsz < min_memsz {
+                    eia_patch_write_u64(ph_ptr + 40, min_memsz as u64);
+                }
+            }
+            phi = phi + 1;
+        }
+    } else if eia_container_kind(client_buf as *const u8, final_len) == 2 {
+        let lfanew: uint = eia_patch_read_u32(client_buf as *const u8 + 60) as uint;
+        let opt_base: uint = lfanew + 24;
+        let pe_img_sz: uint = ((final_len + 4095) / 4096) * 4096;
+        eia_patch_write_u32(client_buf + opt_base + 56, pe_img_sz as u32);
+    }
+
+    cur_final_len[0] = final_len;
+    return 1;
+}
+
+fn eia_count_import_contracts(contracts: *const SymbolContract, count: uint) -> uint {
+    if contracts == (0 as *const SymbolContract) {
+        return 0;
+    }
+    var rem: uint = 0;
+    var i: uint = 0;
+    while i < count {
+        let sc: *const SymbolContract = ((contracts as uint) + (i * 48)) as *const SymbolContract;
+        if (sc.flags & EIA_SYM_IMPORT) != 0 {
+            rem = rem + 1;
+        }
+        i = i + 1;
+    }
+    return rem;
+}
+
+fn eia_ar_member_matches_client(
+    client_buf: *const u8,
+    client_len: uint,
+    member_buf: *const u8,
+    member_len: uint
+) -> bool {
+    let c_off_i: i64 = eia_locate_hologram_offset(client_buf, client_len);
+    let p_off_i: i64 = eia_locate_hologram_offset(member_buf, member_len);
+    if c_off_i < 0 || p_off_i < 0 {
+        return false;
+    }
+    let c_holo: *const UniversalHologramHeader = (client_buf + (c_off_i as uint)) as *const UniversalHologramHeader;
+    let p_holo: *const UniversalHologramHeader = (member_buf + (p_off_i as uint)) as *const UniversalHologramHeader;
+    if c_holo.contracts_count == 0 || p_holo.contracts_count == 0 {
+        return false;
+    }
+    let c_contracts: *const SymbolContract = (client_buf + c_holo.contracts_offset) as *const SymbolContract;
+    let p_contracts: *const SymbolContract = (member_buf + p_holo.contracts_offset) as *const SymbolContract;
+    var ci: uint = 0;
+    while ci < c_holo.contracts_count {
+        let sc: *const SymbolContract = ((c_contracts as uint) + (ci * 48)) as *const SymbolContract;
+        if (sc.flags & EIA_SYM_IMPORT) != 0 {
+            if eia_find_contract(p_contracts, p_holo.contracts_count, sc.symbol_hash, EIA_SYM_DEFINED) != (0 as *const SymbolContract) {
+                return true;
+            }
+        }
+        ci = ci + 1;
+    }
+    return false;
+}
+
+fn eia_relink_check_member_compat(client: *const u8, client_len: uint, mem: *const u8, mem_len: uint) -> int {
+    let mv: int = eia_verify_artifact_bytes(mem, mem_len);
+    if mv != 0 {
+        return mv;
+    }
+    let co: i64 = eia_locate_hologram_offset(client, client_len);
+    let mo: i64 = eia_locate_hologram_offset(mem, mem_len);
+    if co < 0 || mo < 0 {
+        return -1;
+    }
+    let ch: *const UniversalHologramHeader = (client + (co as uint)) as *const UniversalHologramHeader;
+    let mh: *const UniversalHologramHeader = (mem + (mo as uint)) as *const UniversalHologramHeader;
+    return eia_verify_units_compat_step(ch, client, mh, mem, true);
+}
+
+fn eia_relink_binary_bytes_step(
+    client_buf: *mut u8,
+    client_len: uint,
+    client_cap: uint,
+    prov_buf: *const u8,
+    prov_len: uint,
+    out_new_len: *mut uint,
+    require_all_resolved: bool
+) -> int {
+    if out_new_len != (0 as *mut uint) {
+        out_new_len[0] = client_len;
+    }
+    if client_buf == (0 as *mut u8) || prov_buf == (0 as *const u8) || client_cap < client_len {
+        return -1;
+    }
+    let c_ver: int = eia_verify_artifact_bytes(client_buf as *const u8, client_len);
+    if c_ver != 0 {
+        return c_ver;
+    }
+    let p_ver: int = eia_verify_artifact_bytes(prov_buf, prov_len);
+    if p_ver != 0 {
+        return p_ver;
+    }
+
+    if eia_is_ar_archive(prov_buf, prov_len) {
+        let m_cnt: uint = eia_ar_count_elf_members(prov_buf, prov_len);
+        if m_cnt == 0 {
+            return -1;
+        }
+        var cur_len: uint = client_len;
+        var last_res: int = 0;
+        var did_any: bool = false;
+        var pass_i: uint = 0;
+        while pass_i < m_cnt {
+            var progress: bool = false;
+            var mi: uint = 0;
+            while mi < m_cnt {
+                var mo: uint = 0;
+                var ml: uint = 0;
+                if !eia_ar_get_elf_member(prov_buf, prov_len, mi, &mut mo, &mut ml) {
+                    return -1;
+                }
+                if eia_ar_member_matches_client(client_buf as *const u8, cur_len, prov_buf + mo, ml) {
+                    var step_len: uint = cur_len;
+                    let sres: int = eia_relink_binary_bytes_step(
+                        client_buf,
+                        cur_len,
+                        client_cap,
+                        prov_buf + mo,
+                        ml,
+                        &mut step_len,
+                        false
+                    );
+                    if sres < 0 {
+                        return sres;
+                    }
+                    cur_len = step_len;
+                    last_res = last_res + sres;
+                    progress = true;
+                    did_any = true;
+                }
+                mi = mi + 1;
+            }
+            if !progress {
+                break;
+            }
+            pass_i = pass_i + 1;
+        }
+        var ci_m: uint = 0;
+        while ci_m < m_cnt {
+            var cmo: uint = 0;
+            var cml: uint = 0;
+            if !eia_ar_get_elf_member(prov_buf, prov_len, ci_m, &mut cmo, &mut cml) {
+                return -1;
+            }
+            let mc_res: int = eia_relink_check_member_compat(client_buf as *const u8, cur_len, prov_buf + cmo, cml);
+            if mc_res < 0 {
+                return mc_res;
+            }
+            ci_m = ci_m + 1;
+        }
+        let _did_any_used: bool = did_any;
+        let fc_off_i: i64 = eia_locate_hologram_offset(client_buf as *const u8, cur_len);
+        if fc_off_i < 0 {
+            return -1;
+        }
+        let fc_holo: *const UniversalHologramHeader = (client_buf as *const u8 + (fc_off_i as uint)) as *const UniversalHologramHeader;
+        if require_all_resolved && fc_holo.contracts_count > 0 {
+            let fc_c: *const SymbolContract = (client_buf as *const u8 + fc_holo.contracts_offset) as *const SymbolContract;
+            if eia_count_import_contracts(fc_c, fc_holo.contracts_count) > 0 {
+                return -5;
+            }
+        }
+        if out_new_len != (0 as *mut uint) {
+            out_new_len[0] = cur_len;
+        }
+        return last_res;
+    }
+
+    let c_off: uint = eia_locate_hologram_offset(client_buf as *const u8, client_len) as uint;
+    let p_off: uint = eia_locate_hologram_offset(prov_buf, prov_len) as uint;
+    let c_holo: *mut UniversalHologramHeader = (client_buf + c_off) as *mut UniversalHologramHeader;
+    let p_holo: *const UniversalHologramHeader = (prov_buf + p_off) as *const UniversalHologramHeader;
+
+    let compat_res: int = eia_verify_units_compat_step(
+        c_holo as *const UniversalHologramHeader,
+        client_buf as *const u8,
+        p_holo,
+        prov_buf,
+        true
+    );
+    if compat_res < 0 {
+        return compat_res;
+    }
+
+    var c_contracts: *mut SymbolContract = 0 as *mut SymbolContract;
+    if c_holo.contracts_count > 0 {
+        c_contracts = (client_buf + c_holo.contracts_offset) as *mut SymbolContract;
+    }
+    var p_contracts: *const SymbolContract = 0 as *const SymbolContract;
+    if p_holo.contracts_count > 0 {
+        p_contracts = (prov_buf + p_holo.contracts_offset) as *const SymbolContract;
+    }
+
+    let import_cnt: uint = eia_count_import_contracts(c_contracts as *const SymbolContract, c_holo.contracts_count);
+
+    var c_code_off: uint = 0;
+    var c_code_len: uint = 0;
+    let has_c_code: bool = eia_locate_code_span(
+        client_buf as *const u8,
+        client_len,
+        c_holo as *const UniversalHologramHeader,
+        &mut c_code_off,
+        &mut c_code_len
+    );
+
+    var c_tg_cnt: uint = c_holo.type_graph_size / 24;
+    let p_tg_cnt: uint = p_holo.type_graph_size / 24;
+    var c_tg: *mut EiaTypeGraphEntry = 0 as *mut EiaTypeGraphEntry;
+    if c_tg_cnt > 0 {
+        c_tg = (client_buf + c_holo.type_graph_offset) as *mut EiaTypeGraphEntry;
+    }
+    var p_tg: *const EiaTypeGraphEntry = 0 as *const EiaTypeGraphEntry;
+    if p_tg_cnt > 0 {
+        p_tg = (prov_buf + p_holo.type_graph_offset) as *const EiaTypeGraphEntry;
+    }
+    if c_tg_cnt > 0 && p_tg_cnt > 0 {
+        var ti: uint = 0;
+        while ti < c_tg_cnt {
+            let ce: *mut EiaTypeGraphEntry = ((c_tg as uint) + (ti * 24)) as *mut EiaTypeGraphEntry;
+            var pi: uint = 0;
+            while pi < p_tg_cnt {
+                let pe: *const EiaTypeGraphEntry = ((p_tg as uint) + (pi * 24)) as *const EiaTypeGraphEntry;
+                if ce.type_sig_hash == pe.type_sig_hash && ce.field_hash == pe.field_hash {
+                    ce.byte_offset = pe.byte_offset;
+                    ce.field_size = pe.field_size;
+                    pi = p_tg_cnt;
+                }
+                pi = pi + 1;
+            }
+            ti = ti + 1;
+        }
+    }
+
+    var final_len: uint = client_len;
+    var max_target_span: uint = eia_max_code_span(client_buf as *const u8, client_len, c_code_off, c_code_len);
+    var did_splice: bool = false;
+    var splice_off: uint = 0;
+    var splice_va: uint = 0;
+    var p_old_va: uint = 0;
+    var p_code_len: uint = 0;
+    let c_fmt: int = eia_container_kind(client_buf as *const u8, client_len);
+    let p_fmt: int = eia_container_kind(prov_buf, prov_len);
+
+    if c_fmt != p_fmt {
+        return -8;
+    }
+    if eia_detect_arch_from_binary(client_buf as *const u8, client_len) != eia_detect_arch_from_binary(prov_buf, prov_len) {
+        return -8;
+    }
+    if import_cnt > 0 && client_cap > client_len {
+        if !has_c_code || c_code_len == 0 {
+            return -8;
+        }
+        var sp_res: int = eia_relink_try_splice_elf(
+            client_buf, client_len, client_cap, c_holo, c_contracts, c_code_off,
+            prov_buf, prov_len, p_holo, p_contracts, p_tg, p_tg_cnt, !require_all_resolved,
+            &mut final_len, &mut max_target_span, &mut splice_off, &mut splice_va, &mut p_old_va, &mut p_code_len
+        );
+        if sp_res == 0 {
+            sp_res = eia_relink_try_splice_pe(
+                client_buf, client_len, client_cap, c_holo, c_contracts, c_code_off, c_code_len,
+                prov_buf, prov_len, p_holo, p_contracts, p_tg, p_tg_cnt, !require_all_resolved,
+                &mut final_len, &mut max_target_span, &mut splice_off, &mut splice_va, &mut p_old_va, &mut p_code_len
+            );
+        }
+        if sp_res == 0 {
+            sp_res = eia_relink_try_splice_macho(
+                client_buf, client_len, client_cap, c_holo, c_contracts, c_code_off,
+                prov_buf, prov_len, p_holo, p_contracts, p_tg, p_tg_cnt, !require_all_resolved,
+                &mut final_len, &mut max_target_span, &mut splice_off, &mut splice_va, &mut p_old_va, &mut p_code_len
+            );
+        }
+        if sp_res < 0 {
+            return sp_res;
+        }
+        if sp_res > 0 {
+            did_splice = true;
+            let app_res: int = eia_relink_append_provider_tables(
+                client_buf,
+                client_cap,
+                c_holo,
+                c_code_off,
+                splice_off,
+                splice_va,
+                p_old_va,
+                p_code_len,
+                prov_buf,
+                p_holo,
+                p_contracts,
+                p_tg,
+                p_tg_cnt,
+                &mut final_len
+            );
+            if app_res < 0 {
+                return app_res;
+            }
+            if c_holo.contracts_count > 0 {
+                c_contracts = (client_buf + c_holo.contracts_offset) as *mut SymbolContract;
+            }
+            c_tg_cnt = c_holo.type_graph_size / 24;
+            if c_tg_cnt > 0 {
+                c_tg = (client_buf + c_holo.type_graph_offset) as *mut EiaTypeGraphEntry;
+            }
+        }
+    }
+
+    if !did_splice && has_c_code && c_holo.contracts_count > 0 && p_holo.contracts_count > 0 {
+        var sci2: uint = 0;
+        while sci2 < c_holo.contracts_count {
+            let c_sc2: *mut SymbolContract = ((c_contracts as uint) + (sci2 * 48)) as *mut SymbolContract;
+            if (c_sc2.flags & EIA_SYM_IMPORT) != 0 {
+                let p_sc2: *const SymbolContract = eia_find_contract(
+                    p_contracts,
+                    p_holo.contracts_count,
+                    c_sc2.symbol_hash,
+                    EIA_SYM_DEFINED
+                );
+                if p_sc2 != (0 as *const SymbolContract) && p_sc2.vaddr >= c_holo.reserved0 && (p_sc2.vaddr - c_holo.reserved0) < c_code_len {
+                    c_sc2.vaddr = p_sc2.vaddr;
+                    c_sc2.code_size = p_sc2.code_size;
+                    c_sc2.flags = (c_sc2.flags - EIA_SYM_IMPORT) | EIA_SYM_DEFINED;
+                    eia_contract_seal(c_sc2);
+                }
+            }
+            sci2 = sci2 + 1;
+        }
+    }
+
+    var rem_imports: uint = 0;
+    var rem_prov_defined: bool = false;
+    var ri_chk: uint = 0;
+    while ri_chk < c_holo.contracts_count {
+        let rc: *const SymbolContract = ((c_contracts as uint) + (ri_chk * 48)) as *const SymbolContract;
+        if (rc.flags & EIA_SYM_IMPORT) != 0 {
+            rem_imports = rem_imports + 1;
+            if eia_find_contract(p_contracts, p_holo.contracts_count, rc.symbol_hash, EIA_SYM_DEFINED) != (0 as *const SymbolContract) {
+                rem_prov_defined = true;
+            }
+        }
+        ri_chk = ri_chk + 1;
+    }
+    if require_all_resolved && rem_imports > 0 {
+        if c_fmt != p_fmt {
+            return -8;
+        }
+        if !did_splice && client_cap <= client_len && rem_prov_defined {
+            return -8;
+        }
+        return -5;
+    }
+    if require_all_resolved && !did_splice {
+        let strict_compat: int = eia_verify_units_compat_step(
+            c_holo as *const UniversalHologramHeader,
+            client_buf as *const u8,
+            p_holo,
+            prov_buf,
+            false
+        );
+        if strict_compat < 0 {
+            return strict_compat;
+        }
+    }
+
+    var patched: uint = 0;
+    if c_holo.relocs_count > 0 {
+        if !has_c_code || c_code_len == 0 {
+            return -7;
+        }
+        let c_relocs: *const EiaRelocHole = (client_buf + c_holo.relocs_offset) as *const EiaRelocHole;
+        let arch: u64 = eia_detect_arch_from_binary(client_buf as *const u8, final_len);
+        if arch == 65535 || arch == 11 {
+            return -7;
+        }
+        var insn_span: uint = eia_max_code_span(client_buf as *const u8, final_len, c_code_off, c_code_len);
+        if max_target_span > insn_span {
+            insn_span = max_target_span;
+        }
+        let r_res: int = eia_verify_relocs_in_span(
+            c_relocs,
+            c_holo.relocs_count,
+            c_tg as *const EiaTypeGraphEntry,
+            c_tg_cnt,
+            insn_span,
+            arch,
+            c_contracts as *const SymbolContract,
+            c_holo.contracts_count,
+            require_all_resolved
+        );
+        if r_res != 0 {
+            return r_res;
+        }
+        var expected_patch: uint = 0;
+        var ei: uint = 0;
+        while ei < c_holo.relocs_count {
+            let eh: *const EiaRelocHole = ((c_relocs as uint) + (ei * 24)) as *const EiaRelocHole;
+            if eh.patch_kind != EIA_RELOC_CALL32 || require_all_resolved {
+                expected_patch = expected_patch + 1;
+            } else if eia_resolve_call_contract(c_contracts as *const SymbolContract, c_holo.contracts_count, eh.field_or_sym_hash) != (0 as *const SymbolContract) {
+                expected_patch = expected_patch + 1;
+            }
+            ei = ei + 1;
+        }
+        var target_span: uint = max_target_span;
+        if insn_span > target_span {
+            target_span = insn_span;
+        }
+        patched = eia_patch_binary_relocs_span_ex(
+            client_buf + c_code_off,
+            insn_span,
+            target_span,
+            arch,
+            c_relocs,
+            c_holo.relocs_count,
+            c_tg as *const EiaTypeGraphEntry,
+            c_tg_cnt,
+            c_contracts as *const SymbolContract,
+            c_holo.contracts_count,
+            c_holo.reserved0,
+            client_buf as *const u8,
+            final_len,
+            c_code_off
+        );
+        if patched != expected_patch {
+            return -7;
+        }
+    }
+
+    if p_holo.abi_epoch > c_holo.abi_epoch {
+        c_holo.abi_epoch = p_holo.abi_epoch;
+    } else {
+        c_holo.abi_epoch = c_holo.abi_epoch + 1;
+    }
+    if (c_holo.flags & EIA_FLAG_SEALED) != 0 {
+        c_holo.flags = c_holo.flags - EIA_FLAG_SEALED;
+    }
+    var final_code_b3: uint = 0;
+    var sealed_ok: bool = false;
+    if eia_compute_artifact_sealed_digest(client_buf as *const u8, final_len, c_holo as *const UniversalHologramHeader, &mut final_code_b3) {
+        sealed_ok = eia_hologram_seal_tables_with_digest(
+            c_holo,
+            client_buf as *const u8,
+            final_len,
+            true,
+            final_code_b3
+        );
+    } else {
+        sealed_ok = eia_hologram_seal_tables(c_holo, client_buf as *const u8, final_len);
+    }
+    if !sealed_ok {
+        return -8;
+    }
+    let post_ver: int = eia_verify_artifact_bytes(client_buf as *const u8, final_len);
+    if post_ver != 0 {
+        return post_ver;
+    }
+    if out_new_len != (0 as *mut uint) {
+        out_new_len[0] = final_len;
+    }
+    return patched as int;
+}
+
+fn eia_relink_binary_bytes_ex(
+    client_buf: *mut u8,
+    client_len: uint,
+    client_cap: uint,
+    prov_buf: *const u8,
+    prov_len: uint,
+    out_new_len: *mut uint
+) -> int {
+    return eia_relink_binary_bytes_step(client_buf, client_len, client_cap, prov_buf, prov_len, out_new_len, true);
+}
+
+fn eia_relink_binary_bytes(
+    client_buf: *mut u8,
+    client_len: uint,
+    prov_buf: *const u8,
+    prov_len: uint
+) -> int {
+    var dummy_len: uint = client_len;
+    return eia_relink_binary_bytes_ex(client_buf, client_len, client_len, prov_buf, prov_len, &mut dummy_len);
 }

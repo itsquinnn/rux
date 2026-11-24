@@ -1,5 +1,556 @@
+fn driver_print_hex_u64(v: u64) {
+    uses_print("0x");
+    var started: u32 = 0;
+    var shift: i64 = 60;
+    while shift >= 0 {
+        let nibble: u64 = (v >> (shift as u64)) & 15;
+        if nibble != 0 || started != 0 || shift == 0 {
+            started = 1;
+            var buf: [u8; 2];
+            if nibble < 10 {
+                buf[0] = (48 + nibble) as u8;
+            } else {
+                buf[0] = (97 + (nibble - 10)) as u8;
+            }
+            buf[1] = 0;
+            uses_print(&buf[0]);
+        }
+        shift = shift - 4;
+    }
+}
+
+fn driver_print_i64(v: i64) {
+    if v < 0 {
+        uses_print("-");
+        uses_print_u64((0 - v) as u64);
+    } else {
+        uses_print_u64(v as u64);
+    }
+}
+
+fn driver_load_and_verify_eia(
+    path: *u8,
+    out_buf: *mut *mut u8,
+    out_len: *mut u64,
+    out_cap: *mut u64,
+    out_holo_off: *mut u64
+) -> i64 {
+    var buf: *mut u8 = 0 as *mut u8;
+    var cap: u64 = 0;
+    let nread: i64 = sys_read_file_alloc(path, &mut buf, &mut cap);
+    if nread <= 0 {
+        if (buf as i64) > 0 && cap > 0 {
+            uses_free(buf, cap);
+        }
+        uses_print("[EIA ERROR] Failed to read binary: ");
+        uses_println(path);
+        return 1;
+    }
+    var holo_off_i: i64 = 0 - 1;
+    if eia_is_ar_archive(buf as *const u8, nread as u64) {
+        let avres: int = eia_verify_artifact_bytes(buf as *const u8, nread as u64);
+        if avres != 0 {
+            uses_print("[EIA ERROR] Verification failed for ");
+            uses_print(path);
+            uses_print(" (code ");
+            driver_print_i64(avres as i64);
+            uses_println(")");
+            uses_free(buf, cap);
+            return 3;
+        }
+        let m_cnt: uint = eia_ar_count_elf_members(buf as *const u8, nread as u64);
+        if m_cnt == 0 {
+            uses_print("[EIA ERROR] Archive contains no verifiable ELF/Mach-O members: ");
+            uses_println(path);
+            uses_free(buf, cap);
+            return 2;
+        }
+        var mi: uint = 0;
+        while mi < m_cnt {
+            var mo: uint = 0;
+            var ml: uint = 0;
+            if !eia_ar_get_elf_member(buf as *const u8, nread as u64, mi, &mut mo, &mut ml) {
+                uses_free(buf, cap);
+                return 2;
+            }
+            let m_hoff: i64 = eia_locate_hologram_offset((buf + mo) as *const u8, ml);
+            if m_hoff < 0 {
+                uses_print("[EIA ERROR] Missing Universal Hologram header in archive member of: ");
+                uses_println(path);
+                uses_free(buf, cap);
+                return 2;
+            }
+            let m_holo: *const UniversalHologramHeader = ((buf + mo) + (m_hoff as u64)) as *const UniversalHologramHeader;
+            if !eia_epochs_compatible(m_holo.abi_epoch, 1) {
+                uses_print("[EIA ERROR] Incompatible EIA abi_epoch major version in: ");
+                uses_println(path);
+                uses_free(buf, cap);
+                return 9;
+            }
+            if mi == 0 {
+                holo_off_i = (mo + (m_hoff as uint)) as i64;
+            }
+            mi = mi + 1;
+        }
+    } else {
+        holo_off_i = eia_locate_hologram_offset(buf as *const u8, nread as u64);
+        if holo_off_i < 0 {
+            uses_print("[EIA ERROR] Missing Universal Hologram header in: ");
+            uses_println(path);
+            uses_free(buf, cap);
+            return 2;
+        }
+        let vres: int = eia_verify_artifact_bytes(buf as *const u8, nread as u64);
+        if vres != 0 {
+            uses_print("[EIA ERROR] Verification failed for ");
+            uses_print(path);
+            uses_print(" (code ");
+            driver_print_i64(vres as i64);
+            uses_println(")");
+            uses_free(buf, cap);
+            return 3;
+        }
+        let holo_chk: *const UniversalHologramHeader = (buf + (holo_off_i as u64)) as *const UniversalHologramHeader;
+        if !eia_epochs_compatible(holo_chk.abi_epoch, 1) {
+            uses_print("[EIA ERROR] Incompatible EIA abi_epoch major version in: ");
+            uses_println(path);
+            uses_free(buf, cap);
+            return 9;
+        }
+    }
+    out_buf[0] = buf;
+    out_len[0] = nread as u64;
+    out_cap[0] = cap;
+    out_holo_off[0] = holo_off_i as u64;
+    return 0;
+}
+
+fn driver_print_holo_summary(holo: *const UniversalHologramHeader) {
+    uses_print("  abi_epoch: ");
+    uses_print_u64(holo.abi_epoch);
+    uses_println("");
+    uses_print("  contracts: ");
+    uses_print_u64(holo.contracts_count);
+    uses_println("");
+    uses_print("  relocs: ");
+    uses_print_u64(holo.relocs_count);
+    uses_println("");
+    uses_print("  type_graph_entries: ");
+    uses_print_u64(holo.type_graph_size / 24);
+    uses_println("");
+    uses_print("  blake3_root: ");
+    driver_print_hex_u64(holo.blake3_root);
+    uses_println("");
+}
+
+fn driver_cli_eia_check(bin_path: *u8) -> i64 {
+    var buf: *mut u8 = 0 as *mut u8;
+    var nlen: u64 = 0;
+    var bcap: u64 = 0;
+    var holo_off: u64 = 0;
+    let rc: i64 = driver_load_and_verify_eia(bin_path, &mut buf, &mut nlen, &mut bcap, &mut holo_off);
+    if rc != 0 {
+        return rc;
+    }
+    if eia_is_ar_archive(buf as *const u8, nlen) {
+        let m_cnt: uint = eia_ar_count_elf_members(buf as *const u8, nlen);
+        if m_cnt <= 1 {
+            let holo: *const UniversalHologramHeader = (buf + holo_off) as *const UniversalHologramHeader;
+            uses_print("[EIA OK] Verified hologram in: ");
+            uses_println(bin_path);
+            driver_print_holo_summary(holo);
+        } else {
+            uses_print("[EIA OK] Verified hologram archive in: ");
+            uses_println(bin_path);
+            uses_print("  members: ");
+            uses_print_u64(m_cnt as u64);
+            uses_println("");
+            var mi: uint = 0;
+            while mi < m_cnt {
+                var mo: uint = 0;
+                var ml: uint = 0;
+                eia_ar_get_elf_member(buf as *const u8, nlen, mi, &mut mo, &mut ml);
+                let mh: i64 = eia_locate_hologram_offset((buf + mo) as *const u8, ml);
+                let m_holo: *const UniversalHologramHeader = ((buf + mo) + (mh as u64)) as *const UniversalHologramHeader;
+                uses_print("  member[");
+                uses_print_u64(mi as u64);
+                uses_println("]:");
+                driver_print_holo_summary(m_holo);
+                mi = mi + 1;
+            }
+        }
+    } else {
+        let holo: *const UniversalHologramHeader = (buf + holo_off) as *const UniversalHologramHeader;
+        uses_print("[EIA OK] Verified hologram in: ");
+        uses_println(bin_path);
+        driver_print_holo_summary(holo);
+    }
+    uses_free(buf, bcap);
+    return 0;
+}
+
+fn driver_verify_expanded_units(
+    u_ptrs: *mut *const u8,
+    u_holos: *mut *const UniversalHologramHeader,
+    u_is_client: *mut u8,
+    u_cnt: u64,
+    out_links: *mut u64
+) -> i64 {
+    var total_links: u64 = 0;
+    var i: u64 = 0;
+    while i < u_cnt {
+        var j: u64 = i + 1;
+        while j < u_cnt {
+            let lres: int = eia_verify_units_compat_step(
+                u_holos[i],
+                u_ptrs[i],
+                u_holos[j],
+                u_ptrs[j],
+                true
+            );
+            if lres < 0 {
+                return lres as i64;
+            }
+            if u_is_client[i] != 0 || u_is_client[j] != 0 {
+                total_links = total_links + (lres as u64);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Verify all imports (both client and transitive provider imports) are satisfied cleanly.
+    var ui: u64 = 0;
+    while ui < u_cnt {
+        let uh: *const UniversalHologramHeader = u_holos[ui];
+        if uh.contracts_count > 0 {
+            let uc: *const SymbolContract = (u_ptrs[ui] + uh.contracts_offset) as *const SymbolContract;
+            var ci: uint = 0;
+            while ci < uh.contracts_count {
+                let sc: *const SymbolContract = ((uc as uint) + (ci * 48)) as *const SymbolContract;
+                if (sc.flags & EIA_SYM_IMPORT) != 0 {
+                    var found_def: bool = false;
+                    var uj: u64 = 0;
+                    while uj < u_cnt {
+                        let th: *const UniversalHologramHeader = u_holos[uj];
+                        if th.contracts_count > 0 {
+                            let tc: *const SymbolContract = (u_ptrs[uj] + th.contracts_offset) as *const SymbolContract;
+                            let def_sc: *const SymbolContract = eia_find_contract(tc, th.contracts_count, sc.symbol_hash, EIA_SYM_DEFINED);
+                            if def_sc != (0 as *const SymbolContract) {
+                                if !eia_contract_verify_match(sc, def_sc) {
+                                    return 0 - 4;
+                                }
+                                found_def = true;
+                            }
+                        }
+                        uj = uj + 1;
+                    }
+                    if !found_def {
+                        return 0 - 5;
+                    }
+                }
+                ci = ci + 1;
+            }
+        }
+        ui = ui + 1;
+    }
+
+    out_links[0] = total_links;
+    return 0;
+}
+
+fn driver_cli_eia_link_check_multi(client_path: *u8, prov_paths: *mut *u8, prov_count: u64) -> i64 {
+    if prov_count == 0 {
+        uses_println("[EIA LINK ERROR] No provider binaries supplied");
+        return 1;
+    }
+    var c_buf: *mut u8 = 0 as *mut u8;
+    var c_len: u64 = 0;
+    var c_cap: u64 = 0;
+    var c_holo_off: u64 = 0;
+    let c_rc: i64 = driver_load_and_verify_eia(client_path, &mut c_buf, &mut c_len, &mut c_cap, &mut c_holo_off);
+    if c_rc != 0 {
+        return c_rc;
+    }
+
+    let p_bufs: *mut *mut u8 = uses_alloc(prov_count * 8) as *mut *mut u8;
+    let p_lens: *mut u64 = uses_alloc(prov_count * 8) as *mut u64;
+    let p_caps: *mut u64 = uses_alloc(prov_count * 8) as *mut u64;
+    let p_hoffs: *mut u64 = uses_alloc(prov_count * 8) as *mut u64;
+    if (p_bufs as i64) <= 0 || (p_lens as i64) <= 0 || (p_caps as i64) <= 0 || (p_hoffs as i64) <= 0 {
+        if (p_bufs as i64) > 0 { uses_free(p_bufs as *mut u8, prov_count * 8); }
+        if (p_lens as i64) > 0 { uses_free(p_lens as *mut u8, prov_count * 8); }
+        if (p_caps as i64) > 0 { uses_free(p_caps as *mut u8, prov_count * 8); }
+        if (p_hoffs as i64) > 0 { uses_free(p_hoffs as *mut u8, prov_count * 8); }
+        uses_free(c_buf, c_cap);
+        return 2;
+    }
+    var loaded_cnt: u64 = 0;
+    var total_units: u64 = 0;
+    if eia_is_ar_archive(c_buf as *const u8, c_len) {
+        total_units = eia_ar_count_elf_members(c_buf as *const u8, c_len) as u64;
+    } else {
+        total_units = 1;
+    }
+
+    var pi: u64 = 0;
+    while pi < prov_count {
+        var pb: *mut u8 = 0 as *mut u8;
+        var pl: u64 = 0;
+        var pc: u64 = 0;
+        var ph: u64 = 0;
+        let p_rc: i64 = driver_load_and_verify_eia(prov_paths[pi], &mut pb, &mut pl, &mut pc, &mut ph);
+        if p_rc != 0 {
+            var fi: u64 = 0;
+            while fi < loaded_cnt {
+                uses_free(p_bufs[fi], p_caps[fi]);
+                fi = fi + 1;
+            }
+            uses_free(p_bufs as *mut u8, prov_count * 8);
+            uses_free(p_lens as *mut u8, prov_count * 8);
+            uses_free(p_caps as *mut u8, prov_count * 8);
+            uses_free(p_hoffs as *mut u8, prov_count * 8);
+            uses_free(c_buf, c_cap);
+            return p_rc;
+        }
+        p_bufs[pi] = pb;
+        p_lens[pi] = pl;
+        p_caps[pi] = pc;
+        p_hoffs[pi] = ph;
+        loaded_cnt = loaded_cnt + 1;
+        if eia_is_ar_archive(pb as *const u8, pl) {
+            total_units = total_units + (eia_ar_count_elf_members(pb as *const u8, pl) as u64);
+        } else {
+            total_units = total_units + 1;
+        }
+        pi = pi + 1;
+    }
+
+    let u_ptrs: *mut *const u8 = uses_alloc(total_units * 8) as *mut *const u8;
+    let u_holos: *mut *const UniversalHologramHeader = uses_alloc(total_units * 8) as *mut *const UniversalHologramHeader;
+    let u_is_client: *mut u8 = uses_alloc(total_units);
+    var ui: u64 = 0;
+    if (u_ptrs as i64) > 0 && (u_holos as i64) > 0 && (u_is_client as i64) > 0 {
+        if eia_is_ar_archive(c_buf as *const u8, c_len) {
+            let cm_cnt: uint = eia_ar_count_elf_members(c_buf as *const u8, c_len);
+            var cmi: uint = 0;
+            while cmi < cm_cnt {
+                var cmo: uint = 0;
+                var cml: uint = 0;
+                eia_ar_get_elf_member(c_buf as *const u8, c_len, cmi, &mut cmo, &mut cml);
+                let cmh: i64 = eia_locate_hologram_offset((c_buf + cmo) as *const u8, cml);
+                u_ptrs[ui] = (c_buf + cmo) as *const u8;
+                u_holos[ui] = ((c_buf + cmo) + (cmh as u64)) as *const UniversalHologramHeader;
+                u_is_client[ui] = 1;
+                ui = ui + 1;
+                cmi = cmi + 1;
+            }
+        } else {
+            u_ptrs[ui] = c_buf as *const u8;
+            u_holos[ui] = (c_buf + c_holo_off) as *const UniversalHologramHeader;
+            u_is_client[ui] = 1;
+            ui = ui + 1;
+        }
+        pi = 0;
+        while pi < loaded_cnt {
+            let pb2: *mut u8 = p_bufs[pi];
+            let pl2: u64 = p_lens[pi];
+            if eia_is_ar_archive(pb2 as *const u8, pl2) {
+                let pm_cnt: uint = eia_ar_count_elf_members(pb2 as *const u8, pl2);
+                var pmi: uint = 0;
+                while pmi < pm_cnt {
+                    var pmo: uint = 0;
+                    var pml: uint = 0;
+                    eia_ar_get_elf_member(pb2 as *const u8, pl2, pmi, &mut pmo, &mut pml);
+                    let pmh: i64 = eia_locate_hologram_offset((pb2 + pmo) as *const u8, pml);
+                    u_ptrs[ui] = (pb2 + pmo) as *const u8;
+                    u_holos[ui] = ((pb2 + pmo) + (pmh as u64)) as *const UniversalHologramHeader;
+                    u_is_client[ui] = 0;
+                    ui = ui + 1;
+                    pmi = pmi + 1;
+                }
+            } else {
+                u_ptrs[ui] = pb2 as *const u8;
+                u_holos[ui] = (pb2 + p_hoffs[pi]) as *const UniversalHologramHeader;
+                u_is_client[ui] = 0;
+                ui = ui + 1;
+            }
+            pi = pi + 1;
+        }
+    }
+
+    var total_links: u64 = 0;
+    var check_res: i64 = 0 - 1;
+    if ui == total_units && total_units >= 2 {
+        check_res = driver_verify_expanded_units(u_ptrs, u_holos, u_is_client, ui, &mut total_links);
+    }
+
+    if (u_ptrs as i64) > 0 { uses_free(u_ptrs as *mut u8, total_units * 8); }
+    if (u_holos as i64) > 0 { uses_free(u_holos as *mut u8, total_units * 8); }
+    if (u_is_client as i64) > 0 { uses_free(u_is_client, total_units); }
+    var fi2: u64 = 0;
+    while fi2 < loaded_cnt {
+        uses_free(p_bufs[fi2], p_caps[fi2]);
+        fi2 = fi2 + 1;
+    }
+    uses_free(p_bufs as *mut u8, prov_count * 8);
+    uses_free(p_lens as *mut u8, prov_count * 8);
+    uses_free(p_caps as *mut u8, prov_count * 8);
+    uses_free(p_hoffs as *mut u8, prov_count * 8);
+    uses_free(c_buf, c_cap);
+
+    if check_res < 0 {
+        uses_print("[EIA LINK ERROR] Cross-unit contract check failed (code ");
+        driver_print_i64(check_res);
+        uses_println(")");
+        return 4;
+    }
+    uses_print("[EIA LINK OK] Verified ");
+    uses_print_u64(total_links);
+    uses_print(" cross-unit symbol contract(s)");
+    uses_println("");
+    return 0;
+}
+
+fn driver_cli_eia_link_check(client_path: *u8, provider_path: *u8) -> i64 {
+    var single: [*u8; 1];
+    single[0] = provider_path;
+    return driver_cli_eia_link_check_multi(client_path, &mut single[0], 1);
+}
+
+fn driver_ensure_buf_cap(buf_ptr: *mut *mut u8, cur_cap: *mut u64, copy_len: u64, need_cap: u64) -> bool {
+    if cur_cap[0] >= need_cap {
+        return true;
+    }
+    let aligned: u64 = ((need_cap + 4095) / 4096) * 4096;
+    let nbuf: *mut u8 = uses_alloc(aligned);
+    if (nbuf as i64) <= 0 {
+        return false;
+    }
+    let obuf: *mut u8 = buf_ptr[0];
+    var ci: u64 = 0;
+    while ci < copy_len {
+        nbuf[ci] = obuf[ci];
+        ci = ci + 1;
+    }
+    uses_free(obuf, cur_cap[0]);
+    buf_ptr[0] = nbuf;
+    cur_cap[0] = aligned;
+    return true;
+}
+
+fn driver_cli_eia_relink_multi(client_path: *u8, prov_paths: *mut *u8, prov_count: u64, out_path: *u8) -> i64 {
+    if prov_count == 0 {
+        uses_println("[EIA RELINK ERROR] No provider binaries supplied");
+        return 1;
+    }
+    var c_buf: *mut u8 = 0 as *mut u8;
+    var c_len: u64 = 0;
+    var c_cap: u64 = 0;
+    var c_holo_off: u64 = 0;
+    let c_rc: i64 = driver_load_and_verify_eia(client_path, &mut c_buf, &mut c_len, &mut c_cap, &mut c_holo_off);
+    if c_rc != 0 {
+        return c_rc;
+    }
+    if eia_is_ar_archive(c_buf as *const u8, c_len) {
+        uses_println("[EIA RELINK ERROR] Client binary cannot be a static .a archive");
+        uses_free(c_buf, c_cap);
+        return 2;
+    }
+    var total_patched: u64 = 0;
+    var pi: u64 = 0;
+    while pi < prov_count {
+        var p_buf: *mut u8 = 0 as *mut u8;
+        var p_len: u64 = 0;
+        var p_cap: u64 = 0;
+        var p_holo_off: u64 = 0;
+        let p_rc: i64 = driver_load_and_verify_eia(prov_paths[pi], &mut p_buf, &mut p_len, &mut p_cap, &mut p_holo_off);
+        if p_rc != 0 {
+            uses_free(c_buf, c_cap);
+            return p_rc;
+        }
+        let need_cap: u64 = c_len + p_len + 4194304;
+        if !driver_ensure_buf_cap(&mut c_buf, &mut c_cap, c_len, need_cap) {
+            uses_free(p_buf, p_cap);
+            uses_free(c_buf, c_cap);
+            uses_println("[EIA RELINK ERROR] OOM expanding client splice buffer");
+            return 2;
+        }
+        var out_len: uint = c_len as uint;
+        let is_last: bool = (pi + 1) == prov_count;
+        let rel_res: int = eia_relink_binary_bytes_step(
+            c_buf,
+            c_len as uint,
+            c_cap as uint,
+            p_buf as *const u8,
+            p_len as uint,
+            &mut out_len,
+            is_last
+        );
+        uses_free(p_buf, p_cap);
+        if rel_res < 0 {
+            uses_free(c_buf, c_cap);
+            uses_print("[EIA RELINK ERROR] Relinking failed (code ");
+            driver_print_i64(rel_res as i64);
+            uses_println(")");
+            return 4;
+        }
+        c_len = out_len as u64;
+        total_patched = rel_res as u64;
+        pi = pi + 1;
+    }
+    let wr: i64 = acrq_file_write_bytes(out_path, c_buf, c_len, 0);
+    if wr != (c_len as i64) {
+        uses_free(c_buf, c_cap);
+        uses_print("[EIA RELINK ERROR] Failed to write complete output: ");
+        uses_println(out_path);
+        return 5;
+    }
+    let final_hoff: i64 = eia_locate_hologram_offset(c_buf as *const u8, c_len);
+    if final_hoff < 0 {
+        uses_free(c_buf, c_cap);
+        uses_println("[EIA RELINK ERROR] Relinked binary missing hologram header");
+        return 5;
+    }
+    let holo: *const UniversalHologramHeader = (c_buf + (final_hoff as u64)) as *const UniversalHologramHeader;
+    uses_print("[EIA RELINK OK] Relinked: ");
+    uses_println(out_path);
+    uses_print("  patched_relocs: ");
+    uses_print_u64(total_patched);
+    uses_println("");
+    uses_print("  abi_epoch: ");
+    uses_print_u64(holo.abi_epoch);
+    uses_println("");
+    uses_print("  blake3_root: ");
+    driver_print_hex_u64(holo.blake3_root);
+    uses_println("");
+    uses_free(c_buf, c_cap);
+    return 0;
+}
+
+fn driver_cli_eia_relink(client_path: *u8, provider_path: *u8, out_path: *u8) -> i64 {
+    var single: [*u8; 1];
+    single[0] = provider_path;
+    return driver_cli_eia_relink_multi(client_path, &mut single[0], 1, out_path);
+}
+
+fn driver_apply_target(tv: *u8, ta_ptr: *mut u64, fk_ptr: *mut u32) -> u32 {
+    if str_eq(tv, "linux") == 1 || str_eq(tv, "x86_64") == 1 || str_eq(tv, "x86_64-linux") == 1 { ta_ptr[0] = 0; fk_ptr[0] = 0; return 1; }
+    if str_eq(tv, "arm64-baremetal") == 1 { ta_ptr[0] = 8; fk_ptr[0] = 0; return 1; }
+    if str_eq(tv, "arm64") == 1 || str_eq(tv, "linux-arm64") == 1 || str_eq(tv, "android") == 1 || str_eq(tv, "android-arm64") == 1 { ta_ptr[0] = 1; fk_ptr[0] = 0; return 1; }
+    if str_eq(tv, "riscv64") == 1 || str_eq(tv, "linux-riscv64") == 1 { ta_ptr[0] = 2; fk_ptr[0] = 0; return 1; }
+    if str_eq(tv, "uefi") == 1 { ta_ptr[0] = 4; fk_ptr[0] = 3; return 1; }
+    if str_eq(tv, "baremetal") == 1 || str_eq(tv, "multiboot") == 1 { ta_ptr[0] = 3; fk_ptr[0] = 0; return 1; }
+    if str_eq(tv, "opensbi") == 1 { ta_ptr[0] = 9; fk_ptr[0] = 0; return 1; }
+    if str_eq(tv, "win64") == 1 || str_eq(tv, "windows") == 1 || str_eq(tv, "x86_64-windows") == 1 { ta_ptr[0] = 6; fk_ptr[0] = 1; return 1; }
+    if str_eq(tv, "macos") == 1 || str_eq(tv, "darwin") == 1 || str_eq(tv, "macos-x64") == 1 || str_eq(tv, "x86_64-macos") == 1 { ta_ptr[0] = 7; fk_ptr[0] = 2; return 1; }
+    if str_eq(tv, "macos-arm64") == 1 || str_eq(tv, "arm64-macos") == 1 || str_eq(tv, "darwin-arm64") == 1 || str_eq(tv, "arm64-darwin") == 1 || str_eq(tv, "apple-silicon") == 1 || str_eq(tv, "ios") == 1 || str_eq(tv, "ios-arm64") == 1 { ta_ptr[0] = 10; fk_ptr[0] = 2; return 1; }
+    if str_eq(tv, "wasm") == 1 || str_eq(tv, "wasm32") == 1 || str_eq(tv, "wasm64") == 1 { ta_ptr[0] = 11; fk_ptr[0] = 4; return 1; }
+    return 0;
+}
+
 fn print_rux_help() {
-    uses_println("Rux Programming Language Compiler & Runtime v1.0.0");
+    uses_println("Rux Programming Language Compiler & Runtime v1.1.0");
     uses_println("Usage:");
     uses_println("  rux <file.rx>               Execute a Rux program directly");
     uses_println("  rux build <file.rx> -o out  Compile to a standalone native binary");
@@ -11,6 +562,10 @@ fn print_rux_help() {
     uses_println("  rux transpile <file.rx>     Transpile Rux source to portable ISO C99 (-o out.c)");
     uses_println("  rux test                    Run the test suite");
     uses_println("  rux verify                  Run 5-Gate compiler & hardware verification");
+    uses_println("  rux eia-check <bin>         Verify embedded EIA hologram, BLAKE3 root, & relocs");
+    uses_println("  rux eia-link-check <c> <p>  Verify cross-unit EIA SymbolContract compatibility");
+    uses_println("  rux eia-relink <c> <p> -o o Relink client binary against provider EIA graph");
+    uses_println("  rux eia-run <bin>           Verify EIA hologram and execute binary in-process");
     uses_println("Options & Targets:");
     uses_println("  --mode=auto|aot|interp|vm|jit|transpile-c|freestanding   --trace-mode");
     uses_println("  --target=linux|win64|macos|macos-arm64|arm64|riscv64|uefi|baremetal|opensbi|wasm");
@@ -41,6 +596,10 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
     var trace_mode: u32 = 0;
     var has_inline_code: u32 = 0;
     var inline_code: *u8 = "";
+    var explicit_target: u32 = 0;
+    var has_explicit_out: u32 = 0;
+    var wants_obj: u32 = 0;
+    var wants_shared: u32 = 0;
 
     if argc <= 1 {
         print_rux_help();
@@ -57,7 +616,20 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
             return 0;
         }
         if str_eq(arg, "version") == 1 || str_eq(arg, "--version") == 1 || str_eq(arg, "-v") == 1 || str_eq(arg, "-V") == 1 {
-            uses_println("Rux Compiler v1.0.0 (x86_64-linux) [Self-Hosted Native]");
+            let host_a: u64 = syscall(998, 0) as u64;
+            if host_a == 6 || syscall(999, 0) == 0 {
+                uses_println("Rux Compiler v1.1.0 (x86_64-windows) [Self-Hosted Native]");
+            } else if host_a == 1 {
+                uses_println("Rux Compiler v1.1.0 (aarch64-linux) [Self-Hosted Native]");
+            } else if host_a == 2 {
+                uses_println("Rux Compiler v1.1.0 (riscv64-linux) [Self-Hosted Native]");
+            } else if host_a == 7 {
+                uses_println("Rux Compiler v1.1.0 (x86_64-macos) [Self-Hosted Native]");
+            } else if host_a == 10 {
+                uses_println("Rux Compiler v1.1.0 (aarch64-macos) [Self-Hosted Native]");
+            } else {
+                uses_println("Rux Compiler v1.1.0 (x86_64-linux) [Self-Hosted Native]");
+            }
             return 0;
         }
 
@@ -171,10 +743,60 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
                 let bin_target: *u8 = argv[arg_i + 1];
                 uses_print("[runner] Executing binary: ");
                 uses_println(bin_target);
-                let code: i64 = iphee_exec_binary(bin_target, 16777216);
+                let code: i64 = iphee_exec_binary(bin_target, 0);
                 return code;
             }
             uses_println("Error: eia-run requires a binary path argument");
+            return 1;
+        }
+        if str_eq(arg, "eia-check") == 1 {
+            if (arg_i + 1) < argc {
+                return driver_cli_eia_check(argv[arg_i + 1]);
+            }
+            uses_println("Error: eia-check requires a binary path argument");
+            return 1;
+        }
+        if str_eq(arg, "eia-link-check") == 1 {
+            if (arg_i + 2) < argc {
+                let prov_cnt: u64 = argc - (arg_i + 2);
+                return driver_cli_eia_link_check_multi(argv[arg_i + 1], &mut argv[arg_i + 2], prov_cnt);
+            }
+            uses_println("Error: eia-link-check requires <client_bin> <provider_bin> [provider2 ...]");
+            return 1;
+        }
+        if str_eq(arg, "eia-relink") == 1 {
+            let max_args: u64 = argc;
+            let rl_inputs: *mut *u8 = uses_alloc(max_args * 8) as *mut *u8;
+            if (rl_inputs as i64) <= 0 {
+                return 2;
+            }
+            var rl_in_cnt: u64 = 0;
+            var rl_out: *u8 = 0 as *u8;
+            var saw_o: u64 = 0;
+            var rk: u64 = arg_i + 1;
+            while rk < argc {
+                let rarg: *u8 = argv[rk];
+                if (str_eq(rarg, "-o") == 1 || str_eq(rarg, "--output") == 1) && (rk + 1) < argc {
+                    rk = rk + 1;
+                    rl_out = argv[rk];
+                    saw_o = 1;
+                } else {
+                    rl_inputs[rl_in_cnt] = rarg;
+                    rl_in_cnt = rl_in_cnt + 1;
+                }
+                rk = rk + 1;
+            }
+            if saw_o == 0 && rl_in_cnt >= 3 {
+                rl_in_cnt = rl_in_cnt - 1;
+                rl_out = rl_inputs[rl_in_cnt];
+            }
+            if rl_in_cnt >= 2 && (rl_out as u64) != 0 {
+                let rl_res: i64 = driver_cli_eia_relink_multi(rl_inputs[0], &mut rl_inputs[1], rl_in_cnt - 1, rl_out);
+                uses_free(rl_inputs as *mut u8, max_args * 8);
+                return rl_res;
+            }
+            uses_free(rl_inputs as *mut u8, max_args * 8);
+            uses_println("Error: eia-relink requires <client_bin> <provider_bin> [provider2 ...] -o <out_bin>");
             return 1;
         }
 
@@ -192,6 +814,9 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
             inline_code = argv[arg_i];
             has_inline_code = 1;
             is_run_mode = 1;
+            if has_explicit_out == 0 {
+                out_path = "./.rux_exec";
+            }
             in_path_idx = arg_i;
             is_handled = 1;
         }
@@ -226,23 +851,26 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
             uses_free(chk_b, 64);
             is_handled = 1;
         }
-        if str_eq(arg, "-c") == 1 || str_eq(arg, "-shared") == 1 {
+        if str_eq(arg, "-c") == 1 {
+            wants_obj = 1;
             has_build_flag = 1;
             is_handled = 1;
         }
-        if str_eq(arg, "-target") == 1 && (arg_i + 1) < argc {
+        if str_eq(arg, "-shared") == 1 {
+            wants_shared = 1;
             has_build_flag = 1;
+            is_handled = 1;
+        }
+        if (str_eq(arg, "-target") == 1 || str_eq(arg, "--target") == 1) && (arg_i + 1) < argc {
+            has_build_flag = 1;
+            explicit_target = 1;
             arg_i = arg_i + 1;
             let tv: *u8 = argv[arg_i];
-            if str_eq(tv, "linux") == 1 || str_eq(tv, "x86_64") == 1 { target_arch = 0; format_kind = 0; }
-            if str_eq(tv, "arm64") == 1 || str_eq(tv, "linux-arm64") == 1 { target_arch = 1; }
-            if str_eq(tv, "riscv64") == 1 { target_arch = 2; }
-            if str_eq(tv, "uefi") == 1 { target_arch = 4; format_kind = 3; }
-            if str_eq(tv, "win64") == 1 || str_eq(tv, "windows") == 1 { target_arch = 6; format_kind = 1; }
-            if str_eq(tv, "macos") == 1 || str_eq(tv, "darwin") == 1 { target_arch = 7; format_kind = 2; }
-            if str_eq(tv, "macos-arm64") == 1 || str_eq(tv, "ios") == 1 || str_eq(tv, "ios-arm64") == 1 { target_arch = 10; format_kind = 2; }
-            if str_eq(tv, "android") == 1 || str_eq(tv, "android-arm64") == 1 { target_arch = 1; format_kind = 0; }
-            if str_eq(tv, "wasm") == 1 || str_eq(tv, "wasm32") == 1 || str_eq(tv, "wasm64") == 1 { target_arch = 11; format_kind = 4; }
+            if driver_apply_target(tv, &mut target_arch, &mut format_kind) == 0 {
+                uses_print("[CLI ERROR] Unknown target: ");
+                uses_println(tv);
+                return 1;
+            }
             is_handled = 1;
         }
 
@@ -251,6 +879,7 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
             arg_i = arg_i + 1;
             if arg_i < argc {
                 out_path = argv[arg_i];
+                has_explicit_out = 1;
             }
             is_handled = 1;
         }
@@ -287,12 +916,31 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
             if str_eq(arg, "--safe") == 1 || str_eq(arg, "--strict-safety") == 1 { strict_safety = 1; is_handled = 1; }
             if str_eq(arg, "--arll-force-bridge") == 1 { force_bridge = 1; has_build_flag = 1; is_handled = 1; }
             if str_eq(arg, "--freestanding") == 1 { is_freestanding = 1; has_build_flag = 1; is_handled = 1; }
-            if str_eq(arg, "--upbp") == 1 { is_upbp = 1; format_kind = 0; has_build_flag = 1; is_handled = 1; }
-            if str_eq(arg, "--elf") == 1 { is_upbp = 0; format_kind = 0; has_build_flag = 1; is_handled = 1; }
-            if str_eq(arg, "--pe") == 1 { format_kind = 1; if target_arch == 0 { target_arch = 6; } has_build_flag = 1; is_handled = 1; }
-            if str_eq(arg, "--macho") == 1 { format_kind = 2; if target_arch == 0 { target_arch = 7; } has_build_flag = 1; is_handled = 1; }
-            if str_eq(arg, "--uefi") == 1 { format_kind = 3; target_arch = 4; has_build_flag = 1; is_handled = 1; }
-            if str_eq(arg, "--wasm") == 1 { format_kind = 4; target_arch = 11; has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--upbp") == 1 {
+                is_upbp = 1;
+                format_kind = 0;
+                if target_arch == 4 || target_arch == 6 || target_arch == 7 || target_arch == 10 || target_arch == 11 { target_arch = 0; }
+                explicit_target = 1; has_build_flag = 1; is_handled = 1;
+            }
+            if str_eq(arg, "--elf") == 1 {
+                is_upbp = 0;
+                format_kind = 0;
+                if target_arch == 4 || target_arch == 6 || target_arch == 7 || target_arch == 10 || target_arch == 11 { target_arch = 0; }
+                explicit_target = 1; has_build_flag = 1; is_handled = 1;
+            }
+            if str_eq(arg, "--pe") == 1 {
+                format_kind = 1;
+                if target_arch == 0 || target_arch == 4 || target_arch == 7 || target_arch == 10 || target_arch == 11 { target_arch = 6; }
+                explicit_target = 1; has_build_flag = 1; is_handled = 1;
+            }
+            if str_eq(arg, "--macho") == 1 {
+                format_kind = 2;
+                if target_arch == 1 { target_arch = 10; }
+                else if target_arch == 0 || target_arch == 4 || target_arch == 6 || target_arch == 11 { target_arch = 7; }
+                explicit_target = 1; has_build_flag = 1; is_handled = 1;
+            }
+            if str_eq(arg, "--uefi") == 1 { format_kind = 3; target_arch = 4; explicit_target = 1; has_build_flag = 1; is_handled = 1; }
+            if str_eq(arg, "--wasm") == 1 { format_kind = 4; target_arch = 11; explicit_target = 1; has_build_flag = 1; is_handled = 1; }
             if str_eq(arg, "--trace-mode") == 1 { trace_mode = 1; is_handled = 1; }
             if str_starts_with(arg, "--shadow=", 9) == 1 {
                 let sval: *u8 = arg + 9;
@@ -316,31 +964,41 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
 
             if str_starts_with(arg, "--format=", 9) == 1 {
                 has_build_flag = 1;
+                explicit_target = 1;
                 is_handled = 1;
                 let fval: *u8 = arg + 9;
-                if str_eq(fval, "pe") == 1 || str_eq(fval, "coff") == 1 { format_kind = 1; if target_arch == 0 { target_arch = 6; } }
-                if str_eq(fval, "macho") == 1 { format_kind = 2; if target_arch == 0 { target_arch = 7; } }
-                if str_eq(fval, "uefi") == 1 { format_kind = 3; target_arch = 4; }
-                if str_eq(fval, "wasm") == 1 { format_kind = 4; target_arch = 11; }
-                if str_eq(fval, "upbp") == 1 { format_kind = 0; is_upbp = 1; }
-                if str_eq(fval, "elf") == 1 { format_kind = 0; is_upbp = 0; }
+                if str_eq(fval, "pe") == 1 || str_eq(fval, "coff") == 1 {
+                    format_kind = 1;
+                    if target_arch == 0 || target_arch == 4 || target_arch == 7 || target_arch == 10 || target_arch == 11 { target_arch = 6; }
+                } else if str_eq(fval, "macho") == 1 {
+                    format_kind = 2;
+                    if target_arch == 1 { target_arch = 10; }
+                    else if target_arch == 0 || target_arch == 4 || target_arch == 6 || target_arch == 11 { target_arch = 7; }
+                } else if str_eq(fval, "uefi") == 1 { format_kind = 3; target_arch = 4; }
+                else if str_eq(fval, "wasm") == 1 { format_kind = 4; target_arch = 11; }
+                else if str_eq(fval, "upbp") == 1 {
+                    format_kind = 0; is_upbp = 1;
+                    if target_arch == 4 || target_arch == 6 || target_arch == 7 || target_arch == 10 || target_arch == 11 { target_arch = 0; }
+                } else if str_eq(fval, "elf") == 1 {
+                    format_kind = 0; is_upbp = 0;
+                    if target_arch == 4 || target_arch == 6 || target_arch == 7 || target_arch == 10 || target_arch == 11 { target_arch = 0; }
+                } else {
+                    uses_print("[CLI ERROR] Unknown format: ");
+                    uses_println(fval);
+                    return 1;
+                }
             }
 
             if str_starts_with(arg, "--target=", 9) == 1 {
                 has_build_flag = 1;
+                explicit_target = 1;
                 is_handled = 1;
                 let targ_val: *u8 = arg + 9;
-                if str_eq(targ_val, "linux") == 1 || str_eq(targ_val, "x86_64") == 1 { target_arch = 0; format_kind = 0; }
-                if str_eq(targ_val, "arm64-baremetal") == 1 { target_arch = 8; }
-                if str_eq(targ_val, "arm64") == 1 || str_eq(targ_val, "linux-arm64") == 1 || str_eq(targ_val, "android") == 1 || str_eq(targ_val, "android-arm64") == 1 { target_arch = 1; format_kind = 0; }
-                if str_eq(targ_val, "riscv64") == 1 { target_arch = 2; }
-                if str_eq(targ_val, "uefi") == 1 { target_arch = 4; format_kind = 3; }
-                if str_eq(targ_val, "baremetal") == 1 || str_eq(targ_val, "multiboot") == 1 { target_arch = 3; }
-                if str_eq(targ_val, "opensbi") == 1 { target_arch = 9; }
-                if str_eq(targ_val, "win64") == 1 || str_eq(targ_val, "windows") == 1 { target_arch = 6; format_kind = 1; }
-                if str_eq(targ_val, "macos") == 1 || str_eq(targ_val, "darwin") == 1 || str_eq(targ_val, "macos-x64") == 1 { target_arch = 7; format_kind = 2; }
-                if str_eq(targ_val, "macos-arm64") == 1 || str_eq(targ_val, "darwin-arm64") == 1 || str_eq(targ_val, "apple-silicon") == 1 || str_eq(targ_val, "ios") == 1 || str_eq(targ_val, "ios-arm64") == 1 { target_arch = 10; format_kind = 2; }
-                if str_eq(targ_val, "wasm") == 1 || str_eq(targ_val, "wasm32") == 1 || str_eq(targ_val, "wasm64") == 1 { target_arch = 11; format_kind = 4; }
+                if driver_apply_target(targ_val, &mut target_arch, &mut format_kind) == 0 {
+                    uses_print("[CLI ERROR] Unknown target: ");
+                    uses_println(targ_val);
+                    return 1;
+                }
             }
         }
 
@@ -349,6 +1007,15 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
             in_path_idx = arg_i;
         }
         arg_i = arg_i + 1;
+    }
+
+    if wants_obj == 1 && wants_shared == 1 {
+        uses_println("[CLI ERROR] Cannot combine -c and -shared");
+        return 1;
+    }
+    if has_explicit_out == 0 {
+        if wants_obj == 1 { out_path = "main.o"; }
+        else if wants_shared == 1 { out_path = "libmain.so"; }
     }
 
     if req_mode == 6 {
@@ -364,7 +1031,7 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
         req_mode = 7;
     }
 
-    if format_kind == 0 && target_arch == 0 {
+    if explicit_target == 0 && format_kind == 0 && target_arch == 0 {
         if str_ends_with(out_path, ".exe") == 1 {
             format_kind = 1;
             target_arch = 6;
@@ -385,6 +1052,27 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
             format_kind = 0;
             target_arch = 0;
             uses_println("[rux-substrate] Target inferred from extension: Linux ELF64 (.elf)");
+        } else {
+            let host_a: u64 = syscall(998, 0) as u64;
+            if host_a == 6 || syscall(999, 0) == 0 {
+                format_kind = 1;
+                target_arch = 6;
+                if str_eq(out_path, "main") == 1 {
+                    out_path = "main.exe";
+                }
+            } else if host_a == 1 {
+                format_kind = 0;
+                target_arch = 1;
+            } else if host_a == 2 {
+                format_kind = 0;
+                target_arch = 2;
+            } else if host_a == 7 {
+                format_kind = 2;
+                target_arch = 7;
+            } else if host_a == 10 {
+                format_kind = 2;
+                target_arch = 10;
+            }
         }
     }
 
@@ -491,10 +1179,13 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
 
     cg.relocs = arena_alloc(&mut cg_arena, 1572864) as *mut EiaRelocHole;
     cg.reloc_count = 0;
+    cg.reloc_cap = 1572864 / 24;
     cg.type_graph = arena_alloc(&mut cg_arena, 1048576) as *mut EiaTypeGraphEntry;
     cg.tg_count = 0;
+    cg.tg_cap = 1048576 / 24;
     cg.contracts = arena_alloc(&mut cg_arena, 1048576) as *mut SymbolContract;
     cg.contract_count = 0;
+    cg.contract_cap = 1048576 / 48;
     cg.call_main_hole = 0;
     cg.force_bridge = force_bridge as u64;
     cg.permute_seed = permute_seed;
@@ -538,6 +1229,16 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
     cg.sym_checks = arena_alloc(&mut cg_arena, 393216) as *mut ConstEntry;
     cg.sym_check_count = 0;
     cg.skip_ir_opt = 0;
+    cg.reg_hashes = 0 as *mut u64;
+    cg.reg_allocs = 0 as *mut u8;
+    cg.reg_var_count = 0;
+    cg.reg_var_cap = 0;
+    cg.fn_callee_mask = 0;
+    cg.fn_callee_save_base = 0;
+    cg.fn_save_holes = 0 as *mut u64;
+    cg.fn_save_hole_count = 0;
+    cg.fn_save_hole_cap = 0;
+    cg.cur_fn_ast = 0 as *mut AstNode;
     if req_mode == 4 || req_mode == 5 || req_mode == 7 {
         cg.skip_ir_opt = 1;
     }
@@ -548,12 +1249,18 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
 
     var pending_cconv: u32 = 0;
     var pending_derive_copy: u32 = 0;
+    var pending_pub: u64 = 0;
     var top_head: *mut AstNode = 0 as *mut AstNode;
     var top_tail: *mut AstNode = 0 as *mut AstNode;
     var explicit_main: *mut AstNode = 0 as *mut AstNode;
     var main_had_lambdas: u32 = 0;
     while parser.cur_tok.kind != 0 {
-        while parser.cur_tok.kind == 90 || parser.cur_tok.kind == 106 { lex_next_token(parser.lex, &mut parser.cur_tok); }
+        while parser.cur_tok.kind == 90 || parser.cur_tok.kind == 106 {
+            if parser.cur_tok.kind == 90 && (parser.cur_tok.hash == 8643359970820732452 || parser.cur_tok.hash == 17127984979764453235) {
+                pending_pub = 1;
+            }
+            lex_next_token(parser.lex, &mut parser.cur_tok);
+        }
         if parser.cur_tok.kind == 124 || parser.cur_tok.kind == 92 || parser.cur_tok.kind == 142 || (parser.cur_tok.kind == 12 && parser.cur_tok.hash == 7334518323283222324) {
             var lex_peek: Lexer = *parser.lex;
             var next_preview: Token;
@@ -595,37 +1302,90 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
                 if parser.cur_tok.kind == 65 { parser_expect(&mut parser, 65); }
             }
         } else if parser.cur_tok.kind == 141 {
+            var cur_ext_cconv: u32 = pending_cconv;
+            pending_cconv = 0;
             parser_expect(&mut parser, 141);
-            if parser.cur_tok.kind == 3 { lex_next_token(parser.lex, &mut parser.cur_tok); }
+            if parser.cur_tok.kind == 3 {
+                let ab_ptr: *u8 = parser.cur_tok.start;
+                let ab_len: u32 = parser.cur_tok.len;
+                var ai: u32 = 0;
+                while (ai + 5) <= ab_len { if ab_ptr[ai] == 119 && ab_ptr[ai+1] == 105 && ab_ptr[ai+2] == 110 && ab_ptr[ai+3] == 54 && ab_ptr[ai+4] == 52 { cur_ext_cconv = 1; } ai = ai + 1; }
+                ai = 0;
+                while (ai + 4) <= ab_len { if ab_ptr[ai] == 115 && ab_ptr[ai+1] == 121 && ab_ptr[ai+2] == 115 && ab_ptr[ai+3] == 118 { cur_ext_cconv = 0; } ai = ai + 1; }
+                ai = 0;
+                while (ai + 3) <= ab_len { if ab_ptr[ai] == 101 && ab_ptr[ai+1] == 105 && ab_ptr[ai+2] == 97 { cur_ext_cconv = 2; } ai = ai + 1; }
+                lex_next_token(parser.lex, &mut parser.cur_tok);
+            }
             if parser.cur_tok.kind == 62 {
                 parser_expect(&mut parser, 62);
                 while parser.cur_tok.kind != 63 && parser.cur_tok.kind != 0 {
-                    while parser.cur_tok.kind == 90 || parser.cur_tok.kind == 92 { lex_next_token(parser.lex, &mut parser.cur_tok); }
+                    var ext_pub: u64 = pending_pub;
+                    while parser.cur_tok.kind == 90 || parser.cur_tok.kind == 92 {
+                        if parser.cur_tok.kind == 90 && (parser.cur_tok.hash == 8643359970820732452 || parser.cur_tok.hash == 17127984979764453235) {
+                            ext_pub = 1;
+                        }
+                        lex_next_token(parser.lex, &mut parser.cur_tok);
+                    }
                     if parser.cur_tok.kind == 11 {
-                        let efn: *mut AstNode = parse_fn(&mut parser, 0);
-                        if efn != (0 as *mut AstNode) { compile_fn(&mut cg, efn); }
+                        let efn: *mut AstNode = parse_fn(&mut parser, cur_ext_cconv);
+                        if efn != (0 as *mut AstNode) {
+                            if ext_pub == 1 && efn.child3 != (0 as *mut AstNode) {
+                                efn.child3.id = efn.child3.id | 1;
+                            }
+                            if efn.child1 != (0 as *mut AstNode) {
+                                compile_fn(&mut cg, efn);
+                            } else {
+                                register_fn_contract_ex(&mut cg, efn, 0, 1);
+                            }
+                        }
                     } else { lex_next_token(parser.lex, &mut parser.cur_tok); }
                 }
                 parser_expect(&mut parser, 63);
+            } else if parser.cur_tok.kind == 11 || parser.cur_tok.kind == 90 || parser.cur_tok.kind == 92 {
+                let efn: *mut AstNode = parse_fn(&mut parser, cur_ext_cconv);
+                if efn != (0 as *mut AstNode) {
+                    if pending_pub == 1 && efn.child3 != (0 as *mut AstNode) {
+                        efn.child3.id = efn.child3.id | 1;
+                    }
+                    if efn.child1 != (0 as *mut AstNode) {
+                        compile_fn(&mut cg, efn);
+                    } else {
+                        register_fn_contract_ex(&mut cg, efn, 0, 1);
+                    }
+                }
             }
+            pending_pub = 0;
         } else if parser.cur_tok.kind == 80 {
+            pending_pub = 0;
             parse_type_alias(&mut parser);
         } else if parser.cur_tok.kind == 100 {
+            pending_pub = 0;
             parse_trait(&mut parser);
         } else if parser.cur_tok.kind == 101 {
+            pending_pub = 0;
             parse_impl(&mut parser, &mut cg);
+        } else if parser.cur_tok.kind == 1 && parser.cur_tok.hash == 578810516418793187 {
+            pending_pub = 0;
+            parse_mod(&mut parser, &mut cg);
+        } else if parser.cur_tok.kind == 1 && (parser.cur_tok.hash == 5499651717430306356 || parser.cur_tok.hash == 17641444750853282548) {
+            pending_pub = 0;
+            parse_use_decl(&mut parser);
         } else if parser.cur_tok.kind == 81 {
+            pending_pub = 0;
             parse_enum(&mut parser);
         } else if parser.cur_tok.kind == 144 {
+            pending_pub = 0;
             parser_expect(&mut parser, 144);
             let eff_h: u64 = parser.cur_tok.hash;
             parser_expect_ident(&mut parser);
             consume_optional_semi(&mut parser);
             parser_add_const(&mut parser, eff_h, eff_h, 144);
         } else if parser.cur_tok.kind == 124 || (parser.cur_tok.kind == 12 && parser.cur_tok.hash == 7334518323283222324) {
+            pending_pub = 0;
             parse_top_const(&mut parser);
         } else if parser.cur_tok.kind == 10 || parser.cur_tok.kind == 109 || parser.cur_tok.kind == 110 {
             pending_cconv = 0;
+            pending_pub = 0;
             let snode: *mut AstNode = parse_struct(&mut parser);
             if snode != (0 as *mut AstNode) {
                 register_parsed_struct_cg(&mut parser, &mut cg, snode);
@@ -639,6 +1399,10 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
             }
         } else if parser.cur_tok.kind == 11 || parser.cur_tok.kind == 102 || parser.cur_tok.kind == 142 || parser.cur_tok.kind == 92 {
             let fnode: *mut AstNode = parse_fn(&mut parser, pending_cconv);
+            if pending_pub == 1 && fnode != (0 as *mut AstNode) && fnode.child3 != (0 as *mut AstNode) {
+                fnode.child3.id = fnode.child3.id | 1;
+            }
+            pending_pub = 0;
             pending_cconv = 0;
             if fnode != (0 as *mut AstNode) {
                 let v_err: u32 = var_check_verify_fn(&mut parser, fnode, shadow_mode);
@@ -677,58 +1441,6 @@ fn main(argc: u64, argv: *mut *mut u8) -> i64 {
                 }
                 cg.has_lambdas = 0;
             }
-        } else if parser.cur_tok.kind == 25 {
-            let cur_cconv: u32 = pending_cconv;
-            pending_cconv = 0;
-            parser_expect(&mut parser, 25);
-            parser_expect(&mut parser, 11);
-            let ext_name_hash: u64 = parser.cur_tok.hash;
-            parser_expect_ident(&mut parser);
-            parser_expect(&mut parser, 60);
-            var param_types_buf: [u64; 64];
-            var param_ptrs_buf: [u64; 64];
-            let p_types: *mut u64 = &mut param_types_buf[0];
-            let p_ptrs: *mut u64 = &mut param_ptrs_buf[0];
-            var param_cnt: u32 = 0;
-            while parser.cur_tok.kind != 61 && parser.cur_tok.kind != 0 {
-                parser_expect_ident(&mut parser);
-                parser_expect(&mut parser, 70);
-                var is_ptr: u32 = 0;
-                while parser.cur_tok.kind == 50 || parser.cur_tok.kind == 32 || parser.cur_tok.kind == 13 || parser.cur_tok.kind == 12 {
-                    if parser.cur_tok.kind == 50 || parser.cur_tok.kind == 32 { is_ptr = 1; }
-                    lex_next_token(parser.lex, &mut parser.cur_tok);
-                }
-                let p_type_hash: u64 = parser.cur_tok.hash;
-                lex_next_token(parser.lex, &mut parser.cur_tok);
-                if param_cnt < 64 {
-                    p_types[param_cnt as u64] = p_type_hash;
-                    p_ptrs[param_cnt as u64] = is_ptr as u64;
-                }
-                param_cnt = param_cnt + 1;
-                if parser.cur_tok.kind == 72 { parser_expect(&mut parser, 72); }
-            }
-            parser_expect(&mut parser, 61);
-            var ret_type_hash: u64 = 3563412735833858527;
-            if parser.cur_tok.kind == 74 {
-                parser_expect(&mut parser, 74);
-                while parser.cur_tok.kind == 32 || parser.cur_tok.kind == 50 || parser.cur_tok.kind == 13 || parser.cur_tok.kind == 12 {
-                    lex_next_token(parser.lex, &mut parser.cur_tok);
-                }
-                ret_type_hash = parser.cur_tok.hash;
-                lex_next_token(parser.lex, &mut parser.cur_tok);
-            }
-            consume_optional_semi(&mut parser);
-
-            let ext_sig_hash: u64 = compute_canonical_sig_hash(param_cnt, cur_cconv, ret_type_hash, p_types as *u64, p_ptrs as *u64);
-            let sc: *mut SymbolContract = ((cg.contracts as *mut u8) + ((cg.contract_count as u64) * 48)) as *mut SymbolContract;
-            sc.symbol_hash = ext_name_hash;
-            sc.type_sig_hash = ext_sig_hash;
-            sc.vaddr = 0;
-            sc.code_size = 0;
-            sc.flags = 2;
-            sc.param_conv = (param_cnt & 65535) | ((cur_cconv & 65535) << 16);
-            sc.contract_digest = blake3_hash64(sc as *u8, 40);
-            cg.contract_count = cg.contract_count + 1;
         } else if parser.cur_tok.kind != 0 {
             if parser.cur_tok.kind == 71 {
                 lex_next_token(parser.lex, &mut parser.cur_tok);

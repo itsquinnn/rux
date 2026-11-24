@@ -28,10 +28,23 @@ fn main() -> int {
     var swarm_node: SwarmDistributedNode;
     hsns_swarm_node_init(&mut swarm_node, 101, SwarmRole.COORDINATOR);
     let sample_chunk: str = "fn add(a: int, b: int) => a + b;";
-    hsns_swarm_cluster_dispatch_task(&mut swarm_node, 1, sample_chunk as *const byte, 33);
-    if swarm_node.tasks_dispatched != 1 {
-        println("[FAIL] HSNS: Swarm cluster task dispatch failed");
+    if !hsns_swarm_cluster_dispatch_task(&mut swarm_node, 1, sample_chunk as *const byte, 33) {
+        println("[FAIL] HSNS: Valid swarm cluster dispatch rejected");
         return 2;
+    }
+    if swarm_node.tasks_dispatched != 1 || swarm_node.last_task_id != 1 || swarm_node.last_task_digest == 0 {
+        println("[FAIL] HSNS: Swarm cluster task dispatch state mismatch");
+        return 2;
+    }
+    var worker_node: SwarmDistributedNode;
+    hsns_swarm_node_init(&mut worker_node, 102, SwarmRole.WORKER);
+    if hsns_swarm_cluster_dispatch_task(&mut worker_node, 2, sample_chunk as *const byte, 33) {
+        println("[FAIL] HSNS: Worker node illegally dispatched task");
+        return 4;
+    }
+    if hsns_swarm_cluster_dispatch_task(&mut swarm_node, 0, sample_chunk as *const byte, 33) || hsns_swarm_cluster_dispatch_task(&mut swarm_node, 2, 0 as *const byte, 33) {
+        println("[FAIL] HSNS: Invalid zero task_id/null slice accepted");
+        return 5;
     }
     println("[PASS] HSNS: Multi-node compilation swarm protocol verified");
 

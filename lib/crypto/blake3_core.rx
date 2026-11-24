@@ -1,0 +1,275 @@
+fn blake3_rotr32(x: u32, n: u32) -> u32 {
+    let x32: u32 = x & 4294967295;
+    let r: u32 = x32 >> n;
+    let l: u32 = (x32 << (32 - n)) & 4294967295;
+    return (r | l) & 4294967295;
+}
+
+fn blake3_get_u32(buf: *u8, idx: u64) -> u32 {
+    let p: *u8 = buf + (idx * 4);
+    let b0: u32 = p[0] as u32;
+    let b1: u32 = p[1] as u32;
+    let b2: u32 = p[2] as u32;
+    let b3: u32 = p[3] as u32;
+    return (b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) & 4294967295;
+}
+
+fn blake3_set_u32(buf: *mut u8, idx: u64, val: u32) {
+    let p: *mut u8 = buf + (idx * 4);
+    p[0] = (val & 255) as u8;
+    p[1] = ((val >> 8) & 255) as u8;
+    p[2] = ((val >> 16) & 255) as u8;
+    p[3] = ((val >> 24) & 255) as u8;
+}
+
+fn blake3_round_g(state: *mut u8, msg: *u8, step: u64) {
+    var a_idx: u64 = 0;
+    var b_idx: u64 = 0;
+    var c_idx: u64 = 0;
+    var d_idx: u64 = 0;
+    let mx_idx: u64 = step * 2;
+    let my_idx: u64 = (step * 2) + 1;
+
+    if step == 0 { a_idx = 0; b_idx = 4; c_idx = 8;  d_idx = 12; }
+    if step == 1 { a_idx = 1; b_idx = 5; c_idx = 9;  d_idx = 13; }
+    if step == 2 { a_idx = 2; b_idx = 6; c_idx = 10; d_idx = 14; }
+    if step == 3 { a_idx = 3; b_idx = 7; c_idx = 11; d_idx = 15; }
+    if step == 4 { a_idx = 0; b_idx = 5; c_idx = 10; d_idx = 15; }
+    if step == 5 { a_idx = 1; b_idx = 6; c_idx = 11; d_idx = 12; }
+    if step == 6 { a_idx = 2; b_idx = 7; c_idx = 8;  d_idx = 13; }
+    if step == 7 { a_idx = 3; b_idx = 4; c_idx = 9;  d_idx = 14; }
+
+    let mx: u32 = blake3_get_u32(msg, mx_idx);
+    let my: u32 = blake3_get_u32(msg, my_idx);
+
+    var a: u32 = blake3_get_u32(state, a_idx);
+    var b: u32 = blake3_get_u32(state, b_idx);
+    var c: u32 = blake3_get_u32(state, c_idx);
+    var d: u32 = blake3_get_u32(state, d_idx);
+
+    a = (a + b + mx) & 4294967295;
+    d = blake3_rotr32(d ^ a, 16);
+    c = (c + d) & 4294967295;
+    b = blake3_rotr32(b ^ c, 12);
+    a = (a + b + my) & 4294967295;
+    d = blake3_rotr32(d ^ a, 8);
+    c = (c + d) & 4294967295;
+    b = blake3_rotr32(b ^ c, 7);
+
+    blake3_set_u32(state, a_idx, a);
+    blake3_set_u32(state, b_idx, b);
+    blake3_set_u32(state, c_idx, c);
+    blake3_set_u32(state, d_idx, d);
+}
+
+fn blake3_permute_msg(msg: *mut u8) {
+    var temp: [u8; 64];
+    let t: *mut u8 = &mut temp[0];
+    var i: u64 = 0;
+    while i < 16 {
+        blake3_set_u32(t, i, blake3_get_u32(msg, i));
+        i = i + 1;
+    }
+    blake3_set_u32(msg, 0,  blake3_get_u32(t, 2));
+    blake3_set_u32(msg, 1,  blake3_get_u32(t, 6));
+    blake3_set_u32(msg, 2,  blake3_get_u32(t, 3));
+    blake3_set_u32(msg, 3,  blake3_get_u32(t, 10));
+    blake3_set_u32(msg, 4,  blake3_get_u32(t, 7));
+    blake3_set_u32(msg, 5,  blake3_get_u32(t, 0));
+    blake3_set_u32(msg, 6,  blake3_get_u32(t, 4));
+    blake3_set_u32(msg, 7,  blake3_get_u32(t, 13));
+    blake3_set_u32(msg, 8,  blake3_get_u32(t, 1));
+    blake3_set_u32(msg, 9,  blake3_get_u32(t, 11));
+    blake3_set_u32(msg, 10, blake3_get_u32(t, 12));
+    blake3_set_u32(msg, 11, blake3_get_u32(t, 5));
+    blake3_set_u32(msg, 12, blake3_get_u32(t, 9));
+    blake3_set_u32(msg, 13, blake3_get_u32(t, 14));
+    blake3_set_u32(msg, 14, blake3_get_u32(t, 15));
+    blake3_set_u32(msg, 15, blake3_get_u32(t, 8));
+}
+
+fn blake3_compress_64(cv: *mut u8, block_buf: *u8, block_len: u32, block_index: u64, flags: u32) -> u64 {
+    var state_buf: [u8; 64];
+    let state: *mut u8 = &mut state_buf[0];
+
+    var i: u64 = 0;
+    while i < 8 {
+        blake3_set_u32(state, i, blake3_get_u32(cv, i));
+        i = i + 1;
+    }
+    blake3_set_u32(state, 8,  1779033703);
+    blake3_set_u32(state, 9,  3144134277);
+    blake3_set_u32(state, 10, 1013904242);
+    blake3_set_u32(state, 11, 2773480762);
+    blake3_set_u32(state, 12, (block_index & 4294967295) as u32);
+    blake3_set_u32(state, 13, ((block_index >> 32) & 4294967295) as u32);
+    blake3_set_u32(state, 14, block_len);
+    blake3_set_u32(state, 15, flags);
+
+    var msg_buf: [u8; 64];
+    let msg: *mut u8 = &mut msg_buf[0];
+    i = 0;
+    while i < 64 {
+        msg[i] = 0;
+        if i < (block_len as u64) {
+            msg[i] = block_buf[i];
+        }
+        i = i + 1;
+    }
+
+    var round: u64 = 0;
+    while round < 7 {
+        var step: u64 = 0;
+        while step < 8 {
+            blake3_round_g(state, msg, step);
+            step = step + 1;
+        }
+        if round < 6 {
+            blake3_permute_msg(msg);
+        }
+        round = round + 1;
+    }
+
+    i = 0;
+    while i < 8 {
+        let new_cv_word: u32 = blake3_get_u32(state, i) ^ blake3_get_u32(state, i + 8);
+        blake3_set_u32(cv, i, new_cv_word);
+        i = i + 1;
+    }
+
+    let low: u64 = (blake3_get_u32(cv, 0) as u64) & 4294967295;
+    let high: u64 = (blake3_get_u32(cv, 1) as u64) & 4294967295;
+    return low | (high << 32);
+}
+
+fn blake3_init_cv(cv: *mut u8) {
+    blake3_set_u32(cv, 0, 1779033703);
+    blake3_set_u32(cv, 1, 3144134277);
+    blake3_set_u32(cv, 2, 1013904242);
+    blake3_set_u32(cv, 3, 2773480762);
+    blake3_set_u32(cv, 4, 1359893119);
+    blake3_set_u32(cv, 5, 2600822924);
+    blake3_set_u32(cv, 6, 528734635);
+    blake3_set_u32(cv, 7, 1541459225);
+}
+
+fn blake3_hash_chunk(chunk_data: *u8, chunk_len: u64, chunk_counter: u64, is_root: u32, out_cv: *mut u8) {
+    blake3_init_cv(out_cv);
+    if chunk_len == 0 {
+        var flags: u32 = 1 | 2;
+        if is_root == 1 { flags = flags | 8; }
+        blake3_compress_64(out_cv, chunk_data, 0, chunk_counter, flags);
+        return;
+    }
+    let num_blocks: u64 = (chunk_len + 63) / 64;
+    var b: u64 = 0;
+    var blk_off: u64 = 0;
+    while b < num_blocks {
+        var blk_len: u32 = 64;
+        if (chunk_len - blk_off) < 64 {
+            blk_len = (chunk_len - blk_off) as u32;
+        }
+        var flags: u32 = 0;
+        if b == 0 { flags = flags | 1; }
+        if b == (num_blocks - 1) {
+            flags = flags | 2;
+            if is_root == 1 { flags = flags | 8; }
+        }
+        blake3_compress_64(out_cv, chunk_data + blk_off, blk_len, chunk_counter, flags);
+        blk_off = blk_off + (blk_len as u64);
+        b = b + 1;
+    }
+}
+
+fn blake3_parent_cv(left_cv: *u8, right_cv: *u8, is_root: u32, out_cv: *mut u8) {
+    var block_buf: [u8; 64];
+    let block: *mut u8 = &mut block_buf[0];
+    var i: u64 = 0;
+    while i < 32 {
+        block[i] = left_cv[i];
+        block[i + 32] = right_cv[i];
+        i = i + 1;
+    }
+    blake3_init_cv(out_cv);
+    var flags: u32 = 4;
+    if is_root == 1 { flags = flags | 8; }
+    blake3_compress_64(out_cv, block, 64, 0, flags);
+}
+
+fn blake3_hash64(buf: *u8, len: u64) -> u64 {
+    var root_cv_buf: [u8; 32];
+    let root_cv: *mut u8 = &mut root_cv_buf[0];
+
+    if len <= 1024 {
+        blake3_hash_chunk(buf, len, 0, 1, root_cv);
+        let low: u64 = (blake3_get_u32(root_cv, 0) as u64) & 4294967295;
+        let high: u64 = (blake3_get_u32(root_cv, 1) as u64) & 4294967295;
+        return low | (high << 32);
+    }
+
+    let num_chunks: u64 = (len + 1023) / 1024;
+    var cv_stack_buf: [u8; 2048];
+    let cv_stack: *mut u8 = &mut cv_stack_buf[0];
+    var stack_len: u64 = 0;
+
+    var cur_cv_buf: [u8; 32];
+    let cur_cv: *mut u8 = &mut cur_cv_buf[0];
+    var next_cv_buf: [u8; 32];
+    let next_cv: *mut u8 = &mut next_cv_buf[0];
+
+    var c: u64 = 0;
+    while c < num_chunks {
+        let c_off: u64 = c * 1024;
+        var c_len: u64 = 1024;
+        if (len - c_off) < 1024 {
+            c_len = len - c_off;
+        }
+        blake3_hash_chunk(buf + c_off, c_len, c, 0, cur_cv);
+
+        var rem: u64 = c;
+        while (rem & 1) == 1 && stack_len > 0 {
+            stack_len = stack_len - 1;
+            var is_root: u32 = 0;
+            if (c + 1) == num_chunks && stack_len == 0 {
+                is_root = 1;
+            }
+            blake3_parent_cv(cv_stack + (stack_len * 32), cur_cv, is_root, next_cv);
+            var ki: u64 = 0;
+            while ki < 32 {
+                cur_cv[ki] = next_cv[ki];
+                ki = ki + 1;
+            }
+            rem = rem >> 1;
+        }
+
+        if stack_len < 64 {
+            var pi: u64 = 0;
+            while pi < 32 {
+                cv_stack[(stack_len * 32) + pi] = cur_cv[pi];
+                pi = pi + 1;
+            }
+            stack_len = stack_len + 1;
+        }
+        c = c + 1;
+    }
+
+    while stack_len > 1 {
+        let right_idx: u64 = stack_len - 1;
+        let left_idx: u64 = stack_len - 2;
+        var is_root: u32 = 0;
+        if left_idx == 0 {
+            is_root = 1;
+        }
+        blake3_parent_cv(cv_stack + (left_idx * 32), cv_stack + (right_idx * 32), is_root, cur_cv);
+        var ki: u64 = 0;
+        while ki < 32 {
+            cv_stack[(left_idx * 32) + ki] = cur_cv[ki];
+            ki = ki + 1;
+        }
+        stack_len = stack_len - 1;
+    }
+
+    let low: u64 = (blake3_get_u32(cv_stack, 0) as u64) & 4294967295;
+    let high: u64 = (blake3_get_u32(cv_stack, 1) as u64) & 4294967295;
+    return low | (high << 32);
+}

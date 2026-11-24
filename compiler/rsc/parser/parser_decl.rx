@@ -464,10 +464,11 @@ fn parse_struct(p: *mut Parser) -> *mut AstNode {
 fn parse_fn(p: *mut Parser, calling_conv: u32) -> *mut AstNode {
     var fn_flags: u64 = 0;
     while p.cur_tok.kind == 90 || p.cur_tok.kind == 106 || p.cur_tok.kind == 102 || p.cur_tok.kind == 92 || p.cur_tok.kind == 142 || p.cur_tok.kind == 124 || p.cur_tok.kind == 56 || p.cur_tok.kind == 55 {
-        if p.cur_tok.kind == 102 { fn_flags = fn_flags | 1; }
+        if p.cur_tok.kind == 90 && (p.cur_tok.hash == 8643359970820732452 || p.cur_tok.hash == 17127984979764453235) { fn_flags = fn_flags | 1; }
         else if p.cur_tok.kind == 92 { fn_flags = fn_flags | 2; }
         else if p.cur_tok.kind == 124 { fn_flags = fn_flags | 4; }
-        else if p.cur_tok.kind == 142 { fn_flags = fn_flags | 8; }
+        else if p.cur_tok.kind == 102 { fn_flags = fn_flags | 8; }
+        else if p.cur_tok.kind == 106 { fn_flags = fn_flags | 16; }
         else if p.cur_tok.kind == 56 {
             lex_next_token(p.lex, &mut p.cur_tok);
             if p.cur_tok.kind != 0 && p.cur_tok.kind != 11 { lex_next_token(p.lex, &mut p.cur_tok); }
@@ -498,6 +499,7 @@ fn parse_fn(p: *mut Parser, calling_conv: u32) -> *mut AstNode {
     let fn_nm_meta: *mut AstNode = alloc_node(p, 199);
     fn_nm_meta.hash = fn_nm_start as u64;
     fn_nm_meta.val = (fn_nm_end as u64) - (fn_nm_start as u64);
+    fn_nm_meta.id = fn_flags;
     fnode.child3 = fn_nm_meta;
 
     var is_gen_fn: u32 = 0;
@@ -545,104 +547,109 @@ fn parse_fn(p: *mut Parser, calling_conv: u32) -> *mut AstNode {
         if p.cur_tok.kind == 13 { lex_next_token(p.lex, &mut p.cur_tok); }
         pnode.hash = p.cur_tok.hash;
         parser_expect_ident(p);
-        parser_expect(p, 70);
-
-        if p.cur_tok.kind == 11 {
-            lex_next_token(p.lex, &mut p.cur_tok);
-            if p.cur_tok.kind == 60 {
-                parser_expect(p, 60);
-                var ppd: u32 = 1;
-                while ppd > 0 && p.cur_tok.kind != 0 {
-                    if p.cur_tok.kind == 60 { ppd = ppd + 1; }
-                    else if p.cur_tok.kind == 61 { ppd = ppd - 1; }
-                    lex_next_token(p.lex, &mut p.cur_tok);
-                }
-            }
-            if p.cur_tok.kind == 74 {
-                parser_expect(p, 74);
-                while p.cur_tok.kind == 32 || p.cur_tok.kind == 50 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 || p.cur_tok.kind == 124 {
-                    lex_next_token(p.lex, &mut p.cur_tok);
-                }
-                lex_next_token(p.lex, &mut p.cur_tok);
-            }
-            pnode.val = 5563585020063213298;
+        if p.cur_tok.kind != 70 {
+            pnode.val = 3094732814638223685;
             pnode.is_mut = 0;
         } else {
-            var is_ptr: u32 = 0;
-            var pstars: u32 = 0;
-            if p.cur_tok.kind == 64 {
-                parser_expect(p, 64);
-                if p.cur_tok.kind == 65 { parser_expect(p, 65); }
-                is_ptr = 1;
-                pstars = 1;
-            }
-            while p.cur_tok.kind == 50 || p.cur_tok.kind == 32 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 || p.cur_tok.kind == 124 || p.cur_tok.kind == 99 || p.cur_tok.kind == 53 || p.cur_tok.kind == 104 || p.cur_tok.kind == 101 {
-                if p.cur_tok.kind == 50 || p.cur_tok.kind == 32 {
-                    pstars = pstars + 1;
-                    if pstars == 1 { is_ptr = 1; } else { is_ptr = 11; }
-                }
+            parser_expect(p, 70);
+
+            if p.cur_tok.kind == 11 {
                 lex_next_token(p.lex, &mut p.cur_tok);
-            }
-            var pk: u64 = p.cur_tok.kind;
-            var ph: u64 = p.cur_tok.hash;
-            lex_next_token(p.lex, &mut p.cur_tok);
-
-            if p.cur_tok.kind == 43 {
-                parser_expect(p, 43);
-                let g_arg0: u64 = parse_type_arg_hash(p);
-                var g_arg1: u64 = 0;
-                if p.cur_tok.kind == 72 {
-                    parser_expect(p, 72);
-                    g_arg1 = parse_type_arg_hash(p);
-                }
-                parser_expect(p, 44);
-                if p.cg != (0 as *mut u8) {
-                    ph = instantiate_generic_struct(p, p.cg as *mut CodeGen, ph, g_arg0, g_arg1);
-                    pk = 1;
-                }
-            } else if is_generic_struct(p, ph) == 1 && p.cg != (0 as *mut u8) {
-                let gs_ph: *mut GenericStruct = find_generic_struct(p, ph);
-                if gs_ph != (0 as *mut GenericStruct) {
-                    if gs_ph.param_count == 1 {
-                        ph = instantiate_generic_struct(p, p.cg as *mut CodeGen, ph, 5563585020063213298, 0);
-                    } else if gs_ph.param_count == 2 {
-                        ph = instantiate_generic_struct(p, p.cg as *mut CodeGen, ph, 5563585020063213298, 3089943341986682694);
-                    }
-                    pk = 1;
-                }
-            }
-
-            if pk == 1 {
-                let pal2: *mut ConstEntry = parser_find_alias(p, ph);
-                if pal2 != (0 as *mut ConstEntry) {
-                    if pal2.extra >= 1000 && is_ptr == 0 {
-                        is_ptr = (pal2.extra - 1000) as u32;
-                        ph = pal2.val;
-                        pk = 20;
-                    } else if pal2.extra < 1000 {
-                        ph = pal2.val;
-                        pk = pal2.extra;
+                if p.cur_tok.kind == 60 {
+                    parser_expect(p, 60);
+                    var ppd: u32 = 1;
+                    while ppd > 0 && p.cur_tok.kind != 0 {
+                        if p.cur_tok.kind == 60 { ppd = ppd + 1; }
+                        else if p.cur_tok.kind == 61 { ppd = ppd - 1; }
+                        lex_next_token(p.lex, &mut p.cur_tok);
                     }
                 }
-            }
-            if pk == 138 && is_ptr == 0 {
-                is_ptr = 2;
-                ph = 23;
-                pk = 23;
-            }
-            if is_ptr > 0 && is_ptr < 11 {
-                if pk == 1 {
-                    is_ptr = 1;
-                } else {
-                    is_ptr = 2;
+                if p.cur_tok.kind == 74 {
+                    parser_expect(p, 74);
+                    while p.cur_tok.kind == 32 || p.cur_tok.kind == 50 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 || p.cur_tok.kind == 124 {
+                        lex_next_token(p.lex, &mut p.cur_tok);
+                    }
+                    lex_next_token(p.lex, &mut p.cur_tok);
                 }
-            }
-            if pk == 23 {
-                pnode.val = 23;
+                pnode.val = 5563585020063213298;
+                pnode.is_mut = 0;
             } else {
-                pnode.val = ph;
+                var is_ptr: u32 = 0;
+                var pstars: u32 = 0;
+                if p.cur_tok.kind == 64 {
+                    parser_expect(p, 64);
+                    if p.cur_tok.kind == 65 { parser_expect(p, 65); }
+                    is_ptr = 1;
+                    pstars = 1;
+                }
+                while p.cur_tok.kind == 50 || p.cur_tok.kind == 32 || p.cur_tok.kind == 13 || p.cur_tok.kind == 12 || p.cur_tok.kind == 124 || p.cur_tok.kind == 99 || p.cur_tok.kind == 53 || p.cur_tok.kind == 104 || p.cur_tok.kind == 101 {
+                    if p.cur_tok.kind == 50 || p.cur_tok.kind == 32 {
+                        pstars = pstars + 1;
+                        if pstars == 1 { is_ptr = 1; } else { is_ptr = 11; }
+                    }
+                    lex_next_token(p.lex, &mut p.cur_tok);
+                }
+                var pk: u64 = p.cur_tok.kind;
+                var ph: u64 = p.cur_tok.hash;
+                lex_next_token(p.lex, &mut p.cur_tok);
+
+                if p.cur_tok.kind == 43 {
+                    parser_expect(p, 43);
+                    let g_arg0: u64 = parse_type_arg_hash(p);
+                    var g_arg1: u64 = 0;
+                    if p.cur_tok.kind == 72 {
+                        parser_expect(p, 72);
+                        g_arg1 = parse_type_arg_hash(p);
+                    }
+                    parser_expect(p, 44);
+                    if p.cg != (0 as *mut u8) {
+                        ph = instantiate_generic_struct(p, p.cg as *mut CodeGen, ph, g_arg0, g_arg1);
+                        pk = 1;
+                    }
+                } else if is_generic_struct(p, ph) == 1 && p.cg != (0 as *mut u8) {
+                    let gs_ph: *mut GenericStruct = find_generic_struct(p, ph);
+                    if gs_ph != (0 as *mut GenericStruct) {
+                        if gs_ph.param_count == 1 {
+                            ph = instantiate_generic_struct(p, p.cg as *mut CodeGen, ph, 5563585020063213298, 0);
+                        } else if gs_ph.param_count == 2 {
+                            ph = instantiate_generic_struct(p, p.cg as *mut CodeGen, ph, 5563585020063213298, 3089943341986682694);
+                        }
+                        pk = 1;
+                    }
+                }
+
+                if pk == 1 {
+                    let pal2: *mut ConstEntry = parser_find_alias(p, ph);
+                    if pal2 != (0 as *mut ConstEntry) {
+                        if pal2.extra >= 1000 && is_ptr == 0 {
+                            is_ptr = (pal2.extra - 1000) as u32;
+                            ph = pal2.val;
+                            pk = 20;
+                        } else if pal2.extra < 1000 {
+                            ph = pal2.val;
+                            pk = pal2.extra;
+                        }
+                    }
+                }
+                if pk == 138 && is_ptr == 0 {
+                    is_ptr = 2;
+                    ph = 23;
+                    pk = 23;
+                }
+                if is_ptr > 0 && is_ptr < 11 {
+                    if pk == 1 {
+                        is_ptr = 1;
+                    } else {
+                        is_ptr = 2;
+                    }
+                }
+                if pk == 23 {
+                    pnode.val = 23;
+                } else {
+                    pnode.val = ph;
+                }
+                pnode.is_mut = is_ptr as u64;
             }
-            pnode.is_mut = is_ptr as u64;
         }
 
         if p.cur_tok.kind == 113 {

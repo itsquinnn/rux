@@ -14,18 +14,219 @@ struct ShapeContract {
     fields: [ShapeField; 16],
 }
 
+struct DynShapeField {
+    name_hash: uint,
+    type_hash: uint,
+    ptr_flags: uint,
+    byte_offset: uint,
+    field_size: uint,
+}
+
+struct DynShapeEntry {
+    name_hash: uint,
+    field_start: uint,
+    field_count: uint,
+    total_size: uint,
+}
+
+struct PipelineShapeTable {
+    shapes: *mut DynShapeEntry,
+    shape_count: uint,
+    shape_cap: uint,
+    fields: *mut DynShapeField,
+    field_count: uint,
+    field_cap: uint,
+    had_error: uint,
+}
+
+fn shape_table_init(tbl: *mut PipelineShapeTable) {
+    let init_sc: uint = 64;
+    let init_fc: uint = 256;
+    tbl.shapes = @os.mmap(0, init_sc * 32, 3, 34, 0 - 1, 0) as *mut DynShapeEntry;
+    tbl.fields = @os.mmap(0, init_fc * 40, 3, 34, 0 - 1, 0) as *mut DynShapeField;
+    tbl.shape_count = 0;
+    tbl.shape_cap = init_sc;
+    tbl.field_count = 0;
+    tbl.field_cap = init_fc;
+    tbl.had_error = 0;
+    if (tbl.shapes as int) <= 0 || (tbl.fields as int) <= 0 {
+        tbl.had_error = 1;
+    }
+}
+
+fn shape_table_free(tbl: *mut PipelineShapeTable) {
+    if (tbl.shapes as int) > 0 && tbl.shape_cap > 0 {
+        @os.munmap(tbl.shapes as uint, tbl.shape_cap * 32);
+    }
+    if (tbl.fields as int) > 0 && tbl.field_cap > 0 {
+        @os.munmap(tbl.fields as uint, tbl.field_cap * 40);
+    }
+    tbl.shapes = 0 as *mut DynShapeEntry;
+    tbl.fields = 0 as *mut DynShapeField;
+    tbl.shape_cap = 0;
+    tbl.field_cap = 0;
+}
+
+fn shape_table_grow_shapes(tbl: *mut PipelineShapeTable) -> bool {
+    let old_cap: uint = tbl.shape_cap;
+    var new_cap: uint = old_cap * 2;
+    if new_cap < 64 { new_cap = 64; }
+    let old_bytes: uint = old_cap * 32;
+    let new_bytes: uint = new_cap * 32;
+    let nb: *mut u8 = @os.mmap(0, new_bytes, 3, 34, 0 - 1, 0) as *mut u8;
+    if (nb as int) <= 0 {
+        tbl.had_error = 1;
+        return false;
+    }
+    let ob: *const u8 = tbl.shapes as *const u8;
+    var i: uint = 0;
+    let used_bytes: uint = tbl.shape_count * 32;
+    while i < used_bytes {
+        nb[i] = ob[i];
+        i = i + 1;
+    }
+    if (tbl.shapes as int) > 0 && old_bytes > 0 {
+        @os.munmap(tbl.shapes as uint, old_bytes);
+    }
+    tbl.shapes = nb as *mut DynShapeEntry;
+    tbl.shape_cap = new_cap;
+    return true;
+}
+
+fn shape_table_grow_fields(tbl: *mut PipelineShapeTable) -> bool {
+    let old_cap: uint = tbl.field_cap;
+    var new_cap: uint = old_cap * 2;
+    if new_cap < 256 { new_cap = 256; }
+    let old_bytes: uint = old_cap * 40;
+    let new_bytes: uint = new_cap * 40;
+    let nb: *mut u8 = @os.mmap(0, new_bytes, 3, 34, 0 - 1, 0) as *mut u8;
+    if (nb as int) <= 0 {
+        tbl.had_error = 1;
+        return false;
+    }
+    let ob: *const u8 = tbl.fields as *const u8;
+    var i: uint = 0;
+    let used_bytes: uint = tbl.field_count * 40;
+    while i < used_bytes {
+        nb[i] = ob[i];
+        i = i + 1;
+    }
+    if (tbl.fields as int) > 0 && old_bytes > 0 {
+        @os.munmap(tbl.fields as uint, old_bytes);
+    }
+    tbl.fields = nb as *mut DynShapeField;
+    tbl.field_cap = new_cap;
+    return true;
+}
+
+fn shape_table_find_size(tbl: *const PipelineShapeTable, name_hash: uint) -> uint {
+    var i: uint = 0;
+    while i < tbl.shape_count {
+        let se: *const DynShapeEntry = ((tbl.shapes as uint) + (i * 32)) as *const DynShapeEntry;
+        if se.name_hash == name_hash {
+            return se.total_size;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
 fn calculate_shape_offsets(target_shape: *mut ShapeContract) {
     var current_offset: uint = 0;
     var i: uint = 0;
 
     while i < target_shape.field_count {
+        var fsz: uint = target_shape.fields[i].field_size;
+        if fsz == 0 { fsz = 8; }
+        var align: uint = fsz;
+        if align > 8 { align = 8; }
+        if align > 1 {
+            current_offset = ((current_offset + align - 1) / align) * align;
+        }
         target_shape.fields[i].byte_offset = current_offset;
-        let field_bytes: uint = target_shape.fields[i].field_size;
-        current_offset = current_offset + field_bytes;
+        current_offset = current_offset + fsz;
         i = i + 1;
     }
 
     target_shape.total_size = ((current_offset + 7) / 8) * 8;
+}
+
+fn parse_shape_declaration_dyn(p: *mut ParserState, tbl: *mut PipelineShapeTable) -> *mut AstNode {
+    expect_token(p, TOKEN_SHAPE);
+
+    let shape_node: *mut AstNode = create_node(p, NODE_SHAPE);
+    if shape_node == (0 as *mut AstNode) {
+        tbl.had_error = 1;
+        return 0 as *mut AstNode;
+    }
+    shape_node.name_hash = p.current_token.name_hash;
+    expect_token(p, TOKEN_IDENT);
+    expect_token(p, TOKEN_LBRACE);
+
+    if tbl.shape_count >= tbl.shape_cap {
+        if !shape_table_grow_shapes(tbl) {
+            return 0 as *mut AstNode;
+        }
+    }
+    let s_idx: uint = tbl.shape_count;
+    let f_start: uint = tbl.field_count;
+    var f_cnt: uint = 0;
+    var cur_off: uint = 0;
+
+    while p.current_token.kind != TOKEN_RBRACE && p.current_token.kind != TOKEN_EOF {
+        if p.current_token.kind == TOKEN_IDENT {
+            let field_name_hash: uint = p.current_token.name_hash;
+            scan_next_token(p.reader, &mut p.current_token);
+            expect_token(p, TOKEN_COLON);
+
+            var f_type_hash: uint = 0;
+            var f_ptr_flags: uint = 0;
+            var f_size: uint = 8;
+            parse_type_spec(p, &mut f_type_hash, &mut f_ptr_flags, &mut f_size);
+            if f_ptr_flags == 0 && f_type_hash != 0 {
+                let nested_sz: uint = shape_table_find_size(tbl as *const PipelineShapeTable, f_type_hash);
+                if nested_sz > 0 {
+                    f_size = nested_sz;
+                }
+            }
+            if tbl.field_count >= tbl.field_cap {
+                if !shape_table_grow_fields(tbl) {
+                    return 0 as *mut AstNode;
+                }
+            }
+            var eff_sz: uint = f_size;
+            if eff_sz == 0 { eff_sz = 8; }
+            var align: uint = eff_sz;
+            if align > 8 { align = 8; }
+            if align > 1 {
+                cur_off = ((cur_off + align - 1) / align) * align;
+            }
+            let df: *mut DynShapeField = ((tbl.fields as uint) + (tbl.field_count * 40)) as *mut DynShapeField;
+            df.name_hash = field_name_hash;
+            df.type_hash = f_type_hash;
+            df.ptr_flags = f_ptr_flags;
+            df.byte_offset = cur_off;
+            df.field_size = f_size;
+            cur_off = cur_off + eff_sz;
+            tbl.field_count = tbl.field_count + 1;
+            f_cnt = f_cnt + 1;
+
+            if p.current_token.kind == TOKEN_SEMICOLON || p.current_token.kind == TOKEN_COMMA {
+                scan_next_token(p.reader, &mut p.current_token);
+            }
+        } else {
+            scan_next_token(p.reader, &mut p.current_token);
+        }
+    }
+
+    expect_token(p, TOKEN_RBRACE);
+    let se: *mut DynShapeEntry = ((tbl.shapes as uint) + (s_idx * 32)) as *mut DynShapeEntry;
+    se.name_hash = shape_node.name_hash;
+    se.field_start = f_start;
+    se.field_count = f_cnt;
+    se.total_size = ((cur_off + 7) / 8) * 8;
+    tbl.shape_count = s_idx + 1;
+    return shape_node;
 }
 
 fn parse_shape_declaration(p: *mut ParserState, out_contract: *mut ShapeContract) -> *mut AstNode {
@@ -45,14 +246,16 @@ fn parse_shape_declaration(p: *mut ParserState, out_contract: *mut ShapeContract
             scan_next_token(p.reader, &mut p.current_token);
             expect_token(p, TOKEN_COLON);
 
-            let field_type_kind: uint = p.current_token.kind;
-            scan_next_token(p.reader, &mut p.current_token);
+            var f_type_hash: uint = 0;
+            var f_ptr_flags: uint = 0;
+            var f_size: uint = 8;
+            parse_type_spec(p, &mut f_type_hash, &mut f_ptr_flags, &mut f_size);
 
             let idx: uint = out_contract.field_count;
             if idx < 16 {
                 out_contract.fields[idx].name_hash = field_name_hash;
-                out_contract.fields[idx].type_hash = field_type_kind;
-                out_contract.fields[idx].field_size = 8;
+                out_contract.fields[idx].type_hash = f_type_hash;
+                out_contract.fields[idx].field_size = f_size;
                 out_contract.field_count = idx + 1;
             }
 

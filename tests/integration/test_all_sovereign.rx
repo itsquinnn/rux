@@ -692,7 +692,7 @@ fn test_generics_substrate() -> int {
 
 fn main() -> int {
     println("=================================================================");
-    println("           RUX SOVEREIGN MASTER TEST HARNESS v1.0.0              ");
+    println("           RUX SOVEREIGN MASTER TEST HARNESS v1.1.0              ");
     println("=================================================================");
 
     var failures: int = 0;

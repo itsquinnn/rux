@@ -148,6 +148,9 @@ fn rxbc_expr_kind(bc: *mut RxbcCompiler, n: *mut AstNode) -> u64 {
         return 0;
     }
     if n.kind == 113 {
+        if n.child1 != (0 as *mut AstNode) && n.child1.kind == 114 {
+            if n.child1.hash == 18080069455335980988 { return 1; }
+        }
         let fidx: i64 = rxbc_find_fn_idx(bc, n.hash);
         if fidx >= 0 {
             if ((bc.fn_ret_str + ((fidx as u64) * 8)) as *u64)[0] == 1 { return 1; }
@@ -155,7 +158,7 @@ fn rxbc_expr_kind(bc: *mut RxbcCompiler, n: *mut AstNode) -> u64 {
         return 0;
     }
     if n.kind == 106 && n.val == 30 {
-        if rxbc_expr_kind(bc, n.child1) == 1 { return 1; }
+        if rxbc_expr_kind(bc, n.child1) == 1 || rxbc_expr_kind(bc, n.child2) == 1 { return 1; }
     }
     return 0;
 }
@@ -322,6 +325,18 @@ fn rxbc_compile_expr(bc: *mut RxbcCompiler, n: *mut AstNode) {
             rxbc_patch_arg(bc, j_done2, bc.code_len as i64);
             return;
         }
+        if op == 30 {
+            let lk: u64 = rxbc_expr_kind(bc, n.child1);
+            let rk: u64 = rxbc_expr_kind(bc, n.child2);
+            if lk == 1 || rk == 1 {
+                rxbc_compile_expr(bc, n.child1);
+                if lk != 1 { rxbc_emit(bc, 41, 0); }
+                rxbc_compile_expr(bc, n.child2);
+                if rk != 1 { rxbc_emit(bc, 41, 0); }
+                rxbc_emit(bc, 42, 0);
+                return;
+            }
+        }
         rxbc_compile_expr(bc, n.child1);
         rxbc_compile_expr(bc, n.child2);
         if op == 30 { rxbc_emit(bc, 5, 0); return; }
@@ -382,6 +397,48 @@ fn rxbc_compile_expr(bc: *mut RxbcCompiler, n: *mut AstNode) {
             rxbc_emit(bc, 1, 0);
             return;
         }
+        if n.child1 != (0 as *mut AstNode) && n.child1.kind == 114 {
+            let m_hash: u64 = n.child1.hash;
+            let rec_n: *mut AstNode = n.child1.child1;
+            if m_hash == 18080069455335980988 {
+                rxbc_compile_expr(bc, rec_n);
+                if rxbc_expr_kind(bc, rec_n) != 1 {
+                    rxbc_emit(bc, 41, 0);
+                }
+                return;
+            }
+            if m_hash == 1329241496134363980 && n.child2 == (0 as *mut AstNode) {
+                let rk_len: u64 = rxbc_expr_kind(bc, rec_n);
+                if rk_len == 1 {
+                    rxbc_compile_expr(bc, rec_n);
+                    rxbc_emit(bc, 43, 0);
+                    return;
+                }
+                if rec_n != (0 as *mut AstNode) && rec_n.kind == 117 {
+                    let sl_i: i64 = rxbc_find_loc(bc, rec_n.hash);
+                    if sl_i >= 0 {
+                        let sl_cap: u64 = rxbc_loc_cap(bc, sl_i as u64);
+                        if sl_cap > 0 {
+                            let sl_str: u64 = rxbc_stride_for_kind(rxbc_loc_kind(bc, sl_i as u64));
+                            if sl_str > 0 {
+                                rxbc_emit(bc, 1, (sl_cap / sl_str) as i64);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            if m_hash == 6052333226747276115 && n.child2 == (0 as *mut AstNode) {
+                let rk_emp: u64 = rxbc_expr_kind(bc, rec_n);
+                if rk_emp == 1 {
+                    rxbc_compile_expr(bc, rec_n);
+                    rxbc_emit(bc, 43, 0);
+                    rxbc_emit(bc, 1, 0);
+                    rxbc_emit(bc, 15, 0);
+                    return;
+                }
+            }
+        }
         var acnt: u64 = 0;
         var ca: *mut AstNode = n.child2;
         while ca != (0 as *mut AstNode) && acnt < 64 {
@@ -431,8 +488,8 @@ fn rxbc_compile_stmt(bc: *mut RxbcCompiler, s: *mut AstNode) {
             return;
         }
         var vk: u64 = 0;
-        if s.id == 11 { vk = 11; }
-        else if s.id == 2 && (s.val == 23 || s.val == 631772817358541784) { vk = 1; }
+        if s.id == 13 { vk = 11; }
+        else if s.id == 2 && (s.val == 23 || s.val == 631772817358541784 || s.val == 9398593617327382768) { vk = 1; }
         else if s.id == 1 || s.id == 2 { vk = 8; }
         else if s.child1 != (0 as *mut AstNode) { vk = rxbc_expr_kind(bc, s.child1); }
         let slot: u64 = rxbc_add_loc(bc, s.hash, vk, 0);

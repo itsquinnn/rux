@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${1:-v1.0.0}"
+VERSION="${1:-v1.1.0}"
 DIST_DIR="$(pwd)/dist"
 ROOT_DIR="$(pwd)"
 
@@ -11,28 +11,31 @@ mkdir -p "${DIST_DIR}"
 
 create_tar_package() {
     local target="$1"
-    local bin_source="$2"
+    local rux_target="$2"
     local pkg_name="rux-${VERSION}-${target}"
     local staging="${DIST_DIR}/${pkg_name}"
-    
-    echo "  -> Building package: ${pkg_name}.tar.gz"
+
+    echo "  -> Building package: ${pkg_name}.tar.gz (target=${rux_target})"
     mkdir -p "${staging}/bin"
-    cp "${bin_source}" "${staging}/bin/rux"
-    chmod +x "${staging}/bin/rux"
-    
-    if [ -f "${ROOT_DIR}/bin/ruxc" ]; then
-        cp "${ROOT_DIR}/bin/ruxc" "${staging}/bin/ruxc"
-        chmod +x "${staging}/bin/ruxc"
+    if [ "${rux_target}" = "linux" ]; then
+        cp "${ROOT_DIR}/bin/rux" "${staging}/bin/rux"
+    else
+        "${ROOT_DIR}/bin/rux" build "${ROOT_DIR}/compiler/rux.rx" -o "${staging}/bin/rux" --target="${rux_target}"
     fi
-    
+    chmod +x "${staging}/bin/rux"
+    "${ROOT_DIR}/bin/rux" eia-check "${staging}/bin/rux"
+    cp "${staging}/bin/rux" "${staging}/bin/ruxc"
+    chmod +x "${staging}/bin/ruxc"
+
     if [ -d "${ROOT_DIR}/lib" ]; then
         cp -r "${ROOT_DIR}/lib" "${staging}/"
     fi
-    
+
     cp "${ROOT_DIR}/LICENSE" "${staging}/"
     cp "${ROOT_DIR}/README.md" "${staging}/"
-    
+
     tar -czf "${DIST_DIR}/${pkg_name}.tar.gz" -C "${DIST_DIR}" "${pkg_name}"
+    cp "${DIST_DIR}/${pkg_name}.tar.gz" "${DIST_DIR}/rux-${target}.tar.gz"
     rm -rf "${staging}"
 }
 
@@ -40,16 +43,17 @@ create_zip_package() {
     local target="$1"
     local pkg_name="rux-${VERSION}-${target}"
     local staging="${DIST_DIR}/${pkg_name}"
-    
+
     echo "  -> Building package: ${pkg_name}.zip with native Windows PE32+ binary"
     mkdir -p "${staging}/bin"
-    
+
     # Compile real native PE32+ Windows executable
     "${ROOT_DIR}/bin/rux" build "${ROOT_DIR}/compiler/rux.rx" -o "${staging}/bin/rux.exe" --target=win64
     chmod +x "${staging}/bin/rux.exe"
-    "${ROOT_DIR}/bin/rux" build "${ROOT_DIR}/compiler/rux.rx" -o "${staging}/bin/ruxc.exe" --target=win64
+    "${ROOT_DIR}/bin/rux" eia-check "${staging}/bin/rux.exe"
+    cp "${staging}/bin/rux.exe" "${staging}/bin/ruxc.exe"
     chmod +x "${staging}/bin/ruxc.exe"
-    
+
     # Create companion cmd script for CMD/PowerShell convenience
     cat << 'EOF' > "${staging}/bin/rux.cmd"
 @echo off
@@ -59,30 +63,34 @@ EOF
     if [ -d "${ROOT_DIR}/lib" ]; then
         cp -r "${ROOT_DIR}/lib" "${staging}/"
     fi
-    
+
     cp "${ROOT_DIR}/LICENSE" "${staging}/"
     cp "${ROOT_DIR}/README.md" "${staging}/"
-    
+
     (cd "${DIST_DIR}" && zip -qr "${pkg_name}.zip" "${pkg_name}")
+    cp "${DIST_DIR}/${pkg_name}.zip" "${DIST_DIR}/rux-${target}.zip"
     rm -rf "${staging}"
 }
 
 # 1. Linux x86_64 (statically linked, zero libc dependency)
-create_tar_package "x86_64-unknown-linux-musl" "${ROOT_DIR}/bin/rux"
+create_tar_package "x86_64-unknown-linux-musl" "linux"
 
 # 2. Linux aarch64 (ARM64)
-create_tar_package "aarch64-unknown-linux-musl" "${ROOT_DIR}/bin/rux"
+create_tar_package "aarch64-unknown-linux-musl" "arm64"
 
-# 3. macOS x86_64
-create_tar_package "x86_64-apple-darwin" "${ROOT_DIR}/bin/rux"
+# 3. Linux riscv64 (RISC-V 64)
+create_tar_package "riscv64-unknown-linux-musl" "riscv64"
 
-# 4. macOS aarch64 (Apple Silicon)
-create_tar_package "aarch64-apple-darwin" "${ROOT_DIR}/bin/rux"
+# 4. macOS x86_64 (Intel)
+create_tar_package "x86_64-apple-darwin" "macos"
 
-# 5. Windows x86_64 (Native PE32+)
+# 5. macOS aarch64 (Apple Silicon)
+create_tar_package "aarch64-apple-darwin" "macos-arm64"
+
+# 6. Windows x86_64 (Native PE32+)
 create_zip_package "x86_64-pc-windows-msvc"
 
-# 6. Generate SHA256 checksums
+# 7. Generate SHA256 checksums
 echo "  -> Generating SHA256 checksums..."
 cd "${DIST_DIR}"
 if command -v sha256sum >/dev/null 2>&1; then
@@ -94,4 +102,3 @@ fi
 echo "==> Successfully generated distribution packages in ${DIST_DIR}:"
 ls -lh "${DIST_DIR}"
 cat "${DIST_DIR}/SHA256SUMS.txt"
-

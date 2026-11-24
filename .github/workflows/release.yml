@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version tag (e.g. v1.0.0)'
+        description: 'Version tag (e.g. v1.1.0)'
         required: true
-        default: 'v1.0.0'
+        default: 'v1.1.0'
 
 permissions:
   contents: write
@@ -31,9 +31,14 @@ jobs:
             echo "version=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Build Distribution Packages
+      - name: Verify Compiler Integrity Before Packaging
         run: |
           chmod +x bin/rux bin/ruxc scripts/package.sh
+          ./bin/rux verify
+          ./bin/rux eia
+
+      - name: Build Distribution Packages
+        run: |
           ./scripts/package.sh "${{ steps.get_version.outputs.version }}"
 
       - name: Create GitHub Release
@@ -50,4 +55,3 @@ jobs:
             dist/SHA256SUMS.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

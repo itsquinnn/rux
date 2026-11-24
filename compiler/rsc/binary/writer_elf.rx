@@ -1,6 +1,13 @@
 fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
     if cg.is_freestanding == 1 && is_upbp == 0 {
-        let fs_text_off: u64 = 120;
+        let fs_holo_off: u64 = 128;
+        let fs_contracts_off: u64 = fs_holo_off + 96;
+        let fs_contracts_sz: u64 = (cg.contract_count as u64) * 48;
+        let fs_relocs_off: u64 = fs_contracts_off + fs_contracts_sz;
+        let fs_relocs_sz: u64 = (cg.reloc_count as u64) * 24;
+        let fs_tg_off: u64 = fs_relocs_off + fs_relocs_sz;
+        let fs_tg_sz: u64 = (cg.tg_count as u64) * 24;
+        let fs_text_off: u64 = ((fs_tg_off + fs_tg_sz) + 15) & (0 - 16);
         let fs_rodata_off: u64 = fs_text_off + (cg.text_size as u64);
         var fs_rodata_len: u64 = 0;
         if cg.rodata_size > 2048 {
@@ -13,9 +20,13 @@ fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
         var fz: u64 = 0;
         while fz < fs_total { fs_buf[fz] = 0; fz = fz + 1; }
 
+        var fs_emach: u8 = 62;
+        if cg.target_arch == 1 || cg.target_arch == 8 { fs_emach = 183; }
+        if cg.target_arch == 2 || cg.target_arch == 9 { fs_emach = 243; }
+
         fs_buf[0] = 127; fs_buf[1] = 69; fs_buf[2] = 76; fs_buf[3] = 70;
         fs_buf[4] = 2; fs_buf[5] = 1; fs_buf[6] = 1; fs_buf[7] = 0;
-        fs_buf[16] = 2; fs_buf[18] = 62; fs_buf[20] = 1;
+        fs_buf[16] = 2; fs_buf[18] = fs_emach; fs_buf[20] = 1;
         let fs_entry: u64 = 4194304 + fs_text_off;
         fs_buf[24] = (fs_entry & 255) as u8;
         fs_buf[25] = ((fs_entry >> 8) & 255) as u8;
@@ -45,21 +56,83 @@ fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
         while frfi < cg.rodata_fixup_count {
             let frf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (frfi * 16)) as *mut RodataFixup;
             if (frf.hole_offset + 4) <= (cg.text_size as u64) {
-                let ftpos: i64 = (fs_rodata_off + frf.rodata_off) as i64;
-                let fnip: i64 = (fs_text_off + frf.hole_offset + 4) as i64;
-                let fdsp: u32 = ((ftpos - fnip) as i32) as u32;
                 let fp: u64 = fs_text_off + frf.hole_offset;
-                fs_buf[fp + 0] = (fdsp & 255) as u8;
-                fs_buf[fp + 1] = ((fdsp >> 8) & 255) as u8;
-                fs_buf[fp + 2] = ((fdsp >> 16) & 255) as u8;
-                fs_buf[fp + 3] = ((fdsp >> 24) & 255) as u8;
+                if cg.target_arch == 1 || cg.target_arch == 8 {
+                    if (frf.hole_offset + 8) <= (cg.text_size as u64) {
+                        let f_tgt: u64 = fs_rodata_off + frf.rodata_off;
+                        let f_pc: u64 = fs_text_off + frf.hole_offset;
+                        let f_pgd: i64 = ((f_tgt >> 12) as i64) - ((f_pc >> 12) as i64);
+                        let fadrp: u32 = 2415919104 | (((f_pgd as u32) & 3) << 29) | ((((f_pgd >> 2) as u32) & 524287) << 5);
+                        let fadd: u32 = 2432696320 | (((f_tgt & 4095) as u32) << 10);
+                        fs_buf[fp + 0] = (fadrp & 255) as u8;
+                        fs_buf[fp + 1] = ((fadrp >> 8) & 255) as u8;
+                        fs_buf[fp + 2] = ((fadrp >> 16) & 255) as u8;
+                        fs_buf[fp + 3] = ((fadrp >> 24) & 255) as u8;
+                        fs_buf[fp + 4] = (fadd & 255) as u8;
+                        fs_buf[fp + 5] = ((fadd >> 8) & 255) as u8;
+                        fs_buf[fp + 6] = ((fadd >> 16) & 255) as u8;
+                        fs_buf[fp + 7] = ((fadd >> 24) & 255) as u8;
+                    }
+                } else if cg.target_arch == 2 || cg.target_arch == 9 {
+                    if (frf.hole_offset + 8) <= (cg.text_size as u64) {
+                        let frd: i32 = ((fs_rodata_off + frf.rodata_off) as i32) - ((fs_text_off + frf.hole_offset) as i32);
+                        let fr_hi: u32 = ((frd + 2048) >> 12) as u32;
+                        let fr_lo: u32 = (frd - ((fr_hi as i32) << 12)) as u32;
+                        let fauipc: u32 = 1303 | ((fr_hi & 1048575) << 12);
+                        let faddi: u32 = 328979 | ((fr_lo & 4095) << 20);
+                        fs_buf[fp + 0] = (fauipc & 255) as u8;
+                        fs_buf[fp + 1] = ((fauipc >> 8) & 255) as u8;
+                        fs_buf[fp + 2] = ((fauipc >> 16) & 255) as u8;
+                        fs_buf[fp + 3] = ((fauipc >> 24) & 255) as u8;
+                        fs_buf[fp + 4] = (faddi & 255) as u8;
+                        fs_buf[fp + 5] = ((faddi >> 8) & 255) as u8;
+                        fs_buf[fp + 6] = ((faddi >> 16) & 255) as u8;
+                        fs_buf[fp + 7] = ((faddi >> 24) & 255) as u8;
+                    }
+                } else {
+                    let ftpos: i64 = (fs_rodata_off + frf.rodata_off) as i64;
+                    let fnip: i64 = (fs_text_off + frf.hole_offset + 4) as i64;
+                    let fdsp: u32 = ((ftpos - fnip) as i32) as u32;
+                    fs_buf[fp + 0] = (fdsp & 255) as u8;
+                    fs_buf[fp + 1] = ((fdsp >> 8) & 255) as u8;
+                    fs_buf[fp + 2] = ((fdsp >> 16) & 255) as u8;
+                    fs_buf[fp + 3] = ((fdsp >> 24) & 255) as u8;
+                }
             }
             frfi = frfi + 1;
         }
+        eia_patch_reloc_holes_arch(
+            fs_buf + fs_text_off,
+            cg.target_arch,
+            cg.relocs as *const EiaRelocHole,
+            cg.reloc_count as uint,
+            cg.type_graph as *const EiaTypeGraphEntry,
+            cg.tg_count as uint
+        );
         fi = 0;
         while fi < fs_rodata_len {
             fs_buf[fs_rodata_off + fi] = cg.rodata_buf[fi];
             fi = fi + 1;
+        }
+        if !eia_populate_and_seal_hologram(
+            fs_buf,
+            fs_total as uint,
+            fs_holo_off as uint,
+            fs_contracts_off as uint,
+            cg.contracts as *const SymbolContract,
+            cg.contract_count as uint,
+            fs_relocs_off as uint,
+            cg.relocs as *const EiaRelocHole,
+            cg.reloc_count as uint,
+            fs_tg_off as uint,
+            cg.type_graph as *const EiaTypeGraphEntry,
+            cg.tg_count as uint,
+            1,
+            EIA_FLAG_HAS_CODE_HASH | EIA_FLAG_FREESTANDING,
+            fs_entry as uint,
+            (4194304 + fs_rodata_off) as uint
+        ) {
+            return -3;
         }
         let fwr: i64 = acrq_file_write_bytes(out_path, fs_buf, fs_total, 0);
         if fwr < 0 { return -2; }
@@ -90,7 +163,13 @@ fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
     }
     if cg.target_arch == 3 || cg.target_arch == 8 || cg.target_arch == 9 {
         text_offset = 4096;
-        rodata_offset = 12288;
+        if (tg_offset + tg_size) > text_offset {
+            text_offset = ((tg_offset + tg_size) + 4095) & (0 - 4096);
+        }
+        rodata_offset = text_offset + (((cg.text_size as u64) + 4095) & (0 - 4096));
+        if rodata_offset < (text_offset + 8192) {
+            rodata_offset = text_offset + 8192;
+        }
     }
     if (text_offset + (cg.text_size as u64)) > rodata_offset {
         rodata_offset = ((text_offset + (cg.text_size as u64)) + 4095) & (0 - 4096);
@@ -109,10 +188,10 @@ fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
     }
 
     var emach: u8 = 62;
-    if cg.target_arch == 1 {
+    if cg.target_arch == 1 || cg.target_arch == 8 {
         emach = 183;
     }
-    if cg.target_arch == 2 {
+    if cg.target_arch == 2 || cg.target_arch == 9 {
         emach = 243;
     }
 
@@ -272,132 +351,71 @@ fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
         file_buf[ph_base + 48] = 0; file_buf[ph_base + 49] = 16;
     }
 
-    let holo: *mut UniversalHologramHeader = (file_buf + holo_offset) as *mut UniversalHologramHeader;
-    holo.magic = 1145588037;
-    holo.version = 2;
-    holo.abi_epoch = 1;
-    holo.contracts_offset = contracts_offset;
-    holo.contracts_count = cg.contract_count as u64;
-    holo.relocs_offset = relocs_offset;
-    holo.relocs_count = cg.reloc_count as u64;
-    holo.type_graph_offset = tg_offset;
-    holo.type_graph_size = tg_size;
-    holo.flags = 1;
-    if cg.force_bridge == 1 {
-        holo.flags = holo.flags | 4;
-    }
     let text_vaddr: u64 = 4194304 + text_offset;
-    holo.reserved0 = text_vaddr;
-    holo.reserved1 = 4194304 + rodata_offset;
-
-    var sci_adj: u32 = 0;
-    while sci_adj < (cg.contract_count as u32) {
-        let sc_adj: *mut SymbolContract = ((cg.contracts as *mut u8) + ((sci_adj as u64) * 48)) as *mut SymbolContract;
-        let fn_off: u64 = sc_adj.vaddr - 4259840;
-        sc_adj.vaddr = text_vaddr + fn_off;
-        sci_adj = sci_adj + 1;
-    }
+    let rodata_vaddr: u64 = 4194304 + rodata_offset;
 
     var i: u64 = 0;
-    let sc_src: *u8 = cg.contracts as *u8;
-    while i < contracts_size {
-        file_buf[contracts_offset + i] = sc_src[i];
-        i = i + 1;
-    }
-
-    i = 0;
-    let rel_src: *u8 = cg.relocs as *u8;
-    while i < relocs_size {
-        file_buf[relocs_offset + i] = rel_src[i];
-        i = i + 1;
-    }
-
-    i = 0;
-    let tg_src: *u8 = cg.type_graph as *u8;
-    while i < tg_size {
-        file_buf[tg_offset + i] = tg_src[i];
-        i = i + 1;
-    }
-
-    let tables_len: u64 = contracts_size + relocs_size + tg_size;
-    holo.blake3_root = blake3_hash64(file_buf + contracts_offset, tables_len);
-
-    i = 0;
     while i < (cg.text_size as u64) {
         file_buf[text_offset + i] = cg.text_buf[i];
         i = i + 1;
     }
 
-    if cg.target_arch != 1 && cg.target_arch != 2 && cg.target_arch != 8 && cg.target_arch != 9 && cg.target_arch != 10 {
-        var rfi: u64 = 0;
-        while rfi < cg.rodata_fixup_count {
-            let rf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (rfi * 16)) as *mut RodataFixup;
-            if (rf.hole_offset + 4) <= (cg.text_size as u64) {
+    var rfi: u64 = 0;
+    while rfi < cg.rodata_fixup_count {
+        let rf: *mut RodataFixup = ((cg.rodata_fixups as *mut u8) + (rfi * 16)) as *mut RodataFixup;
+        if (rf.hole_offset + 4) <= (cg.text_size as u64) {
+            let p_pos: u64 = text_offset + rf.hole_offset;
+            if cg.target_arch == 1 || cg.target_arch == 8 || cg.target_arch == 10 {
+                if (rf.hole_offset + 8) <= (cg.text_size as u64) {
+                    let a_tgt: u64 = rodata_offset + rf.rodata_off;
+                    let a_pc: u64 = text_offset + rf.hole_offset;
+                    let a_pgd: i64 = ((a_tgt >> 12) as i64) - ((a_pc >> 12) as i64);
+                    let adrp_op: u32 = 2415919104 | (((a_pgd as u32) & 3) << 29) | ((((a_pgd >> 2) as u32) & 524287) << 5);
+                    let add_op: u32 = 2432696320 | (((a_tgt & 4095) as u32) << 10);
+                    file_buf[p_pos + 0] = (adrp_op & 255) as u8;
+                    file_buf[p_pos + 1] = ((adrp_op >> 8) & 255) as u8;
+                    file_buf[p_pos + 2] = ((adrp_op >> 16) & 255) as u8;
+                    file_buf[p_pos + 3] = ((adrp_op >> 24) & 255) as u8;
+                    file_buf[p_pos + 4] = (add_op & 255) as u8;
+                    file_buf[p_pos + 5] = ((add_op >> 8) & 255) as u8;
+                    file_buf[p_pos + 6] = ((add_op >> 16) & 255) as u8;
+                    file_buf[p_pos + 7] = ((add_op >> 24) & 255) as u8;
+                }
+            } else if cg.target_arch == 2 || cg.target_arch == 9 {
+                let rdisp: i32 = ((rodata_offset + rf.rodata_off) as i32) - ((text_offset + rf.hole_offset) as i32);
+                let r_hi: u32 = ((rdisp + 2048) >> 12) as u32;
+                let r_lo: u32 = (rdisp - ((r_hi as i32) << 12)) as u32;
+                let auipc_op: u32 = 1303 | ((r_hi & 1048575) << 12);
+                let addi_op: u32 = 328979 | ((r_lo & 4095) << 20);
+                file_buf[p_pos + 0] = (auipc_op & 255) as u8;
+                file_buf[p_pos + 1] = ((auipc_op >> 8) & 255) as u8;
+                file_buf[p_pos + 2] = ((auipc_op >> 16) & 255) as u8;
+                file_buf[p_pos + 3] = ((auipc_op >> 24) & 255) as u8;
+                file_buf[p_pos + 4] = (addi_op & 255) as u8;
+                file_buf[p_pos + 5] = ((addi_op >> 8) & 255) as u8;
+                file_buf[p_pos + 6] = ((addi_op >> 16) & 255) as u8;
+                file_buf[p_pos + 7] = ((addi_op >> 24) & 255) as u8;
+            } else {
                 let target_pos: i64 = (rodata_offset + rf.rodata_off) as i64;
                 let next_ip_pos: i64 = (text_offset + rf.hole_offset + 4) as i64;
                 let rdisp: u32 = ((target_pos - next_ip_pos) as i32) as u32;
-                let p_pos: u64 = text_offset + rf.hole_offset;
                 file_buf[p_pos + 0] = (rdisp & 255) as u8;
                 file_buf[p_pos + 1] = ((rdisp >> 8) & 255) as u8;
                 file_buf[p_pos + 2] = ((rdisp >> 16) & 255) as u8;
                 file_buf[p_pos + 3] = ((rdisp >> 24) & 255) as u8;
             }
-            rfi = rfi + 1;
         }
+        rfi = rfi + 1;
     }
 
-    var ri: u32 = 0;
-    while ri < (cg.reloc_count as u32) {
-        let hole: *mut EiaRelocHole = ((cg.relocs as *mut u8) + ((ri as u64) * 24)) as *mut EiaRelocHole;
-        let h_pk: u64 = hole.patch_kind & 255;
-        let h_off: u64 = hole.insn_offset & 4294967295;
-        if h_pk == 1 && ((h_off + 4) as u64) <= (cg.text_size as u64) {
-            var ti: u32 = 0;
-            var found: u32 = 0;
-            while ti < (cg.tg_count as u32) && found == 0 {
-                let tge: *mut EiaTypeGraphEntry = ((cg.type_graph as *mut u8) + ((ti as u64) * 24)) as *mut EiaTypeGraphEntry;
-                if (hole.type_sig_hash == 0 || tge.type_sig_hash == hole.type_sig_hash) && tge.field_hash == hole.field_or_sym_hash {
-                    let disp: u32 = (tge.byte_offset & 4294967295) as u32;
-                    let p_off: u64 = text_offset + h_off;
-                    if cg.target_arch == 1 {
-                        let movz: u32 = 3531604000 | ((disp & 65535) << 5);
-                        let movk: u32 = 4070621216 | (((disp >> 16) & 65535) << 5);
-                        file_buf[p_off + 0] = (movz & 255) as u8;
-                        file_buf[p_off + 1] = ((movz >> 8) & 255) as u8;
-                        file_buf[p_off + 2] = ((movz >> 16) & 255) as u8;
-                        file_buf[p_off + 3] = ((movz >> 24) & 255) as u8;
-                        file_buf[p_off + 4] = (movk & 255) as u8;
-                        file_buf[p_off + 5] = ((movk >> 8) & 255) as u8;
-                        file_buf[p_off + 6] = ((movk >> 16) & 255) as u8;
-                        file_buf[p_off + 7] = ((movk >> 24) & 255) as u8;
-                    }
-                    if cg.target_arch == 2 {
-                        let hi: u32 = (disp + 2048) >> 12;
-                        let lo: u32 = disp & 4095;
-                        let lui: u32 = 695 | (hi << 12);
-                        let addi: u32 = 164499 | (lo << 20);
-                        file_buf[p_off + 0] = (lui & 255) as u8;
-                        file_buf[p_off + 1] = ((lui >> 8) & 255) as u8;
-                        file_buf[p_off + 2] = ((lui >> 16) & 255) as u8;
-                        file_buf[p_off + 3] = ((lui >> 24) & 255) as u8;
-                        file_buf[p_off + 4] = (addi & 255) as u8;
-                        file_buf[p_off + 5] = ((addi >> 8) & 255) as u8;
-                        file_buf[p_off + 6] = ((addi >> 16) & 255) as u8;
-                        file_buf[p_off + 7] = ((addi >> 24) & 255) as u8;
-                    }
-                    if cg.target_arch != 1 && cg.target_arch != 2 {
-                        file_buf[p_off + 0] = (disp & 255) as u8;
-                        file_buf[p_off + 1] = ((disp >> 8) & 255) as u8;
-                        file_buf[p_off + 2] = ((disp >> 16) & 255) as u8;
-                        file_buf[p_off + 3] = ((disp >> 24) & 255) as u8;
-                    }
-                    found = 1;
-                }
-                ti = ti + 1;
-            }
-        }
-        ri = ri + 1;
-    }
+    eia_patch_reloc_holes_arch(
+        file_buf + text_offset,
+        cg.target_arch,
+        cg.relocs as *const EiaRelocHole,
+        cg.reloc_count as uint,
+        cg.type_graph as *const EiaTypeGraphEntry,
+        cg.tg_count as uint
+    );
 
     if cg.force_bridge == 1 {
         let bt_offset: u64 = cg.text_size as u64;
@@ -419,21 +437,6 @@ fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
         file_buf[text_offset + bt_offset + 18] = bt18; file_buf[text_offset + bt_offset + 19] = bt19;
         file_buf[text_offset + bt_offset + 20] = bt20; file_buf[text_offset + bt_offset + 21] = bt21;
         file_buf[text_offset + bt_offset + 22] = bt22; file_buf[text_offset + bt_offset + 23] = bt23;
-        if cg.contract_count > 0 {
-            let sc0_file_off: u64 = contracts_offset;
-            let bt_vaddr: u64 = 0x410000 + bt_offset;
-            file_buf[sc0_file_off + 16] = (bt_vaddr & 255) as u8;
-            file_buf[sc0_file_off + 17] = ((bt_vaddr >> 8) & 255) as u8;
-            file_buf[sc0_file_off + 18] = ((bt_vaddr >> 16) & 255) as u8;
-            file_buf[sc0_file_off + 19] = ((bt_vaddr >> 24) & 255) as u8;
-            file_buf[sc0_file_off + 20] = ((bt_vaddr >> 32) & 255) as u8;
-            file_buf[sc0_file_off + 21] = ((bt_vaddr >> 40) & 255) as u8;
-            file_buf[sc0_file_off + 22] = ((bt_vaddr >> 48) & 255) as u8;
-            file_buf[sc0_file_off + 23] = ((bt_vaddr >> 56) & 255) as u8;
-            file_buf[sc0_file_off + 24] = 24;
-            file_buf[sc0_file_off + 25] = 0; file_buf[sc0_file_off + 26] = 0; file_buf[sc0_file_off + 27] = 0;
-            file_buf[sc0_file_off + 32] = file_buf[sc0_file_off + 32] | 4;
-        }
     }
 
     i = 0;
@@ -627,6 +630,17 @@ fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
 
     let final_file_size: u64 = sh_tbl_off + 576;
 
+    var final_memsz: u64 = final_file_size;
+    if cg.target_arch == 0 {
+        final_memsz = final_file_size + 1048576;
+    }
+    var pfi: u64 = 0;
+    while pfi < 8 {
+        file_buf[ph_base + 32 + pfi] = ((final_file_size >> (pfi * 8)) & 255) as u8;
+        file_buf[ph_base + 40 + pfi] = ((final_memsz >> (pfi * 8)) & 255) as u8;
+        pfi = pfi + 1;
+    }
+
     var ehdr_base: u64 = 0;
     if is_upbp == 1 { ehdr_base = 128; }
     file_buf[ehdr_base + 40] = (sh_tbl_off & 255) as u8;
@@ -651,13 +665,79 @@ fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
         file_buf[ehdr_base + 17] = 0;
     }
 
+    var holo_flags: uint = EIA_FLAG_HAS_CODE_HASH;
+    var saved_sc0_vaddr: uint = 0;
+    var saved_sc0_sz: uint = 0;
+    var saved_sc0_flags: u32 = 0;
+    var modified_sc0: u32 = 0;
+    if cg.force_bridge == 1 {
+        holo_flags = holo_flags | EIA_FLAG_BRIDGE;
+        if cg.contract_count > 0 {
+            let sc0: *mut SymbolContract = cg.contracts;
+            saved_sc0_vaddr = sc0.vaddr;
+            saved_sc0_sz = sc0.code_size;
+            saved_sc0_flags = sc0.flags;
+            sc0.vaddr = (text_vaddr as uint) + (cg.text_size as uint);
+            sc0.code_size = 24;
+            sc0.flags = sc0.flags | 4;
+            modified_sc0 = 1;
+        }
+    }
+    let seal_ok: bool = eia_populate_and_seal_hologram(
+        file_buf,
+        final_file_size as uint,
+        holo_offset as uint,
+        contracts_offset as uint,
+        cg.contracts as *const SymbolContract,
+        cg.contract_count as uint,
+        relocs_offset as uint,
+        cg.relocs as *const EiaRelocHole,
+        cg.reloc_count as uint,
+        tg_offset as uint,
+        cg.type_graph as *const EiaTypeGraphEntry,
+        cg.tg_count as uint,
+        1,
+        holo_flags,
+        text_vaddr as uint,
+        rodata_vaddr as uint
+    );
+    if modified_sc0 == 1 {
+        let sc0_r: *mut SymbolContract = cg.contracts;
+        sc0_r.vaddr = saved_sc0_vaddr;
+        sc0_r.code_size = saved_sc0_sz;
+        sc0_r.flags = saved_sc0_flags;
+    }
+    if !seal_ok {
+        return -3;
+    }
+
     if is_ar == 1 {
-        let ar_total: u64 = 68 + final_file_size + (final_file_size & 1);
+        let sym_hdr_off: u64 = 8;
+        let sym_body_off: u64 = 68;
+        let sym_body_sz: u64 = 24;
+        let mod_hdr_off: u64 = sym_body_off + sym_body_sz;
+        let mod_data_off: u64 = mod_hdr_off + 60;
+        let ar_total: u64 = mod_data_off + final_file_size + (final_file_size & 1);
         let ar_buf: *mut u8 = uses_alloc(ar_total);
-        let ar_hdr: *u8 = "!<arch>\nmodule.o/       0           0     0     644     ";
+        if (ar_buf as i64) <= 0 { return -1; }
+        let ar_magic: *u8 = "!<arch>\n";
+        var ami: u64 = 0;
+        while ami < 8 { ar_buf[ami] = ar_magic[ami]; ami = ami + 1; }
+        let ar_sym_hdr: *u8 = "/               0           0     0     0       24        ";
+        var asi: u64 = 0;
+        while asi < 58 { ar_buf[sym_hdr_off + asi] = ar_sym_hdr[asi]; asi = asi + 1; }
+        ar_buf[sym_hdr_off + 58] = 96;
+        ar_buf[sym_hdr_off + 59] = 10;
+        ar_buf[sym_body_off + 0] = 0; ar_buf[sym_body_off + 1] = 0; ar_buf[sym_body_off + 2] = 0; ar_buf[sym_body_off + 3] = 2;
+        ar_buf[sym_body_off + 4] = 0; ar_buf[sym_body_off + 5] = 0; ar_buf[sym_body_off + 6] = 0; ar_buf[sym_body_off + 7] = mod_hdr_off as u8;
+        ar_buf[sym_body_off + 8] = 0; ar_buf[sym_body_off + 9] = 0; ar_buf[sym_body_off + 10] = 0; ar_buf[sym_body_off + 11] = mod_hdr_off as u8;
+        let sym_names: *u8 = "_start\0main\0";
+        var sni: u64 = 0;
+        while sni < 12 { ar_buf[sym_body_off + 12 + sni] = sym_names[sni]; sni = sni + 1; }
+        let ar_hdr: *u8 = "module.o/       0           0     0     644     ";
         var ahi: u64 = 0;
-        while ahi < 56 { ar_buf[ahi] = ar_hdr[ahi]; ahi = ahi + 1; }
-        while ahi < 66 { ar_buf[ahi] = 32; ahi = ahi + 1; }
+        while ahi < 48 { ar_buf[mod_hdr_off + ahi] = ar_hdr[ahi]; ahi = ahi + 1; }
+        while ahi < 58 { ar_buf[mod_hdr_off + ahi] = 32; ahi = ahi + 1; }
         var sz_tmp: u64 = final_file_size;
         var dig_buf: [u8; 16];
         var d_cnt: u64 = 0;
@@ -669,14 +749,14 @@ fn write_elf64_binary(cg: *mut CodeGen, out_path: *u8, is_upbp: u32) -> i64 {
         }
         var di_k: u64 = 0;
         while di_k < d_cnt {
-            ar_buf[56 + di_k] = dig_buf[(d_cnt - 1) - di_k];
+            ar_buf[mod_hdr_off + 48 + di_k] = dig_buf[(d_cnt - 1) - di_k];
             di_k = di_k + 1;
         }
-        ar_buf[66] = 96;
-        ar_buf[67] = 10;
+        ar_buf[mod_hdr_off + 58] = 96;
+        ar_buf[mod_hdr_off + 59] = 10;
         var cpi: u64 = 0;
-        while cpi < final_file_size { ar_buf[68 + cpi] = file_buf[cpi]; cpi = cpi + 1; }
-        if (final_file_size & 1) == 1 { ar_buf[68 + final_file_size] = 10; }
+        while cpi < final_file_size { ar_buf[mod_data_off + cpi] = file_buf[cpi]; cpi = cpi + 1; }
+        if (final_file_size & 1) == 1 { ar_buf[mod_data_off + final_file_size] = 10; }
         let wr_ar: i64 = acrq_file_write_bytes(out_path, ar_buf, ar_total, 0);
         if wr_ar < 0 { return -2; }
         return 0;

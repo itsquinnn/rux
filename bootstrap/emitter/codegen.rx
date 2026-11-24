@@ -26,7 +26,13 @@ fn compile_node(cg: *mut CodeGenerator, node: *mut AstNode) {
     }
 
     if node.kind == NODE_FN {
-        cg.entry_point_offset = cg.stream.length;
+        if (node.is_mut & 2) != 0 {
+            return;
+        }
+        let fn_start: uint = cg.stream.length;
+        if fn_start == 0 || node.name_hash == 2258945139493307336 {
+            cg.entry_point_offset = fn_start;
+        }
         splice_stencil(&mut cg.stencils, &mut cg.stream, 0, 0);
 
     var stmt: *mut AstNode = node.child1;
@@ -36,6 +42,9 @@ fn compile_node(cg: *mut CodeGenerator, node: *mut AstNode) {
         }
 
         splice_stencil(&mut cg.stencils, &mut cg.stream, 1, 0);
+        let fn_size: uint = cg.stream.length - fn_start;
+        node.id = ((fn_start & 4294967295) << 32) | (fn_size & 4294967295);
+        node.is_mut = node.is_mut | 4;
         return;
     }
 

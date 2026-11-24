@@ -5,19 +5,61 @@ struct EiaTypeGraphEntry {
     field_size: u32,
 }
 
+fn eia_type_graph_entry_init(
+    entry: *mut EiaTypeGraphEntry,
+    type_hash: uint,
+    field_hash: uint,
+    byte_offset: u32,
+    field_size: u32
+) {
+    entry.type_sig_hash = type_hash;
+    entry.field_hash = field_hash;
+    entry.byte_offset = byte_offset;
+    entry.field_size = field_size;
+}
+
+fn eia_resolve_field_entry(
+    entries: *const EiaTypeGraphEntry,
+    count: uint,
+    type_hash: uint,
+    field_hash: uint
+) -> *const EiaTypeGraphEntry {
+    var i: uint = 0;
+    while i < count {
+        let entry: *const EiaTypeGraphEntry = ((entries as uint) + (i * 24)) as *const EiaTypeGraphEntry;
+        if (type_hash == 0 || entry.type_sig_hash == type_hash) && entry.field_hash == field_hash {
+            return entry;
+        }
+        i = i + 1;
+    }
+    return 0 as *const EiaTypeGraphEntry;
+}
+
 fn eia_resolve_field_displacement(
     entries: *const EiaTypeGraphEntry,
     count: uint,
     type_hash: uint,
     field_hash: uint
 ) -> u32 {
+    let entry: *const EiaTypeGraphEntry = eia_resolve_field_entry(entries, count, type_hash, field_hash);
+    if entry != (0 as *const EiaTypeGraphEntry) {
+        return entry.byte_offset;
+    }
+    return 0xFFFFFFFF;
+}
+
+fn eia_resolve_type_by_field(
+    entries: *const EiaTypeGraphEntry,
+    count: uint,
+    field_hash: uint
+) -> uint {
     var i: uint = 0;
     while i < count {
-        let entry: *const EiaTypeGraphEntry = &entries[i];
-        if entry.type_sig_hash == type_hash && entry.field_hash == field_hash {
-            return entry.byte_offset;
+        let entry: *const EiaTypeGraphEntry = ((entries as uint) + (i * 24)) as *const EiaTypeGraphEntry;
+        if entry.field_hash == field_hash {
+            return entry.type_sig_hash;
         }
         i = i + 1;
     }
-    return 0xFFFFFFFF;
+    return 0;
 }

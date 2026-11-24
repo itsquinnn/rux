@@ -5,25 +5,65 @@ struct AegisCapToken {
     capability_tag: uint,
 }
 
+fn ccns_cap_compute_tag(token: *const AegisCapToken) -> uint {
+    var meta: [uint; 4];
+    meta[0] = token.base_address;
+    meta[1] = token.length;
+    meta[2] = token.permissions;
+    meta[3] = 0x4145474953434150;
+    let digest: uint = @crypto.blake3_64((&meta[0]) as uint, 32);
+    if digest == 0 {
+        return 1;
+    }
+    return digest;
+}
+
 fn ccns_cap_from_slice(
     token: *mut AegisCapToken,
     buf: *mut byte,
     len: uint,
     perms: uint
 ) {
+    if (token as uint) == 0 {
+        return;
+    }
+    if (buf as uint) == 0 || len == 0 {
+        token.base_address = 0;
+        token.length = 0;
+        token.permissions = 0;
+        token.capability_tag = 0;
+        return;
+    }
     token.base_address = buf as uint;
     token.length = len;
     token.permissions = perms;
-    token.capability_tag = @crypto.blake3_64(buf as uint, len);
+    token.capability_tag = ccns_cap_compute_tag(token as *const AegisCapToken);
 }
 
 fn ccns_cap_restrict(token: *mut AegisCapToken, allowed_perms: uint) -> bool {
+    if (token as uint) == 0 || token.base_address == 0 || token.length == 0 {
+        return false;
+    }
+    if token.capability_tag == 0 || token.capability_tag != ccns_cap_compute_tag(token as *const AegisCapToken) {
+        return false;
+    }
+    if (token.permissions & 8) != 0 {
+        return false;
+    }
     token.permissions = token.permissions & allowed_perms;
+    token.capability_tag = ccns_cap_compute_tag(token as *const AegisCapToken);
     return true;
 }
 
 fn ccns_cap_seal(token: *mut AegisCapToken) {
+    if (token as uint) == 0 || token.base_address == 0 || token.length == 0 {
+        return;
+    }
+    if token.capability_tag == 0 || token.capability_tag != ccns_cap_compute_tag(token as *const AegisCapToken) {
+        return;
+    }
     token.permissions = token.permissions | 8;
+    token.capability_tag = ccns_cap_compute_tag(token as *const AegisCapToken);
 }
 
 fn ccns_cap_validate(
@@ -32,10 +72,16 @@ fn ccns_cap_validate(
     access_len: uint,
     required_perm: uint
 ) -> bool {
-    if (token.permissions & required_perm) == 0 {
+    if (token as uint) == 0 || token.base_address == 0 || token.length == 0 {
         return false;
     }
-    if (offset + access_len) > token.length {
+    if token.capability_tag == 0 || token.capability_tag != ccns_cap_compute_tag(token) {
+        return false;
+    }
+    if required_perm == 0 || (token.permissions & required_perm) != required_perm {
+        return false;
+    }
+    if access_len > token.length || offset > (token.length - access_len) {
         return false;
     }
     return true;

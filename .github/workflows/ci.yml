@@ -15,40 +15,57 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify static standalone binary
+      - name: Verify static standalone binary & EIA hologram
         run: |
           chmod +x bin/rux bin/ruxc
           file bin/rux
+          ./bin/rux --version
           ./bin/rux --help
+          ./bin/rux eia-check ./bin/rux
 
       - name: Run Sovereign Master Test Harness
         run: ./bin/rux test
 
-      - name: Run EIA 5-Gate Hardware Verification Ring
-        run: ./bin/rux verify
+      - name: Run EIA 5-Gate Hardware Verification Ring & Proof Suite
+        run: |
+          ./bin/rux verify
+          ./bin/rux eia
 
       - name: Test Program Compilation & Native Execution
         run: |
           ./bin/rux build examples/hello.rx -o hello_bin
+          ./bin/rux eia-check ./hello_bin
           ./hello_bin
 
       - name: Test Inline Code Evaluation
         run: |
           ./bin/rux -e 'println("CI inline evaluation: OK");'
 
-      - name: Test Multi-Target Cross-Compilation
+      - name: Test Multi-Target Cross-Compilation & EIA Integrity
         run: |
           ./bin/rux build examples/hello.rx -o hello_arm64 --target=arm64
           file hello_arm64 | grep -q "ARM aarch64"
-          
+          ./bin/rux eia-check ./hello_arm64
+
+          ./bin/rux build examples/hello.rx -o hello_rv64 --target=riscv64
+          file hello_rv64 | grep -q "RISC-V"
+          ./bin/rux eia-check ./hello_rv64
+
           ./bin/rux build examples/hello.rx -o hello_win.exe --target=win64
           file hello_win.exe | grep -q "PE32+"
-          
-          ./bin/rux build examples/hello.rx -o hello_mac --target=macos
-          file hello_mac | grep -q "Mach-O"
-          
+          ./bin/rux eia-check ./hello_win.exe
+
+          ./bin/rux build examples/hello.rx -o hello_mac_x64 --target=macos
+          file hello_mac_x64 | grep -q "Mach-O"
+          ./bin/rux eia-check ./hello_mac_x64
+
+          ./bin/rux build examples/hello.rx -o hello_mac_arm64 --target=macos-arm64
+          file hello_mac_arm64 | grep -q "Mach-O"
+          ./bin/rux eia-check ./hello_mac_arm64
+
           ./bin/rux build examples/hello.rx -o hello.wasm --wasm
           file hello.wasm | grep -q "WebAssembly"
+          ./bin/rux eia-check ./hello.wasm
 
       - name: Test C99 Transpilation and Compilation
         run: |
@@ -60,18 +77,27 @@ jobs:
         run: |
           chmod +x install.sh
           ./install.sh --local --prefix /tmp/rux_ci_install --no-modify-path
-          /tmp/rux_ci_install/bin/rux --help
+          /tmp/rux_ci_install/bin/rux --version
           /tmp/rux_ci_install/bin/rux -e 'println("Installed rux runs cleanly!");'
 
-      - name: Build Windows PE32+ compiler artifact
+      - name: Build Cross-OS Compiler Artifacts
         run: |
           ./bin/rux build compiler/rux.rx -o bin/rux.exe --target=win64
+          ./bin/rux eia-check ./bin/rux.exe
+          ./bin/rux build compiler/rux.rx -o bin/rux-macos-arm64 --target=macos-arm64
+          ./bin/rux eia-check ./bin/rux-macos-arm64
 
       - name: Upload Windows binary artifact
         uses: actions/upload-artifact@v4
         with:
           name: rux-windows-x64
           path: bin/rux.exe
+
+      - name: Upload macOS ARM64 binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rux-macos-arm64
+          path: bin/rux-macos-arm64
 
   test-windows-x86_64:
     name: Test & Verify (Windows x64 Native)
@@ -87,14 +113,43 @@ jobs:
           name: rux-windows-x64
           path: bin
 
-      - name: Test Windows Native Executable (CLI help and version)
+      - name: Test Windows Native Executable (CLI help, version, EIA)
         shell: pwsh
         run: |
           .\bin\rux.exe --help
           .\bin\rux.exe --version
+          .\bin\rux.exe eia-check .\bin\rux.exe
 
-      - name: Test Running Rux Program on Windows Native
+      - name: Test Running & Building Rux Programs on Windows Native
         shell: pwsh
         run: |
-          .\bin\rux.exe build hello.rx -o hello_win.exe --target=win64
+          .\bin\rux.exe examples\hello.rx
+          .\bin\rux.exe -e 'println("Windows inline eval: OK");'
+          .\bin\rux.exe build examples\hello.rx -o hello_win.exe
+          .\bin\rux.exe eia-check .\hello_win.exe
           .\hello_win.exe
+
+  test-macos-arm64:
+    name: Test & Verify (macOS Apple Silicon Native)
+    runs-on: macos-latest
+    needs: test-linux-x86_64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download macOS ARM64 binary artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rux-macos-arm64
+          path: bin
+
+      - name: Test macOS Native Executable (CLI, EIA, Build & Run)
+        run: |
+          chmod +x bin/rux-macos-arm64
+          codesign --verify --verbose ./bin/rux-macos-arm64
+          ./bin/rux-macos-arm64 --version
+          ./bin/rux-macos-arm64 eia-check ./bin/rux-macos-arm64
+          ./bin/rux-macos-arm64 -e 'println("macOS inline eval: OK");'
+          ./bin/rux-macos-arm64 build examples/hello.rx -o hello_mac
+          ./bin/rux-macos-arm64 eia-check ./hello_mac
+          ./hello_mac

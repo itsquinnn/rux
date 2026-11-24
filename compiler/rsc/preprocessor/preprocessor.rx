@@ -244,6 +244,27 @@ fn expand_include_rec(
                         is_inc = 1;
                         q_pos = ws;
                     }
+                } else if (inc_kw + 7) < src_len &&
+                   src[inc_kw] == 105 && src[inc_kw+1] == 109 && src[inc_kw+2] == 112 && src[inc_kw+3] == 111 &&
+                   src[inc_kw+4] == 114 && src[inc_kw+5] == 116 && (src[inc_kw+6] == 32 || src[inc_kw+6] == 9 || src[inc_kw+6] == 34) {
+                    var ws: u64 = inc_kw + 6;
+                    while ws < src_len && (src[ws] == 32 || src[ws] == 9) {
+                        ws = ws + 1;
+                    }
+                    if ws < src_len && src[ws] == 34 {
+                        is_inc = 1;
+                        q_pos = ws;
+                    }
+                } else if (inc_kw + 4) < src_len &&
+                   src[inc_kw] == 117 && src[inc_kw+1] == 115 && src[inc_kw+2] == 101 && (src[inc_kw+3] == 32 || src[inc_kw+3] == 9 || src[inc_kw+3] == 34) {
+                    var ws: u64 = inc_kw + 3;
+                    while ws < src_len && (src[ws] == 32 || src[ws] == 9) {
+                        ws = ws + 1;
+                    }
+                    if ws < src_len && src[ws] == 34 {
+                        is_inc = 1;
+                        q_pos = ws;
+                    }
                 } else if (si + 12) < src_len && src[si] == 64 && src[si+1] == 99 && src[si+2] == 73 && src[si+3] == 110 &&
                           src[si+4] == 99 && src[si+5] == 108 && src[si+6] == 117 && src[si+7] == 100 && src[si+8] == 101 &&
                           src[si+9] == 40 && src[si+10] == 34 {

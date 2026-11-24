@@ -6,12 +6,12 @@ struct Arena {
 
 fn mmap_alloc(size: u64) -> *mut u8 {
     let aligned: u64 = ((size + 4095) / 4096) * 4096;
-    return acrq_port_submit(5, 0, 7, 0, aligned, 34) as *mut u8;
+    return acrq_port_submit(5, 0, 3, 0, aligned, 34) as *mut u8;
 }
 
 fn uses_alloc(bytes: u64) -> *mut u8 {
     let aligned: u64 = ((bytes + 15) / 16) * 16;
-    return acrq_port_submit(5, 0, 7, 0, aligned, 34) as *mut u8;
+    return acrq_port_submit(5, 0, 3, 0, aligned, 34) as *mut u8;
 }
 
 fn uses_free(ptr: *mut u8, bytes: u64) {
@@ -93,56 +93,248 @@ fn uses_unlink(path: *u8) -> i64 {
     return acrq_port_submit(7, 0, 0, path as u64, 0, 0);
 }
 
+fn sys_read_file_alloc(path: *u8, out_buf: *mut *mut u8, out_cap: *mut u64) -> i64 {
+    if (out_buf as i64) == 0 || (out_cap as i64) == 0 {
+        return 0 - 1;
+    }
+    out_buf[0] = 0 as *mut u8;
+    out_cap[0] = 0;
+    let fd: i64 = acrq_port_submit(3, 0, 0, path as u64, 0, 0);
+    if fd < 0 {
+        return 0 - 1;
+    }
+    var cap: u64 = 262144;
+    var buf: *mut u8 = uses_alloc(cap);
+    if (buf as i64) <= 0 {
+        acrq_port_submit(4, fd as u32, 0, 0, 0, 0);
+        return 0 - 1;
+    }
+    var total: u64 = 0;
+    var reading: u32 = 1;
+    while reading == 1 {
+        if total >= cap {
+            let new_cap: u64 = cap * 2;
+            let new_buf: *mut u8 = uses_alloc(new_cap);
+            if (new_buf as i64) <= 0 {
+                uses_free(buf, cap);
+                acrq_port_submit(4, fd as u32, 0, 0, 0, 0);
+                return 0 - 1;
+            }
+            var ci: u64 = 0;
+            while ci < total {
+                new_buf[ci] = buf[ci];
+                ci = ci + 1;
+            }
+            uses_free(buf, cap);
+            buf = new_buf;
+            cap = new_cap;
+        }
+        let n: i64 = acrq_port_submit(2, fd as u32, 0, 0, (buf + total) as u64, cap - total);
+        if n < 0 {
+            uses_free(buf, cap);
+            acrq_port_submit(4, fd as u32, 0, 0, 0, 0);
+            return 0 - 1;
+        }
+        if n == 0 {
+            reading = 0;
+        } else {
+            total = total + (n as u64);
+        }
+    }
+    acrq_port_submit(4, fd as u32, 0, 0, 0, 0);
+    if total == 0 {
+        uses_free(buf, cap);
+        return 0;
+    }
+    out_buf[0] = buf;
+    out_cap[0] = cap;
+    return total as i64;
+}
+
+fn sys_elf_or_upbp_ehdr_offset(buf: *const u8, len: u64, out_off: *mut u64) -> u32 {
+    if len < 64 {
+        return 0;
+    }
+    if buf[0] == 127 && buf[1] == 69 && buf[2] == 76 && buf[3] == 70 {
+        out_off[0] = 0;
+        return 1;
+    }
+    if len >= 192 && buf[0] == 77 && buf[1] == 90 && buf[128] == 127 && buf[129] == 69 && buf[130] == 76 && buf[131] == 70 {
+        out_off[0] = 128;
+        return 1;
+    }
+    return 0;
+}
+
+fn sys_verify_eia_executable_bytes(buf: *const u8, len: u64, host_x64_elf_only: bool) -> i64 {
+    if len < 64 {
+        uses_println("[EIA ERROR] Binary image too small or empty");
+        return 0 - 2;
+    }
+    if host_x64_elf_only {
+        if eia_is_ar_archive(buf, len) {
+            uses_println("[EIA ERROR] Cannot directly execute static archive (.a); link with 'rux eia-relink' first");
+            return 0 - 2;
+        }
+        let host_a: u64 = syscall(998, 0) as u64;
+        if host_a == 7 || host_a == 10 {
+            if eia_container_kind(buf, len as uint) != 3 {
+                uses_println("[EIA ERROR] Host execution on macOS requires Mach-O 64-bit container format");
+                return 0 - 2;
+            }
+            let arch_m: u64 = eia_detect_arch_from_binary(buf, len);
+            var expect_m: u64 = 0;
+            if host_a == 10 { expect_m = 10; }
+            if arch_m != expect_m {
+                uses_println("[EIA ERROR] Host execution architecture mismatch");
+                return 0 - 3;
+            }
+        } else {
+            var ehdr_off: u64 = 0;
+            if sys_elf_or_upbp_ehdr_offset(buf, len, &mut ehdr_off) == 0 {
+                uses_println("[EIA ERROR] Host execution requires ELF64 or UPBP container format");
+                return 0 - 2;
+            }
+            let e_type: u16 = (buf[ehdr_off + 16] as u16) | ((buf[ehdr_off + 17] as u16) << 8);
+            if e_type == 1 {
+                uses_println("[EIA ERROR] Cannot execute unlinked ET_REL object file; link with 'rux eia-relink' first");
+                return 0 - 2;
+            }
+            let arch: u64 = eia_detect_arch_from_binary(buf, len);
+            var expect_a: u64 = 0;
+            if host_a == 1 || host_a == 2 { expect_a = host_a; }
+            if arch != expect_a {
+                uses_println("[EIA ERROR] Host execution architecture mismatch");
+                return 0 - 3;
+            }
+        }
+    }
+    let holo_off_i: i64 = eia_locate_hologram_offset(buf, len);
+    if holo_off_i < 0 {
+        uses_println("[EIA ERROR] Missing or invalid Universal Hologram header or binary format");
+        return 0 - 2;
+    }
+    let holo_chk: *const UniversalHologramHeader = (buf + (holo_off_i as u64)) as *const UniversalHologramHeader;
+    if !eia_epochs_compatible(holo_chk.abi_epoch, 1) {
+        uses_println("[EIA ERROR] Incompatible EIA abi_epoch major version");
+        return 0 - 9;
+    }
+    let verify_res: int = eia_verify_artifact_bytes(buf, len);
+    if verify_res != 0 {
+        uses_println("[EIA ERROR] Universal Hologram / BLAKE3 / Contract verification failed");
+        return verify_res as i64;
+    }
+    if holo_chk.contracts_count > 0 {
+        let chk_sc: *const SymbolContract = (buf + holo_chk.contracts_offset) as *const SymbolContract;
+        var ui: uint = 0;
+        while ui < holo_chk.contracts_count {
+            let sc_u: *const SymbolContract = ((chk_sc as uint) + (ui * 48)) as *const SymbolContract;
+            if (sc_u.flags & EIA_SYM_IMPORT) != 0 {
+                let res_def: *const SymbolContract = eia_find_contract(chk_sc, holo_chk.contracts_count, sc_u.symbol_hash, EIA_SYM_DEFINED);
+                if res_def == (0 as *const SymbolContract) {
+                    uses_println("[EIA ERROR] Unresolved EIA_SYM_IMPORT contract; link binary with 'rux eia-relink' first");
+                    return 0 - 5;
+                }
+                if !eia_contract_verify_match(sc_u, res_def) {
+                    uses_println("[EIA ERROR] Contract signature mismatch on self-resolved EIA_SYM_IMPORT");
+                    return 0 - 5;
+                }
+            }
+            ui = ui + 1;
+        }
+    }
+    var chk_coff: uint = 0;
+    var chk_clen: uint = 0;
+    if !eia_locate_code_span(buf, len as uint, holo_chk, &mut chk_coff, &mut chk_clen) || chk_clen == 0 {
+        uses_println("[EIA ERROR] Missing or empty executable code span");
+        return 0 - 2;
+    }
+    return 0;
+}
+
 fn iphee_exec_binary(bin_path: *u8, max_bin_size: u64) -> i64 {
-    let code_buf: *mut u8 = mmap_alloc(max_bin_size);
-    if (code_buf as i64) <= 0 {
-        return 0 - 1;
-    }
-    let nread: i64 = acrq_file_read(bin_path, code_buf, max_bin_size);
+    var code_buf: *mut u8 = 0 as *mut u8;
+    var buf_cap: u64 = 0;
+    let nread: i64 = sys_read_file_alloc(bin_path, &mut code_buf, &mut buf_cap);
     if nread <= 0 {
+        if (code_buf as i64) > 0 && buf_cap > 0 {
+            uses_free(code_buf, buf_cap);
+        }
         return 0 - 1;
     }
-    let elf_magic: u32 = (code_buf[0] as u32) | ((code_buf[1] as u32) << 8) |
-                         ((code_buf[2] as u32) << 16) | ((code_buf[3] as u32) << 24);
-    let e_entry_ptr: *u64 = (code_buf + 24) as *u64;
+    if max_bin_size > 0 && (nread as u64) >= max_bin_size {
+        uses_println("[EIA ERROR] Binary exceeds max_bin_size limit (truncated read prevented)");
+        uses_free(code_buf, buf_cap);
+        return 0 - 1;
+    }
+
+    let chk_res: i64 = sys_verify_eia_executable_bytes(code_buf as *const u8, nread as u64, true);
+    if chk_res != 0 {
+        uses_free(code_buf, buf_cap);
+        return chk_res;
+    }
+
+    var ehdr_off: u64 = 0;
+    sys_elf_or_upbp_ehdr_offset(code_buf as *const u8, nread as u64, &mut ehdr_off);
+    let e_entry_ptr: *u64 = (code_buf + ehdr_off + 24) as *u64;
     let e_entry_raw: u64 = e_entry_ptr[0];
     var main_off: u64 = 0;
-    if elf_magic == 1179403647 {
-        if e_entry_raw > 4194304 {
-            main_off = e_entry_raw - 4194304;
-        }
+    if e_entry_raw >= 4194304 {
+        main_off = e_entry_raw - 4194304;
     }
 
-    var holo_off: u64 = 128;
-    if code_buf[0] == 77 && code_buf[1] == 90 {
-        holo_off = 1152;
-    }
-    let holo: *mut UniversalHologramHeader = (code_buf + holo_off) as *mut UniversalHologramHeader;
-    let m: u64 = holo.magic & 4294967295;
+    let holo_off_i: i64 = eia_locate_hologram_offset(code_buf as *const u8, nread as u64);
+    let holo: *mut UniversalHologramHeader = (code_buf + (holo_off_i as u64)) as *mut UniversalHologramHeader;
     var text_offset: u64 = 65536;
     var rodata_offset: u64 = 524288;
-    if m == 1145588037 {
-        if holo.reserved0 > 4194304 {
-            text_offset = holo.reserved0 - 4194304;
-        }
-        if holo.reserved1 > 4194304 {
-            rodata_offset = holo.reserved1 - 4194304;
-        }
-        var sci: u64 = 0;
+    var img_base: u64 = 4194304;
+    if holo.reserved0 >= 5368709120 {
+        img_base = 5368709120;
+    } else if holo.reserved0 < 4194304 {
+        img_base = 0;
+    }
+    if holo.reserved0 >= img_base {
+        text_offset = holo.reserved0 - img_base;
+    }
+    if holo.reserved1 >= img_base {
+        rodata_offset = holo.reserved1 - img_base;
+    }
 
-        let main_hash: u64 = 2258945139493307336;
-        while sci < holo.contracts_count {
-            let sc: *mut SymbolContract = (code_buf + holo.contracts_offset + (sci * 48)) as *mut SymbolContract;
-            if sc.symbol_hash == main_hash {
-                main_off = sc.vaddr - 4194304;
-                sci = holo.contracts_count;
-            }
-            sci = sci + 1;
+    let main_hash: u64 = 2258945139493307336;
+    let main_sc: *const SymbolContract = eia_find_contract(
+        (code_buf + holo.contracts_offset) as *const SymbolContract,
+        holo.contracts_count,
+        main_hash,
+        EIA_SYM_DEFINED
+    );
+    if holo.contracts_count > 0 && main_sc != (0 as *const SymbolContract) {
+        if main_sc.type_sig_hash == 0 {
+            uses_println("[EIA ERROR] Main contract missing type_sig_hash");
+            uses_free(code_buf, buf_cap);
+            return 0 - 5;
+        }
+        if main_sc.vaddr >= img_base {
+            main_off = main_sc.vaddr - img_base;
         }
     }
+
+    var ip_coff: uint = 0;
+    var ip_clen: uint = 0;
+    if !eia_locate_code_span(code_buf as *const u8, nread as uint, holo as *const UniversalHologramHeader, &mut ip_coff, &mut ip_clen) || ip_clen == 0 {
+        uses_println("[EIA ERROR] Failed to locate executable code span for IP-HEE");
+        uses_free(code_buf, buf_cap);
+        return 0 - 2;
+    }
+    if (main_off as uint) < ip_coff || (main_off as uint) >= (ip_coff + ip_clen) {
+        uses_println("[EIA ERROR] Entry point offset outside executable code span");
+        uses_free(code_buf, buf_cap);
+        return 0 - 2;
+    }
+
     let aligned_cap: u64 = ((nread as u64 + 4095) / 4096) * 4096;
     let page: *mut u8 = acrq_port_submit(5, 0, 7, 0, aligned_cap, 34) as *mut u8;
     if (page as i64) <= 0 {
+        uses_free(code_buf, buf_cap);
         return 0 - 1;
     }
     var i: u64 = 0;
@@ -151,8 +343,41 @@ fn iphee_exec_binary(bin_path: *u8, max_bin_size: u64) -> i64 {
         i = i + 1;
     }
 
-    var scan_i: u64 = text_offset;
-    var scan_end: u64 = rodata_offset;
+    if holo.relocs_count > 0 {
+        var ip_tg: *const EiaTypeGraphEntry = 0 as *const EiaTypeGraphEntry;
+        if holo.type_graph_size > 0 {
+            ip_tg = (code_buf + holo.type_graph_offset) as *const EiaTypeGraphEntry;
+        }
+        var ip_contracts: *const SymbolContract = 0 as *const SymbolContract;
+        if holo.contracts_count > 0 {
+            ip_contracts = (code_buf + holo.contracts_offset) as *const SymbolContract;
+        }
+        let patched: uint = eia_patch_binary_relocs_span_ex(
+            page + ip_coff,
+            ip_clen,
+            ip_clen,
+            eia_detect_arch_from_binary(code_buf as *const u8, nread as u64),
+            (code_buf + holo.relocs_offset) as *const EiaRelocHole,
+            holo.relocs_count,
+            ip_tg,
+            holo.type_graph_size / 24,
+            ip_contracts,
+            holo.contracts_count,
+            holo.reserved0,
+            code_buf as *const u8,
+            nread as uint,
+            ip_coff
+        );
+        if patched != holo.relocs_count {
+            uses_println("[EIA ERROR] IP-HEE failed to patch all EIA relocations");
+            acrq_port_submit(6, 0, 0, page as u64, aligned_cap, 0);
+            uses_free(code_buf, buf_cap);
+            return 0 - 7;
+        }
+    }
+
+    var scan_i: u64 = ip_coff as u64;
+    var scan_end: u64 = (ip_coff + ip_clen) as u64;
     if scan_end > (nread as u64) {
         scan_end = nread as u64;
     }
@@ -179,20 +404,38 @@ fn iphee_exec_binary(bin_path: *u8, max_bin_size: u64) -> i64 {
     let ret: i64 = fn_target(1, &host_argv[0]);
 
     acrq_port_submit(6, 0, 0, page as u64, aligned_cap, 0);
-    uses_free(code_buf, max_bin_size);
+    uses_free(code_buf, buf_cap);
     return ret;
 }
 
 fn arena_init(arena: *mut Arena, size: u64) {
     let mem: *mut u8 = mmap_alloc(size);
+    if (mem as i64) <= 0 {
+        uses_println("[RSC FATAL] arena_init allocation failed");
+        sys_exit(1);
+    }
     arena.memory = mem;
     arena.offset = 0;
     arena.capacity = size;
 }
 
 fn arena_alloc(arena: *mut Arena, bytes: u64) -> *mut u8 {
+    if bytes > (0xFFFFFFFFFFFFFFFF - 7) {
+        uses_println("[RSC FATAL] arena_alloc integer overflow");
+        sys_exit(1);
+    }
     let aligned: u64 = ((bytes + 7) / 8) * 8;
     let cur: u64 = arena.offset;
+    if aligned > arena.capacity || cur > (arena.capacity - aligned) {
+        var req: u64 = aligned;
+        if req < 4096 { req = 4096; }
+        let ov_mem: *mut u8 = mmap_alloc(req);
+        if (ov_mem as i64) <= 0 {
+            uses_println("[RSC FATAL] arena_alloc overflow allocation failed");
+            sys_exit(1);
+        }
+        return ov_mem;
+    }
     let next_off: u64 = cur + aligned;
     arena.offset = next_off;
     let ptr: *mut u8 = arena.memory + cur;

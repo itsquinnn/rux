@@ -26,13 +26,13 @@ fn opt_try_compile_dual_accum_while(cg: *mut CodeGen, stmt: *mut AstNode) -> u32
             let i_off: u32 = lv_i.rbp_offset as u32;
             let s1_off: u32 = lv_s1.rbp_offset as u32;
             let s2_off: u32 = lv_s2.rbp_offset as u32;
-            cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 157); cg_emit32(cg, 0 - s1_off);
+            cg_emit_load_local_reg(cg, sum1_h, s1_off, 11);
             cg_emit8(cg, 65); cg_emit8(cg, 83);
             compile_expr(cg, cond.child2);
-            opt_emit_scev64_accum_loop(cg, i_off, s1_off, is_sgn);
+            opt_emit_scev64_accum_loop_vars(cg, i_hash, i_off, sum1_h, s1_off, is_sgn);
             cg_emit8(cg, 65); cg_emit8(cg, 91);
             cg_emit8(cg, 77); cg_emit8(cg, 41); cg_emit8(cg, 217);
-            cg_emit8(cg, 76); cg_emit8(cg, 1); cg_emit8(cg, 141); cg_emit32(cg, 0 - s2_off);
+            cg_emit_add_local_reg(cg, sum2_h, s2_off, 9);
             return 1;
         }
     }

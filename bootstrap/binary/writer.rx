@@ -3,6 +3,7 @@ include "bootstrap/binary/pe.rx";
 include "bootstrap/binary/macho.rx";
 include "bootstrap/emitter/codegen.rx";
 include "lib/os/uses_substrate.rx";
+include "compiler/subsystems/eia/patcher.rx";
 
 const TARGET_OS_LINUX: uint   = 1;
 const TARGET_OS_WINDOWS: uint = 2;
@@ -66,205 +67,450 @@ fn write_header_and_body_to_file(
     return (hlen + blen + pad_len) as int;
 }
 
-fn write_vessel_elf(vessel: *const ExecutableVessel, output_filepath: *byte) -> int {
-    let header_size: uint = 120;
-    let total_file_size: uint = header_size + vessel.code_len;
+fn writer_put_u16(buf: *mut u8, off: uint, val: u32) {
+    buf[off + 0] = (val & 255) as u8;
+    buf[off + 1] = ((val >> 8) & 255) as u8;
+}
 
-    var binary_buffer: [u8; 128];
+fn writer_put_u32(buf: *mut u8, off: uint, val: u32) {
+    buf[off + 0] = (val & 255) as u8;
+    buf[off + 1] = ((val >> 8) & 255) as u8;
+    buf[off + 2] = ((val >> 16) & 255) as u8;
+    buf[off + 3] = ((val >> 24) & 255) as u8;
+}
 
-    binary_buffer[0] = 127;
-    binary_buffer[1] = 69;
-    binary_buffer[2] = 76;
-    binary_buffer[3] = 70;
-    binary_buffer[4] = 2;
-    binary_buffer[5] = 1;
-    binary_buffer[6] = 1;
-    binary_buffer[7] = 0;
+fn writer_put_u64(buf: *mut u8, off: uint, val: u64) {
+    var i: uint = 0;
+    while i < 8 {
+        buf[off + i] = ((val >> (i * 8)) & 255) as u8;
+        i = i + 1;
+    }
+}
 
-    var i: uint = 8;
-    while i < 16 { binary_buffer[i] = 0; i = i + 1; }
+fn writer_alloc_zero(size: uint) -> *mut u8 {
+    let aligned: uint = ((size + 4095) / 4096) * 4096;
+    let ptr: *mut u8 = @os.mmap(0 as *mut byte, aligned, 3, 34, 0 - 1, 0) as *mut u8;
+    if (ptr as int) > 0 {
+        var i: uint = 0;
+        while i < size {
+            ptr[i] = 0;
+            i = i + 1;
+        }
+    }
+    return ptr;
+}
 
-    binary_buffer[16] = 2; binary_buffer[17] = 0;
-    binary_buffer[18] = 62; binary_buffer[19] = 0;
-    binary_buffer[20] = 1; binary_buffer[21] = 0; binary_buffer[22] = 0; binary_buffer[23] = 0;
+fn writer_free_buf(ptr: *mut u8, size: uint) {
+    if (ptr as int) > 0 {
+        let aligned: uint = ((size + 4095) / 4096) * 4096;
+        @os.munmap(ptr as uint, aligned);
+    }
+}
 
-    let entry_vaddr: uint = DEFAULT_BASE_VADDR + header_size + vessel.entry_offset;
-    var b: uint = 0;
-    while b < 8 {
-        binary_buffer[24 + b] = ((entry_vaddr >> (b * 8)) & 255) as u8;
-        b = b + 1;
+fn writer_default_contract(out_sc: *mut SymbolContract, code_len: uint, entry_offset: uint) {
+    let sym_hash: uint = blake3_hash64("_start" as *const u8, 6);
+    eia_contract_init_ex(out_sc, sym_hash, 0x52555831, 4259840 + entry_offset, code_len, EIA_SYM_DEFINED, 0, 0);
+}
+
+fn writer_finalize_eia_and_write(
+    buf: *mut u8,
+    total_file_size: uint,
+    holo_off: uint,
+    contracts_off: uint,
+    contracts_src: *const SymbolContract,
+    contracts_count: uint,
+    relocs_off: uint,
+    relocs_src: *const EiaRelocHole,
+    relocs_count: uint,
+    tg_off: uint,
+    tg_src: *const EiaTypeGraphEntry,
+    tg_count: uint,
+    text_vaddr: uint,
+    rodata_vaddr: uint,
+    code_off: uint,
+    code_ptr: *const byte,
+    code_len: uint,
+    output_filepath: *byte
+) -> int {
+    var ci: uint = 0;
+    let code_bytes: *const u8 = code_ptr as *const u8;
+    while ci < code_len {
+        buf[code_off + ci] = code_bytes[ci];
+        ci = ci + 1;
     }
 
-    binary_buffer[32] = 64; binary_buffer[33] = 0; binary_buffer[34] = 0; binary_buffer[35] = 0;
-    binary_buffer[36] = 0;  binary_buffer[37] = 0; binary_buffer[38] = 0; binary_buffer[39] = 0;
+    let ok: bool = eia_populate_and_seal_hologram(
+        buf,
+        total_file_size,
+        holo_off,
+        contracts_off,
+        contracts_src,
+        contracts_count,
+        relocs_off,
+        relocs_src,
+        relocs_count,
+        tg_off,
+        tg_src,
+        tg_count,
+        1,
+        EIA_FLAG_HAS_CODE_HASH | EIA_FLAG_FREESTANDING,
+        text_vaddr,
+        rodata_vaddr
+    );
+    if !ok {
+        writer_free_buf(buf, total_file_size);
+        return -4;
+    }
 
-    b = 0; while b < 8 { binary_buffer[40 + b] = 0; b = b + 1; }
+    let wr: int = uses_substrate_write_file(output_filepath as *const byte, buf as *const u8, total_file_size);
+    writer_free_buf(buf, total_file_size);
+    if wr < 0 {
+        return wr;
+    }
+    return total_file_size as int;
+}
 
-    binary_buffer[48] = 0; binary_buffer[49] = 0; binary_buffer[50] = 0; binary_buffer[51] = 0;
-    binary_buffer[52] = 64; binary_buffer[53] = 0;
-    binary_buffer[54] = 56; binary_buffer[55] = 0;
-    binary_buffer[56] = 1;  binary_buffer[57] = 0;
-    binary_buffer[58] = 64; binary_buffer[59] = 0;
-    binary_buffer[60] = 0;  binary_buffer[61] = 0;
-    binary_buffer[62] = 0;  binary_buffer[63] = 0;
+fn write_vessel_elf_with_eia(
+    vessel: *const ExecutableVessel,
+    output_filepath: *byte,
+    contracts_src: *const SymbolContract,
+    contracts_count: uint,
+    relocs_src: *const EiaRelocHole,
+    relocs_count: uint,
+    tg_src: *const EiaTypeGraphEntry,
+    tg_count: uint
+) -> int {
+    var fallback_sc: SymbolContract;
+    var use_c_ptr: *const SymbolContract = contracts_src;
+    var use_c_cnt: uint = contracts_count;
+    if use_c_cnt == 0 || use_c_ptr == (0 as *const SymbolContract) {
+        writer_default_contract(&mut fallback_sc, vessel.code_len, vessel.entry_offset);
+        use_c_ptr = (&fallback_sc) as *const SymbolContract;
+        use_c_cnt = 1;
+    }
 
-    binary_buffer[64] = 1; binary_buffer[65] = 0; binary_buffer[66] = 0; binary_buffer[67] = 0;
-    binary_buffer[68] = 5; binary_buffer[69] = 0; binary_buffer[70] = 0; binary_buffer[71] = 0;
-    b = 0; while b < 8 { binary_buffer[72 + b] = 0; b = b + 1; }
-    b = 0; while b < 8 { binary_buffer[80 + b] = ((DEFAULT_BASE_VADDR >> (b * 8)) & 255) as u8; b = b + 1; }
-    b = 0; while b < 8 { binary_buffer[88 + b] = ((DEFAULT_BASE_VADDR >> (b * 8)) & 255) as u8; b = b + 1; }
-    b = 0; while b < 8 { binary_buffer[96 + b] = ((total_file_size >> (b * 8)) & 255) as u8; b = b + 1; }
-    b = 0; while b < 8 { binary_buffer[104 + b] = ((total_file_size >> (b * 8)) & 255) as u8; b = b + 1; }
-    binary_buffer[112] = 0; binary_buffer[113] = 16; binary_buffer[114] = 0; binary_buffer[115] = 0;
-    binary_buffer[116] = 0; binary_buffer[117] = 0;  binary_buffer[118] = 0; binary_buffer[119] = 0;
+    let holo_off: uint = 128;
+    let contracts_off: uint = holo_off + 96;
+    let relocs_off: uint = contracts_off + (use_c_cnt * 48);
+    let tg_off: uint = relocs_off + (relocs_count * 24);
+    let code_off: uint = ((tg_off + (tg_count * 24) + 15) / 16) * 16;
+    let total_file_size: uint = code_off + vessel.code_len;
+    let text_vaddr: uint = DEFAULT_BASE_VADDR + code_off;
+    let entry_vaddr: uint = text_vaddr + vessel.entry_offset;
 
-    return write_header_and_body_to_file(&binary_buffer[0], header_size, vessel.code_ptr, vessel.code_len, 0, output_filepath);
+    let buf: *mut u8 = writer_alloc_zero(total_file_size);
+    if (buf as int) <= 0 {
+        return -1;
+    }
+
+    buf[0] = 127; buf[1] = 69; buf[2] = 76; buf[3] = 70;
+    buf[4] = 2; buf[5] = 1; buf[6] = 1; buf[7] = 0;
+    writer_put_u16(buf, 16, 2);
+    writer_put_u16(buf, 18, 62);
+    writer_put_u32(buf, 20, 1);
+    writer_put_u64(buf, 24, entry_vaddr);
+    writer_put_u64(buf, 32, 64);
+    writer_put_u16(buf, 52, 64);
+    writer_put_u16(buf, 54, 56);
+    writer_put_u16(buf, 56, 1);
+    writer_put_u16(buf, 58, 64);
+
+    writer_put_u32(buf, 64, 1);
+    writer_put_u32(buf, 68, 5);
+    writer_put_u64(buf, 72, 0);
+    writer_put_u64(buf, 80, DEFAULT_BASE_VADDR);
+    writer_put_u64(buf, 88, DEFAULT_BASE_VADDR);
+    writer_put_u64(buf, 96, total_file_size);
+    writer_put_u64(buf, 104, total_file_size);
+    writer_put_u64(buf, 112, 4096);
+
+    return writer_finalize_eia_and_write(
+        buf,
+        total_file_size,
+        holo_off,
+        contracts_off,
+        use_c_ptr,
+        use_c_cnt,
+        relocs_off,
+        relocs_src,
+        relocs_count,
+        tg_off,
+        tg_src,
+        tg_count,
+        text_vaddr,
+        DEFAULT_BASE_VADDR,
+        code_off,
+        vessel.code_ptr,
+        vessel.code_len,
+        output_filepath
+    );
+}
+
+fn write_vessel_elf(vessel: *const ExecutableVessel, output_filepath: *byte) -> int {
+    return write_vessel_elf_with_eia(
+        vessel,
+        output_filepath,
+        0 as *const SymbolContract,
+        0,
+        0 as *const EiaRelocHole,
+        0,
+        0 as *const EiaTypeGraphEntry,
+        0
+    );
+}
+
+fn write_vessel_pe_with_eia(
+    vessel: *const ExecutableVessel,
+    output_filepath: *byte,
+    contracts_src: *const SymbolContract,
+    contracts_count: uint,
+    relocs_src: *const EiaRelocHole,
+    relocs_count: uint,
+    tg_src: *const EiaTypeGraphEntry,
+    tg_count: uint
+) -> int {
+    var fallback_sc: SymbolContract;
+    var use_c_ptr: *const SymbolContract = contracts_src;
+    var use_c_cnt: uint = contracts_count;
+    if use_c_cnt == 0 || use_c_ptr == (0 as *const SymbolContract) {
+        writer_default_contract(&mut fallback_sc, vessel.code_len, vessel.entry_offset);
+        use_c_ptr = (&fallback_sc) as *const SymbolContract;
+        use_c_cnt = 1;
+    }
+
+    let raw_code_len: uint = vessel.code_len;
+    var aligned_code: uint = ((raw_code_len + 511) / 512) * 512;
+    if aligned_code == 0 { aligned_code = 512; }
+    var code_va: uint = ((raw_code_len + 4095) / 4096) * 4096;
+    if code_va == 0 { code_va = 4096; }
+
+    let code_off: uint = 512;
+    let holo_off: uint = 512 + aligned_code;
+    let contracts_off: uint = holo_off + 96;
+    let relocs_off: uint = contracts_off + (use_c_cnt * 48);
+    let tg_off: uint = relocs_off + (relocs_count * 24);
+    let eia_raw_len: uint = 96 + (use_c_cnt * 48) + (relocs_count * 24) + (tg_count * 24);
+    let eia_aligned_raw: uint = ((eia_raw_len + 511) / 512) * 512;
+    let eia_rva: uint = 4096 + code_va;
+    let eia_va_sz: uint = ((eia_raw_len + 4095) / 4096) * 4096;
+    let total_file_size: uint = holo_off + eia_aligned_raw;
+    let img_base: uint = 5368709120;
+
+    let buf: *mut u8 = writer_alloc_zero(total_file_size);
+    if (buf as int) <= 0 {
+        return -1;
+    }
+
+    buf[0] = 77; buf[1] = 90;
+    writer_put_u32(buf, 60, 64);
+
+    buf[64] = 80; buf[65] = 69; buf[66] = 0; buf[67] = 0;
+    writer_put_u16(buf, 68, 34404);
+    writer_put_u16(buf, 70, 2);
+    writer_put_u16(buf, 84, 240);
+    writer_put_u16(buf, 86, 34);
+
+    let opt: uint = 88;
+    writer_put_u16(buf, opt + 0, 523);
+    buf[opt + 2] = 1;
+    writer_put_u32(buf, opt + 4, aligned_code as u32);
+    writer_put_u32(buf, opt + 8, eia_aligned_raw as u32);
+    writer_put_u32(buf, opt + 16, (4096 + vessel.entry_offset) as u32);
+    writer_put_u32(buf, opt + 20, 4096);
+    writer_put_u64(buf, opt + 24, img_base);
+    writer_put_u32(buf, opt + 32, 4096);
+    writer_put_u32(buf, opt + 36, 512);
+    writer_put_u16(buf, opt + 40, 6);
+    writer_put_u16(buf, opt + 48, 6);
+    writer_put_u32(buf, opt + 56, (eia_rva + eia_va_sz) as u32);
+    writer_put_u32(buf, opt + 60, 512);
+    writer_put_u16(buf, opt + 68, 3);
+    writer_put_u16(buf, opt + 70, 33120);
+    writer_put_u64(buf, opt + 72, 1048576);
+    writer_put_u64(buf, opt + 80, 4096);
+    writer_put_u64(buf, opt + 88, 1048576);
+    writer_put_u64(buf, opt + 96, 4096);
+    writer_put_u32(buf, opt + 108, 16);
+
+    let sec: uint = opt + 240;
+    buf[sec + 0] = 46; buf[sec + 1] = 116; buf[sec + 2] = 101;
+    buf[sec + 3] = 120; buf[sec + 4] = 116; buf[sec + 5] = 0;
+    writer_put_u32(buf, sec + 8, raw_code_len as u32);
+    writer_put_u32(buf, sec + 12, 4096);
+    writer_put_u32(buf, sec + 16, aligned_code as u32);
+    writer_put_u32(buf, sec + 20, code_off as u32);
+    writer_put_u32(buf, sec + 36, 1610612768);
+
+    let esec: uint = sec + 40;
+    buf[esec + 0] = 46; buf[esec + 1] = 101; buf[esec + 2] = 105;
+    buf[esec + 3] = 97; buf[esec + 4] = 0;
+    writer_put_u32(buf, esec + 8, eia_raw_len as u32);
+    writer_put_u32(buf, esec + 12, eia_rva as u32);
+    writer_put_u32(buf, esec + 16, eia_aligned_raw as u32);
+    writer_put_u32(buf, esec + 20, holo_off as u32);
+    writer_put_u32(buf, esec + 36, 1073741888);
+
+    return writer_finalize_eia_and_write(
+        buf,
+        total_file_size,
+        holo_off,
+        contracts_off,
+        use_c_ptr,
+        use_c_cnt,
+        relocs_off,
+        relocs_src,
+        relocs_count,
+        tg_off,
+        tg_src,
+        tg_count,
+        img_base + 4096,
+        img_base + eia_rva,
+        code_off,
+        vessel.code_ptr,
+        raw_code_len,
+        output_filepath
+    );
 }
 
 fn write_vessel_pe(vessel: *const ExecutableVessel, output_filepath: *byte) -> int {
-    let header_size: uint = 512;
+    return write_vessel_pe_with_eia(
+        vessel,
+        output_filepath,
+        0 as *const SymbolContract,
+        0,
+        0 as *const EiaRelocHole,
+        0,
+        0 as *const EiaTypeGraphEntry,
+        0
+    );
+}
+
+fn write_vessel_macho_with_eia(
+    vessel: *const ExecutableVessel,
+    output_filepath: *byte,
+    contracts_src: *const SymbolContract,
+    contracts_count: uint,
+    relocs_src: *const EiaRelocHole,
+    relocs_count: uint,
+    tg_src: *const EiaTypeGraphEntry,
+    tg_count: uint
+) -> int {
+    var fallback_sc: SymbolContract;
+    var use_c_ptr: *const SymbolContract = contracts_src;
+    var use_c_cnt: uint = contracts_count;
+    if use_c_cnt == 0 || use_c_ptr == (0 as *const SymbolContract) {
+        writer_default_contract(&mut fallback_sc, vessel.code_len, vessel.entry_offset);
+        use_c_ptr = (&fallback_sc) as *const SymbolContract;
+        use_c_cnt = 1;
+    }
+
     let raw_code_len: uint = vessel.code_len;
-    let aligned_raw_code: uint = ((raw_code_len + 511) / 512) * 512;
-    let pad_len: uint = aligned_raw_code - raw_code_len;
+    let header_size: uint = 352;
+    let code_off: uint = header_size;
+    let holo_off: uint = ((code_off + raw_code_len + 15) / 16) * 16;
+    let contracts_off: uint = holo_off + 96;
+    let relocs_off: uint = contracts_off + (use_c_cnt * 48);
+    let tg_off: uint = relocs_off + (relocs_count * 24);
+    let eia_len: uint = 96 + (use_c_cnt * 48) + (relocs_count * 24) + (tg_count * 24);
+    let total_file_size: uint = holo_off + eia_len;
+    let base_va: uint = 4294967296;
+    let text_vmsz: uint = ((holo_off + 4095) / 4096) * 4096;
+    let eia_vmaddr: uint = base_va + text_vmsz;
+    let eia_vmsz: uint = ((eia_len + 4095) / 4096) * 4096;
 
-    var binary_buffer: [u8; 512];
+    let buf: *mut u8 = writer_alloc_zero(total_file_size);
+    if (buf as int) <= 0 {
+        return -1;
+    }
 
-    var z: uint = 0;
-    while z < 512 { binary_buffer[z] = 0; z = z + 1; }
+    buf[0] = 207; buf[1] = 250; buf[2] = 237; buf[3] = 254;
+    writer_put_u32(buf, 4, 16777223);
+    writer_put_u32(buf, 8, 2147483651);
+    writer_put_u32(buf, 12, 2);
+    writer_put_u32(buf, 16, 4);
+    writer_put_u32(buf, 20, 320);
+    writer_put_u32(buf, 24, 2097153);
 
-    binary_buffer[0] = 77;
-    binary_buffer[1] = 90;
-    binary_buffer[60] = 64;
-    binary_buffer[61] = 0; binary_buffer[62] = 0; binary_buffer[63] = 0;
+    let pz: uint = 32;
+    writer_put_u32(buf, pz + 0, 25);
+    writer_put_u32(buf, pz + 4, 72);
+    buf[pz + 8] = 95; buf[pz + 9] = 95; buf[pz + 10] = 80; buf[pz + 11] = 65;
+    buf[pz + 12] = 71; buf[pz + 13] = 69; buf[pz + 14] = 90; buf[pz + 15] = 69;
+    buf[pz + 16] = 82; buf[pz + 17] = 79;
+    writer_put_u64(buf, pz + 32, base_va);
 
-    binary_buffer[64] = 80;
-    binary_buffer[65] = 69;
-    binary_buffer[66] = 0;
-    binary_buffer[67] = 0;
+    let tx: uint = 104;
+    writer_put_u32(buf, tx + 0, 25);
+    writer_put_u32(buf, tx + 4, 152);
+    buf[tx + 8] = 95; buf[tx + 9] = 95; buf[tx + 10] = 84; buf[tx + 11] = 69;
+    buf[tx + 12] = 88; buf[tx + 13] = 84;
+    writer_put_u64(buf, tx + 24, base_va);
+    writer_put_u64(buf, tx + 32, text_vmsz);
+    writer_put_u64(buf, tx + 40, 0);
+    writer_put_u64(buf, tx + 48, holo_off);
+    writer_put_u32(buf, tx + 56, 5);
+    writer_put_u32(buf, tx + 60, 5);
+    writer_put_u32(buf, tx + 64, 1);
 
-    binary_buffer[68] = 100; binary_buffer[69] = 134;
-    binary_buffer[70] = 1;   binary_buffer[71] = 0;
-    binary_buffer[72] = 0; binary_buffer[73] = 0; binary_buffer[74] = 0; binary_buffer[75] = 0;
-    binary_buffer[76] = 0; binary_buffer[77] = 0; binary_buffer[78] = 0; binary_buffer[79] = 0;
-    binary_buffer[80] = 0; binary_buffer[81] = 0; binary_buffer[82] = 0; binary_buffer[83] = 0;
-    binary_buffer[84] = 240; binary_buffer[85] = 0;
-    binary_buffer[86] = 34;  binary_buffer[87] = 0;
+    let sc: uint = tx + 72;
+    buf[sc + 0] = 95; buf[sc + 1] = 95; buf[sc + 2] = 116; buf[sc + 3] = 101;
+    buf[sc + 4] = 120; buf[sc + 5] = 116;
+    buf[sc + 16] = 95; buf[sc + 17] = 95; buf[sc + 18] = 84; buf[sc + 19] = 69;
+    buf[sc + 20] = 88; buf[sc + 21] = 84;
+    writer_put_u64(buf, sc + 32, base_va + code_off);
+    writer_put_u64(buf, sc + 40, raw_code_len);
+    writer_put_u32(buf, sc + 48, code_off as u32);
+    writer_put_u32(buf, sc + 68, 2147484672);
 
-    let opt: uint = 88;
-    binary_buffer[opt + 0] = 11; binary_buffer[opt + 1] = 2;
-    binary_buffer[opt + 2] = 1;  binary_buffer[opt + 3] = 0;
-    binary_buffer[opt + 4] = (aligned_raw_code & 255) as u8;
-    binary_buffer[opt + 5] = ((aligned_raw_code >> 8) & 255) as u8;
-    binary_buffer[opt + 6] = 0; binary_buffer[opt + 7] = 0;
+    let mn: uint = 256;
+    writer_put_u32(buf, mn + 0, 2147483688);
+    writer_put_u32(buf, mn + 4, 24);
+    writer_put_u64(buf, mn + 8, code_off + vessel.entry_offset);
 
-    let ep_rva: uint = 4096 + vessel.entry_offset;
-    binary_buffer[opt + 16] = (ep_rva & 255) as u8;
-    binary_buffer[opt + 17] = ((ep_rva >> 8) & 255) as u8;
-    binary_buffer[opt + 18] = 0; binary_buffer[opt + 19] = 0;
+    let es: uint = 280;
+    writer_put_u32(buf, es + 0, 25);
+    writer_put_u32(buf, es + 4, 72);
+    buf[es + 8] = 95; buf[es + 9] = 95; buf[es + 10] = 69; buf[es + 11] = 73; buf[es + 12] = 65;
+    writer_put_u64(buf, es + 24, eia_vmaddr);
+    writer_put_u64(buf, es + 32, eia_vmsz);
+    writer_put_u64(buf, es + 40, holo_off);
+    writer_put_u64(buf, es + 48, eia_len);
+    writer_put_u32(buf, es + 56, 1);
+    writer_put_u32(buf, es + 60, 1);
 
-    binary_buffer[opt + 20] = 0;  binary_buffer[opt + 21] = 16;
-    binary_buffer[opt + 22] = 0;  binary_buffer[opt + 23] = 0;
-
-    binary_buffer[opt + 24] = 0; binary_buffer[opt + 25] = 0; binary_buffer[opt + 26] = 0; binary_buffer[opt + 27] = 64;
-    binary_buffer[opt + 28] = 1; binary_buffer[opt + 29] = 0; binary_buffer[opt + 30] = 0; binary_buffer[opt + 31] = 0;
-
-    binary_buffer[opt + 32] = 0;  binary_buffer[opt + 33] = 16;
-    binary_buffer[opt + 36] = 0;  binary_buffer[opt + 37] = 2;
-
-    binary_buffer[opt + 40] = 6; binary_buffer[opt + 41] = 0;
-    binary_buffer[opt + 48] = 6; binary_buffer[opt + 49] = 0;
-
-    binary_buffer[opt + 56] = 0; binary_buffer[opt + 57] = 32;
-    binary_buffer[opt + 60] = 0; binary_buffer[opt + 61] = 2;
-
-    binary_buffer[opt + 68] = 3; binary_buffer[opt + 69] = 0;
-    binary_buffer[opt + 70] = 96; binary_buffer[opt + 71] = 129;
-
-    binary_buffer[opt + 74] = 16;
-    binary_buffer[opt + 81] = 16;
-    binary_buffer[opt + 108] = 16; binary_buffer[opt + 109] = 0;
-
-    let sec: uint = opt + 240;
-    binary_buffer[sec + 0] = 46; binary_buffer[sec + 1] = 116; binary_buffer[sec + 2] = 101;
-    binary_buffer[sec + 3] = 120; binary_buffer[sec + 4] = 116; binary_buffer[sec + 5] = 0;
-
-    binary_buffer[sec + 8] = (raw_code_len & 255) as u8;
-    binary_buffer[sec + 9] = ((raw_code_len >> 8) & 255) as u8;
-
-    binary_buffer[sec + 12] = 0; binary_buffer[sec + 13] = 16;
-
-    binary_buffer[sec + 16] = (aligned_raw_code & 255) as u8;
-    binary_buffer[sec + 17] = ((aligned_raw_code >> 8) & 255) as u8;
-
-    binary_buffer[sec + 20] = 0; binary_buffer[sec + 21] = 2;
-
-    binary_buffer[sec + 36] = 32; binary_buffer[sec + 37] = 0; binary_buffer[sec + 38] = 0; binary_buffer[sec + 39] = 96;
-
-    return write_header_and_body_to_file(&binary_buffer[0], header_size, vessel.code_ptr, raw_code_len, pad_len, output_filepath);
+    return writer_finalize_eia_and_write(
+        buf,
+        total_file_size,
+        holo_off,
+        contracts_off,
+        use_c_ptr,
+        use_c_cnt,
+        relocs_off,
+        relocs_src,
+        relocs_count,
+        tg_off,
+        tg_src,
+        tg_count,
+        base_va + code_off,
+        eia_vmaddr,
+        code_off,
+        vessel.code_ptr,
+        raw_code_len,
+        output_filepath
+    );
 }
 
 fn write_vessel_macho(vessel: *const ExecutableVessel, output_filepath: *byte) -> int {
-    let raw_code_len: uint = vessel.code_len;
-    let header_size: uint = 280;
-    let total_file_size: uint = header_size + raw_code_len;
-
-    var binary_buffer: [u8; 288];
-
-    var z: uint = 0;
-    while z < header_size { binary_buffer[z] = 0; z = z + 1; }
-
-    binary_buffer[0] = 207; binary_buffer[1] = 250; binary_buffer[2] = 237; binary_buffer[3] = 254;
-    binary_buffer[4] = 7; binary_buffer[5] = 0; binary_buffer[6] = 0; binary_buffer[7] = 1;
-    binary_buffer[8] = 3; binary_buffer[9] = 0; binary_buffer[10] = 0; binary_buffer[11] = 128;
-    binary_buffer[12] = 2; binary_buffer[13] = 0; binary_buffer[14] = 0; binary_buffer[15] = 0;
-    binary_buffer[16] = 3; binary_buffer[17] = 0; binary_buffer[18] = 0; binary_buffer[19] = 0;
-    let sizeofcmds: uint = 72 + 152 + 24;
-    binary_buffer[20] = (sizeofcmds & 255) as u8; binary_buffer[21] = 0; binary_buffer[22] = 0; binary_buffer[23] = 0;
-    binary_buffer[24] = 1; binary_buffer[25] = 0; binary_buffer[26] = 32; binary_buffer[27] = 0;
-
-    let pz: uint = 32;
-    binary_buffer[pz + 0] = 25; binary_buffer[pz + 1] = 0; binary_buffer[pz + 2] = 0; binary_buffer[pz + 3] = 0;
-    binary_buffer[pz + 4] = 72; binary_buffer[pz + 5] = 0; binary_buffer[pz + 6] = 0; binary_buffer[pz + 7] = 0;
-    binary_buffer[pz + 8] = 95; binary_buffer[pz + 9] = 95; binary_buffer[pz + 10] = 80; binary_buffer[pz + 11] = 65;
-    binary_buffer[pz + 12] = 71; binary_buffer[pz + 13] = 69; binary_buffer[pz + 14] = 90; binary_buffer[pz + 15] = 69;
-    binary_buffer[pz + 16] = 82; binary_buffer[pz + 17] = 79;
-    binary_buffer[pz + 36] = 1;
-
-    let tx: uint = 104;
-    binary_buffer[tx + 0] = 25; binary_buffer[tx + 1] = 0; binary_buffer[tx + 2] = 0; binary_buffer[tx + 3] = 0;
-    binary_buffer[tx + 4] = 152; binary_buffer[tx + 5] = 0; binary_buffer[tx + 6] = 0; binary_buffer[tx + 7] = 0;
-    binary_buffer[tx + 8] = 95; binary_buffer[tx + 9] = 95; binary_buffer[tx + 10] = 84; binary_buffer[tx + 11] = 69;
-    binary_buffer[tx + 12] = 88; binary_buffer[tx + 13] = 84;
-    binary_buffer[tx + 28] = 1;
-    binary_buffer[tx + 32] = 0; binary_buffer[tx + 33] = 16;
-    binary_buffer[tx + 48] = (total_file_size & 255) as u8;
-    binary_buffer[tx + 49] = ((total_file_size >> 8) & 255) as u8;
-    binary_buffer[tx + 56] = 5; binary_buffer[tx + 60] = 5;
-    binary_buffer[tx + 64] = 1;
-
-    let sc: uint = tx + 72;
-    binary_buffer[sc + 0] = 95; binary_buffer[sc + 1] = 95; binary_buffer[sc + 2] = 116; binary_buffer[sc + 3] = 101;
-    binary_buffer[sc + 4] = 120; binary_buffer[sc + 5] = 116;
-    binary_buffer[sc + 16] = 95; binary_buffer[sc + 17] = 95; binary_buffer[sc + 18] = 84; binary_buffer[sc + 19] = 69;
-    binary_buffer[sc + 20] = 88; binary_buffer[sc + 21] = 84;
-    let text_vaddr: uint = header_size;
-    binary_buffer[sc + 32] = (text_vaddr & 255) as u8;
-    binary_buffer[sc + 33] = ((text_vaddr >> 8) & 255) as u8;
-    binary_buffer[sc + 36] = 1;
-    binary_buffer[sc + 40] = (raw_code_len & 255) as u8;
-    binary_buffer[sc + 41] = ((raw_code_len >> 8) & 255) as u8;
-    binary_buffer[sc + 48] = (header_size & 255) as u8;
-    binary_buffer[sc + 49] = ((header_size >> 8) & 255) as u8;
-    binary_buffer[sc + 68] = 0; binary_buffer[sc + 69] = 4; binary_buffer[sc + 70] = 0; binary_buffer[sc + 71] = 128;
-
-    let mn: uint = 256;
-    binary_buffer[mn + 0] = 40; binary_buffer[mn + 1] = 0; binary_buffer[mn + 2] = 0; binary_buffer[mn + 3] = 128;
-    binary_buffer[mn + 4] = 24; binary_buffer[mn + 5] = 0; binary_buffer[mn + 6] = 0; binary_buffer[mn + 7] = 0;
-    let main_entry_offset: uint = header_size + vessel.entry_offset;
-    binary_buffer[mn + 8] = (main_entry_offset & 255) as u8;
-    binary_buffer[mn + 9] = ((main_entry_offset >> 8) & 255) as u8;
-
-    return write_header_and_body_to_file(&binary_buffer[0], header_size, vessel.code_ptr, raw_code_len, 0, output_filepath);
+    return write_vessel_macho_with_eia(
+        vessel,
+        output_filepath,
+        0 as *const SymbolContract,
+        0,
+        0 as *const EiaRelocHole,
+        0,
+        0 as *const EiaTypeGraphEntry,
+        0
+    );
 }
 
 fn write_executable_binary_elf(cg: *mut CodeGenerator, output_filepath: *byte) -> int {
@@ -291,17 +537,45 @@ fn write_executable_binary_macho(cg: *mut CodeGenerator, output_filepath: *byte)
     return write_vessel_macho(&v, output_filepath);
 }
 
+fn write_executable_binary_target_eia(
+    cg: *mut CodeGenerator,
+    output_filepath: *byte,
+    target_os: uint,
+    contracts_src: *const SymbolContract,
+    contracts_count: uint,
+    relocs_src: *const EiaRelocHole,
+    relocs_count: uint,
+    tg_src: *const EiaTypeGraphEntry,
+    tg_count: uint
+) -> int {
+    var v: ExecutableVessel;
+    v.code_ptr = &cg.stream.buffer[0];
+    v.code_len = cg.stream.length;
+    v.entry_offset = cg.entry_point_offset;
+    if target_os == TARGET_OS_WINDOWS {
+        return write_vessel_pe_with_eia(&v, output_filepath, contracts_src, contracts_count, relocs_src, relocs_count, tg_src, tg_count);
+    } else if target_os == TARGET_OS_MACOS {
+        return write_vessel_macho_with_eia(&v, output_filepath, contracts_src, contracts_count, relocs_src, relocs_count, tg_src, tg_count);
+    }
+    return write_vessel_elf_with_eia(&v, output_filepath, contracts_src, contracts_count, relocs_src, relocs_count, tg_src, tg_count);
+}
+
 fn write_executable_binary_target(
     cg: *mut CodeGenerator,
     output_filepath: *byte,
     target_os: uint
 ) -> int {
-    if target_os == TARGET_OS_WINDOWS {
-        return write_executable_binary_pe(cg, output_filepath);
-    } else if target_os == TARGET_OS_MACOS {
-        return write_executable_binary_macho(cg, output_filepath);
-    }
-    return write_executable_binary_elf(cg, output_filepath);
+    return write_executable_binary_target_eia(
+        cg,
+        output_filepath,
+        target_os,
+        0 as *const SymbolContract,
+        0,
+        0 as *const EiaRelocHole,
+        0,
+        0 as *const EiaTypeGraphEntry,
+        0
+    );
 }
 
 fn write_executable_binary(cg: *mut CodeGenerator, output_filepath: *byte) -> int {

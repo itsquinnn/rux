@@ -1,4 +1,18 @@
 fn compile_expr_os_port(cg: *mut CodeGen, node: *mut AstNode) {
+    if node.child1 != (0 as *mut AstNode) && node.child1.kind == 116 {
+        if node.child1.val == 998 {
+            cg_emit8(cg, 184); cg_emit32(cg, cg.target_arch as u32);
+            return;
+        }
+        if node.child1.val == 999 {
+            if cg.target_arch == 6 {
+                cg_emit8(cg, 49); cg_emit8(cg, 192);
+            } else {
+                cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 192); cg_emit32(cg, (0 - 38) as u32);
+            }
+            return;
+        }
+    }
     var cur_a: *mut AstNode = node.child2;
     var a_cnt: u32 = 0;
     while cur_a != (0 as *mut AstNode) && a_cnt < 6 {
@@ -29,73 +43,131 @@ fn compile_expr_os_port(cg: *mut CodeGen, node: *mut AstNode) {
         cg_emit8(cg, 232);
         let rd_disp: i32 = (cg.pe_readfile_helper_off as i32) - ((cg.text_size + 4) as i32);
         cg_emit32(cg, rd_disp as u32);
-        cg_emit8(cg, 235); cg_emit8(cg, 107);
+        cg_emit8(cg, 235); cg_emit8(cg, 120);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 1);
         cg_emit8(cg, 117); cg_emit8(cg, 7);
         cg_emit8(cg, 232);
         let sw_disp: i32 = (cg.pe_write_helper_off as i32) - ((cg.text_size + 4) as i32);
         cg_emit32(cg, sw_disp as u32);
-        cg_emit8(cg, 235); cg_emit8(cg, 94);
+        cg_emit8(cg, 235); cg_emit8(cg, 107);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 2);
         cg_emit8(cg, 117); cg_emit8(cg, 7);
         cg_emit8(cg, 232);
         let cf_disp: i32 = (cg.pe_createfile_helper_off as i32) - ((cg.text_size + 4) as i32);
         cg_emit32(cg, cf_disp as u32);
-        cg_emit8(cg, 235); cg_emit8(cg, 81);
+        cg_emit8(cg, 235); cg_emit8(cg, 94);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 3);
         cg_emit8(cg, 117); cg_emit8(cg, 7);
         cg_emit8(cg, 232);
         let cl_disp: i32 = (cg.pe_closehandle_helper_off as i32) - ((cg.text_size + 4) as i32);
         cg_emit32(cg, cl_disp as u32);
-        cg_emit8(cg, 235); cg_emit8(cg, 68);
+        cg_emit8(cg, 235); cg_emit8(cg, 81);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 9);
         cg_emit8(cg, 117); cg_emit8(cg, 7);
         cg_emit8(cg, 232);
         let va_disp: i32 = (cg.pe_valloc_helper_off as i32) - ((cg.text_size + 4) as i32);
         cg_emit32(cg, va_disp as u32);
-        cg_emit8(cg, 235); cg_emit8(cg, 55);
+        cg_emit8(cg, 235); cg_emit8(cg, 68);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 11);
         cg_emit8(cg, 117); cg_emit8(cg, 7);
         cg_emit8(cg, 232);
         let vf_disp: i32 = (cg.pe_vfree_helper_off as i32) - ((cg.text_size + 4) as i32);
         cg_emit32(cg, vf_disp as u32);
-        cg_emit8(cg, 235); cg_emit8(cg, 42);
+        cg_emit8(cg, 235); cg_emit8(cg, 55);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 35);
         cg_emit8(cg, 117); cg_emit8(cg, 7);
         cg_emit8(cg, 232);
         let sl_disp: i32 = (cg.pe_sleep_helper_off as i32) - ((cg.text_size + 4) as i32);
         cg_emit32(cg, sl_disp as u32);
-        cg_emit8(cg, 235); cg_emit8(cg, 29);
+        cg_emit8(cg, 235); cg_emit8(cg, 42);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 39);
         cg_emit8(cg, 117); cg_emit8(cg, 7);
         cg_emit8(cg, 184); cg_emit32(cg, 1000);
+        cg_emit8(cg, 235); cg_emit8(cg, 29);
+
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 87);
+        cg_emit8(cg, 117); cg_emit8(cg, 7);
+        cg_emit8(cg, 232);
+        let dl_disp: i32 = ((cg.pe_sleep_helper_off + 35) as i32) - ((cg.text_size + 4) as i32);
+        cg_emit32(cg, dl_disp as u32);
         cg_emit8(cg, 235); cg_emit8(cg, 16);
 
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 60);
         cg_emit8(cg, 117); cg_emit8(cg, 8);
         cg_emit8(cg, 137); cg_emit8(cg, 249);
-        cg_emit8(cg, 255); cg_emit8(cg, 21);
-        cg.pe_exit_iat_hole2 = cg.text_size;
-        cg_emit32(cg, 0);
+        cg_emit8(cg, 233);
+        let d_exit: i32 = ((cg.pe_exit_iat_hole as i32) - 10) - ((cg.text_size + 4) as i32);
+        cg_emit32(cg, d_exit as u32);
+        cg_emit8(cg, 144);
 
         cg_emit8(cg, 49); cg_emit8(cg, 192);
         return;
     }
 
     if cg.target_arch == 7 {
+        var mac_is_fork: u32 = 0;
+        if node.child1 != (0 as *mut AstNode) && node.child1.kind == 116 && node.child1.val == 56 {
+            mac_is_fork = 1;
+        }
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 0);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554435);
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 1);
         cg_emit8(cg, 117); cg_emit8(cg, 5);
         cg_emit8(cg, 184); cg_emit32(cg, 33554436);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 2);
+        cg_emit8(cg, 117); cg_emit8(cg, 19);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554437);
+        cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 254); cg_emit32(cg, 577);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 190); cg_emit32(cg, 1537);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 3);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554438);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 9);
+        cg_emit8(cg, 117); cg_emit8(cg, 11);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554629);
+        cg_emit8(cg, 65); cg_emit8(cg, 186); cg_emit32(cg, 4098);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 11);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554505);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 16);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554486);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 39);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554452);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 56);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554434);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 59);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554491);
         cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 60);
         cg_emit8(cg, 117); cg_emit8(cg, 5);
         cg_emit8(cg, 184); cg_emit32(cg, 33554433);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 61);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554439);
+        cg_emit8(cg, 72); cg_emit8(cg, 131); cg_emit8(cg, 248); cg_emit8(cg, 87);
+        cg_emit8(cg, 117); cg_emit8(cg, 5);
+        cg_emit8(cg, 184); cg_emit32(cg, 33554442);
+        cg_emit8(cg, 15); cg_emit8(cg, 5);
+        cg_emit8(cg, 115); cg_emit8(cg, 3);
+        cg_emit8(cg, 72); cg_emit8(cg, 247); cg_emit8(cg, 216);
+        if mac_is_fork == 1 {
+            cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 210);
+            cg_emit8(cg, 116); cg_emit8(cg, 2);
+            cg_emit8(cg, 49); cg_emit8(cg, 192);
+        }
+        return;
     }
 
     cg_emit8(cg, 15); cg_emit8(cg, 5);
@@ -315,11 +387,125 @@ fn compile_expr_silicon(cg: *mut CodeGen, node: *mut AstNode) {
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 208);
         return;
     }
+    if node.val == 0 && node.child1 != (0 as *mut AstNode) {
+        cg.rodata_size = ((cg.rodata_size + 7) / 8) * 8;
+        let tup_ro: u32 = cg.rodata_size as u32;
+        var t_cnt: u32 = 0;
+        var t_cur: *mut AstNode = node.child1;
+        while t_cur != (0 as *mut AstNode) { t_cnt = t_cnt + 1; t_cur = t_cur.next; }
+        var tz: u32 = 0;
+        while tz < (t_cnt * 8) {
+            cg.rodata_buf[cg.rodata_size as u64] = 0;
+            cg.rodata_size = cg.rodata_size + 1;
+            tz = tz + 1;
+        }
+        var ti: u32 = 0;
+        t_cur = node.child1;
+        while t_cur != (0 as *mut AstNode) {
+            compile_expr(cg, t_cur);
+            cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 61);
+            let thole: u32 = cg.text_size;
+            cg_emit32(cg, 0);
+            cg_add_rodata_fixup(cg, thole, tup_ro + (ti * 8));
+            cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 7);
+            ti = ti + 1;
+            t_cur = t_cur.next;
+        }
+        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 5);
+        let tres_hole: u32 = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_add_rodata_fixup(cg, tres_hole, tup_ro);
+        return;
+    }
+    if node.val == 50 || node.val == 51 {
+        cg.rodata_size = ((cg.rodata_size + 7) / 8) * 8;
+        let vec_ro: u32 = cg.rodata_size as u32;
+        var vz: u32 = 0;
+        while vz < 536 {
+            cg.rodata_buf[cg.rodata_size as u64] = 0;
+            cg.rodata_size = cg.rodata_size + 1;
+            vz = vz + 1;
+        }
+        var v_idx: u32 = 0;
+        var v_cur: *mut AstNode = node.child1;
+        while v_cur != (0 as *mut AstNode) && v_idx < 64 {
+            compile_expr(cg, v_cur);
+            if node.val == 51 && cg_is_string_expr(cg, v_cur) == 1 {
+                cg_emit_str_hash(cg);
+            }
+            cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 61);
+            let vhole: u32 = cg.text_size;
+            cg_emit32(cg, 0);
+            cg_add_rodata_fixup(cg, vhole, vec_ro + 16 + (v_idx * 8));
+            cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 7);
+            v_idx = v_idx + 1;
+            v_cur = v_cur.next;
+        }
+        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 5);
+        let vres_hole: u32 = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_add_rodata_fixup(cg, vres_hole, vec_ro);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 0); cg_emit32(cg, v_idx);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 64); cg_emit8(cg, 8); cg_emit32(cg, 64);
+        return;
+    }
+    if node.val == 52 {
+        cg.rodata_size = ((cg.rodata_size + 7) / 8) * 8;
+        let map_ro: u32 = cg.rodata_size as u32;
+        var mz: u32 = 0;
+        while mz < 536 {
+            cg.rodata_buf[cg.rodata_size as u64] = 0;
+            cg.rodata_size = cg.rodata_size + 1;
+            mz = mz + 1;
+        }
+        var m_idx: u32 = 0;
+        var m_cur: *mut AstNode = node.child1;
+        while m_cur != (0 as *mut AstNode) && m_idx < 32 {
+            var k_node: *mut AstNode = m_cur;
+            var v_node: *mut AstNode = m_cur.child1;
+            if m_cur.kind == 101 {
+                k_node = m_cur.child1;
+                v_node = m_cur.child2;
+            }
+            compile_expr(cg, k_node);
+            if cg_is_string_expr(cg, k_node) == 1 {
+                cg_emit_str_hash(cg);
+            }
+            cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 61);
+            let khole: u32 = cg.text_size;
+            cg_emit32(cg, 0);
+            cg_add_rodata_fixup(cg, khole, map_ro + 16 + (m_idx * 16));
+            cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 7);
+            if v_node != (0 as *mut AstNode) {
+                compile_expr(cg, v_node);
+                cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 61);
+                let mvhole: u32 = cg.text_size;
+                cg_emit32(cg, 0);
+                cg_add_rodata_fixup(cg, mvhole, map_ro + 24 + (m_idx * 16));
+                cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 7);
+            }
+            m_idx = m_idx + 1;
+            m_cur = m_cur.next;
+        }
+        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 5);
+        let mres_hole: u32 = cg.text_size;
+        cg_emit32(cg, 0);
+        cg_add_rodata_fixup(cg, mres_hole, map_ro);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 0); cg_emit32(cg, m_idx);
+        cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 64); cg_emit8(cg, 8); cg_emit32(cg, 32);
+        return;
+    }
     cg_emit8(cg, 72); cg_emit8(cg, 49); cg_emit8(cg, 192);
 }
 
 fn compile_expr_binary(cg: *mut CodeGen, node: *mut AstNode) {
     let op: u32 = node.val as u32;
+    if op == 30 {
+        if cg_is_str_concat_expr(cg, node.child1) == 1 || cg_is_str_concat_expr(cg, node.child2) == 1 {
+            cg_emit_str_concat(cg, node.child1, node.child2);
+            return;
+        }
+    }
     if op == 91 || op == 111 {
         compile_expr(cg, node.child1);
         cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);

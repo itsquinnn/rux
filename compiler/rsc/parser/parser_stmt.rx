@@ -406,7 +406,10 @@ fn parse_stmt(p: *mut Parser) -> *mut AstNode {
             last_bs = stmt_chain_tail(bs);
         }
         parser_expect(p, 63);
-        if p.cur_tok.kind == 15 {
+        if p.cur_tok.kind == 1 && p.cur_tok.hash == 9153970177108736995 {
+            p.cur_tok.kind = 14;
+            sn.child3 = parse_stmt(p);
+        } else if p.cur_tok.kind == 15 {
             parser_expect(p, 15);
             if p.cur_tok.kind == 14 {
                 sn.child3 = parse_stmt(p);
@@ -424,6 +427,51 @@ fn parse_stmt(p: *mut Parser) -> *mut AstNode {
                 }
                 parser_expect(p, 63);
             }
+        }
+        return sn;
+    }
+
+    if p.cur_tok.kind == 1 && (p.cur_tok.hash == 5499651717430306356 || p.cur_tok.hash == 17641444750853282548) {
+        parse_use_decl(p);
+        return alloc_node(p, 0);
+    }
+
+    if p.cur_tok.kind == 1 && p.cur_tok.hash == 4360826825498846359 {
+        lex_next_token(p.lex, &mut p.cur_tok);
+        let ens_cond: *mut AstNode = parse_expr(p);
+        let not_cond: *mut AstNode = alloc_node(p, 112);
+        not_cond.val = 53;
+        not_cond.child1 = ens_cond;
+        sn = alloc_node(p, 107);
+        sn.child1 = not_cond;
+        if p.cur_tok.kind == 15 {
+            parser_expect(p, 15);
+            if p.cur_tok.kind == 62 {
+                parser_expect(p, 62);
+                var last_ens: *mut AstNode = 0 as *mut AstNode;
+                while p.cur_tok.kind != 63 && p.cur_tok.kind != 0 {
+                    let ebs2: *mut AstNode = parse_stmt(p);
+                    if last_ens == (0 as *mut AstNode) { sn.child2 = ebs2; } else { last_ens.next = ebs2; }
+                    last_ens = stmt_chain_tail(ebs2);
+                }
+                parser_expect(p, 63);
+            } else {
+                sn.child2 = parse_stmt(p);
+            }
+        } else if p.cur_tok.kind == 72 {
+            parser_expect(p, 72);
+            let ret_ens: *mut AstNode = alloc_node(p, 109);
+            ret_ens.child1 = parse_expr(p);
+            sn.child2 = ret_ens;
+            consume_optional_semi(p);
+        } else {
+            let ret_ens2: *mut AstNode = alloc_node(p, 109);
+            let neg_one: *mut AstNode = alloc_node(p, 116);
+            neg_one.val = 0 - 1;
+            neg_one.is_mut = 1;
+            ret_ens2.child1 = neg_one;
+            sn.child2 = ret_ens2;
+            consume_optional_semi(p);
         }
         return sn;
     }

@@ -38,6 +38,67 @@ fn main() -> int {
     }
     println("[PASS] CCNS: Dual-perimeter exposed shield probe absorption verified");
 
+    if ccns_cap_validate(&token, 0xFFFFFFFFFFFFFFF0, 32, 1) {
+        println("[FAIL] CCNS: Integer overflow bounds check bypassed");
+        return 5;
+    }
+
+    var tampered: AegisCapToken = token;
+    tampered.length = 4096;
+    if ccns_cap_validate(&tampered, 0, 16, 1) {
+        println("[FAIL] CCNS: Tampered token length accepted");
+        return 6;
+    }
+    var tampered_tag: AegisCapToken = token;
+    tampered_tag.capability_tag = tampered_tag.capability_tag ^ 1;
+    if ccns_cap_validate(&tampered_tag, 0, 16, 1) {
+        println("[FAIL] CCNS: Tampered capability_tag accepted");
+        return 7;
+    }
+
+    ccns_cap_seal(&mut token);
+    if !ccns_cap_validate(&token, 0, 16, 1) {
+        println("[FAIL] CCNS: Sealed token failed valid READ check");
+        return 8;
+    }
+    if ccns_cap_restrict(&mut token, 1) {
+        println("[FAIL] CCNS: Sealed capability allowed post-seal restriction");
+        return 9;
+    }
+    println("[PASS] CCNS: Tag authentication, overflow protection, and sealing verified");
+
+    var sword: HiddenSwordEnclave;
+    ccns_sword_init(&mut sword, 7, 0xDEADBEEFCAFEBABE);
+    shield.is_compromised = true;
+
+    var fake_proof: ZkCommandProof;
+    fake_proof.nonce = 42;
+    fake_proof.epoch = 2;
+    fake_proof.proof_hash = 0x123456;
+    if ccns_execute_core_neutralization(&mut sword, &mut shield, &fake_proof) || !shield.is_compromised {
+        println("[FAIL] CCNS: Forged ZK command proof accepted");
+        return 10;
+    }
+
+    var valid_proof: ZkCommandProof;
+    ccns_sign_command_proof(&sword, &mut valid_proof, 42, 2);
+    if valid_proof.proof_hash == 0 {
+        println("[FAIL] CCNS: Failed to sign valid command proof");
+        return 11;
+    }
+    var tampered_proof: ZkCommandProof = valid_proof;
+    tampered_proof.nonce = 99;
+    if ccns_execute_core_neutralization(&mut sword, &mut shield, &tampered_proof) {
+        println("[FAIL] CCNS: Tampered signed proof accepted");
+        return 12;
+    }
+
+    if !ccns_execute_core_neutralization(&mut sword, &mut shield, &valid_proof) || shield.is_compromised || sword.neutralizations_executed != 1 {
+        println("[FAIL] CCNS: Valid signed proof rejected");
+        return 13;
+    }
+    println("[PASS] CCNS: Keyed HiddenSword enclave command proof verification verified");
+
     println("ALL CCNS CAPABILITY SECURITY TESTS PASSED (100% OK)");
     return 0;
 }

@@ -1,0 +1,73 @@
+include "lib/core/types.rx";
+include "lib/core/option.rx";
+include "lib/core/result.rx";
+
+mod math_ns {
+    fn triple(x: int) -> int {
+        return x * 3;
+    }
+}
+use math_ns.triple;
+
+extern "C" fn external_abi_hook(a: int, b: int) -> int;
+
+struct BoxedPair<A, B> {
+    first: A,
+    second: B,
+}
+
+def classify_range(n: int) -> str {
+    if n < 0 {
+        return "neg";
+    } elif n == 0 or not (n < 100) {
+        return "boundary";
+    } elif n > 0 and n < 100 {
+        return "in_range";
+    }
+    return "unknown";
+}
+
+fn checked_div(a: int, b: int) -> Result<int, int> {
+    if b == 0 {
+        return res_err<int, int>(ERR_INVALID_INPUT);
+    }
+    return res_ok<int, int>(a / b);
+}
+
+fn main() -> int {
+    ensure(math_ns.triple(7) == 21, "mod qualified call");
+    ensure(triple(8) == 24, "use imported call");
+
+    let c1: str = classify_range(0 - 5);
+    let c2: str = classify_range(42);
+    let c3: str = classify_range(200);
+    say("classify: " + c1 + " / " + c2 + " / " + c3);
+
+    let nums = vec[10, 20, 30];
+    var total: int = 0;
+    for item in nums {
+        total = total + item;
+    }
+    ensure(total == 60, "vec literal + for..in sum");
+
+    let s = set{1, 2, 3};
+    let m = map{"k1": 11, "k2": 22};
+
+    let r_ok: Result<int, int> = checked_div(84, 2);
+    ensure(res_is_ok<int, int>(&r_ok) == 1, "Result Ok");
+    ensure(res_unwrap<int, int>(r_ok) == 42, "Result unwrap 42");
+    let r_err: Result<int, int> = checked_div(10, 0);
+    ensure(res_is_err<int, int>(&r_err) == 1, "Result Err");
+
+    let pid: int = @os.getpid();
+    ensure(pid > 0, "direct @os.getpid syscall");
+
+    var p: BoxedPair<int, int>;
+    p.first = 19;
+    p.second = 23;
+    let comb = fn(a: int, b: int) => a + b;
+    ensure(comb(p.first, p.second) == 42, "generic struct + arrow lambda");
+
+    say("Step 6-10 & Pythonic Ergonomics OK: " + total.to_str());
+    return 0;
+}

@@ -1,3 +1,9 @@
+include "lib/crypto/blake3_core.rx";
+
+const EIA_SYM_DEFINED: u32 = 1;
+const EIA_SYM_IMPORT: u32 = 2;
+const EIA_SYM_PUBLIC: u32 = 8;
+
 struct SymbolContract {
     symbol_hash: uint,
     type_sig_hash: uint,
@@ -8,6 +14,52 @@ struct SymbolContract {
     contract_digest: uint,
 }
 
+fn eia_contract_compute_digest(contract: *const SymbolContract) -> uint {
+    if contract == (0 as *const SymbolContract) {
+        return 0;
+    }
+    return blake3_hash64(contract as *const u8, 40);
+}
+
+fn eia_contract_seal(contract: *mut SymbolContract) -> uint {
+    let d: uint = eia_contract_compute_digest(contract as *const SymbolContract);
+    contract.contract_digest = d;
+    return d;
+}
+
+fn eia_contract_verify_digest(contract: *const SymbolContract) -> bool {
+    if contract == (0 as *const SymbolContract) {
+        return false;
+    }
+    if contract.contract_digest == 0 {
+        return false;
+    }
+    return eia_contract_compute_digest(contract) == contract.contract_digest;
+}
+
+fn eia_contract_init_ex(
+    contract: *mut SymbolContract,
+    sym_hash: uint,
+    sig_hash: uint,
+    vaddr: uint,
+    size: uint,
+    flags: u32,
+    param_conv: u32,
+    digest: uint
+) {
+    contract.symbol_hash = sym_hash;
+    contract.type_sig_hash = sig_hash;
+    contract.vaddr = vaddr;
+    contract.code_size = size;
+    contract.flags = flags;
+    contract.param_conv = param_conv;
+    if digest != 0 {
+        contract.contract_digest = digest;
+    } else {
+        contract.contract_digest = eia_contract_compute_digest(contract as *const SymbolContract);
+    }
+}
+
 fn eia_contract_init(
     contract: *mut SymbolContract,
     sym_hash: uint,
@@ -16,24 +68,155 @@ fn eia_contract_init(
     size: uint,
     digest: uint
 ) {
-    contract.symbol_hash = sym_hash;
-    contract.type_sig_hash = sig_hash;
-    contract.vaddr = vaddr;
-    contract.code_size = size;
-    contract.flags = 0;
-    contract.param_conv = 0;
-    contract.contract_digest = digest;
+    eia_contract_init_ex(contract, sym_hash, sig_hash, vaddr, size, EIA_SYM_DEFINED, 0, digest);
 }
 
 fn eia_contract_verify_match(
     client: *const SymbolContract,
     provider: *const SymbolContract
 ) -> bool {
+    if client == (0 as *const SymbolContract) || provider == (0 as *const SymbolContract) {
+        return false;
+    }
     if client.symbol_hash != provider.symbol_hash {
         return false;
     }
     if client.type_sig_hash != provider.type_sig_hash {
         return false;
     }
+    if client.param_conv != provider.param_conv {
+        return false;
+    }
+    if provider.flags != 0 && (provider.flags & EIA_SYM_DEFINED) == 0 {
+        return false;
+    }
+    if (client.flags & 0xFFFF0000) != (provider.flags & 0xFFFF0000) {
+        return false;
+    }
+    if provider.contract_digest != 0 && !eia_contract_verify_digest(provider) {
+        return false;
+    }
+    if client.contract_digest != 0 && !eia_contract_verify_digest(client) {
+        return false;
+    }
     return true;
+}
+
+fn eia_find_contract(
+    contracts: *const SymbolContract,
+    count: uint,
+    sym_hash: uint,
+    required_flag_mask: u32
+) -> *const SymbolContract {
+    var i: uint = 0;
+    while i < count {
+        let sc: *const SymbolContract = ((contracts as uint) + (i * 48)) as *const SymbolContract;
+        if sc.symbol_hash == sym_hash {
+            if required_flag_mask == 0 || (sc.flags & required_flag_mask) != 0 {
+                return sc;
+            }
+        }
+        i = i + 1;
+    }
+    return 0 as *const SymbolContract;
+}
+
+fn eia_verify_contracts_table(contracts: *const SymbolContract, count: uint) -> int {
+    if count > 0 && contracts == (0 as *const SymbolContract) {
+        return -4;
+    }
+    var i: uint = 0;
+    while i < count {
+        let sc: *const SymbolContract = ((contracts as uint) + (i * 48)) as *const SymbolContract;
+        if sc.symbol_hash == 0 || sc.type_sig_hash == 0 || !eia_contract_verify_digest(sc) {
+            return -4;
+        }
+        if (sc.flags & (EIA_SYM_DEFINED | EIA_SYM_IMPORT)) == 0 {
+            return -4;
+        }
+        if (sc.flags & EIA_SYM_DEFINED) != 0 && (sc.flags & EIA_SYM_IMPORT) != 0 {
+            return -4;
+        }
+        i = i + 1;
+    }
+    return 0;
+}
+
+fn eia_verify_cross_unit_contracts_step(
+    client_contracts: *const SymbolContract,
+    client_count: uint,
+    provider_contracts: *const SymbolContract,
+    provider_count: uint,
+    allow_partial_imports: bool
+) -> int {
+    var verified_links: int = 0;
+    var i: uint = 0;
+    while i < client_count {
+        let client: *const SymbolContract = ((client_contracts as uint) + (i * 48)) as *const SymbolContract;
+        let prov: *const SymbolContract = eia_find_contract(provider_contracts, provider_count, client.symbol_hash, EIA_SYM_DEFINED);
+        if (client.flags & EIA_SYM_IMPORT) != 0 {
+            if prov == (0 as *const SymbolContract) {
+                let self_def: *const SymbolContract = eia_find_contract(client_contracts, client_count, client.symbol_hash, EIA_SYM_DEFINED);
+                if self_def == (0 as *const SymbolContract) {
+                    if !allow_partial_imports {
+                        return -5;
+                    }
+                } else if !eia_contract_verify_match(client, self_def) {
+                    return -6;
+                }
+            } else {
+                if !eia_contract_verify_match(client, prov) {
+                    return -6;
+                }
+                verified_links = verified_links + 1;
+            }
+        } else if prov != (0 as *const SymbolContract) && client.symbol_hash != 2258945139493307336 {
+            if !eia_contract_verify_match(client, prov) {
+                return -6;
+            }
+            verified_links = verified_links + 1;
+        }
+        i = i + 1;
+    }
+    var pi: uint = 0;
+    while pi < provider_count {
+        let p_imp: *const SymbolContract = ((provider_contracts as uint) + (pi * 48)) as *const SymbolContract;
+        if (p_imp.flags & EIA_SYM_IMPORT) != 0 {
+            let p_self: *const SymbolContract = eia_find_contract(provider_contracts, provider_count, p_imp.symbol_hash, EIA_SYM_DEFINED);
+            if p_self != (0 as *const SymbolContract) {
+                if !eia_contract_verify_match(p_imp, p_self) {
+                    return -6;
+                }
+            } else {
+                let c_def: *const SymbolContract = eia_find_contract(client_contracts, client_count, p_imp.symbol_hash, EIA_SYM_DEFINED);
+                if c_def == (0 as *const SymbolContract) {
+                    if !allow_partial_imports {
+                        return -5;
+                    }
+                } else {
+                    if !eia_contract_verify_match(p_imp, c_def) {
+                        return -6;
+                    }
+                    verified_links = verified_links + 1;
+                }
+            }
+        }
+        pi = pi + 1;
+    }
+    return verified_links;
+}
+
+fn eia_verify_cross_unit_contracts(
+    client_contracts: *const SymbolContract,
+    client_count: uint,
+    provider_contracts: *const SymbolContract,
+    provider_count: uint
+) -> int {
+    return eia_verify_cross_unit_contracts_step(
+        client_contracts,
+        client_count,
+        provider_contracts,
+        provider_count,
+        false
+    );
 }

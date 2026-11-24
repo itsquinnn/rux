@@ -9,4 +9,5 @@ Documentation for the Rux systems programming language.
 - [Targets](./targets.md) — Supported platforms and output formats
 - [Standard Library](./stdlib.md) — Core library modules and APIs
 - [CLI Reference](./cli.md) — `rux` command-line tool reference
+- [EIA Specification](./eia-spec.md) — Eternal Interface Architecture binary layout, contracts & verification
 - [Bootstrapping](./bootstrapping.md) — 3-pass self-hosting compiler

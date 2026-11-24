@@ -1,3 +1,115 @@
+fn interp_int_to_str(st: *mut InterpState, val: i64) -> *mut u8 {
+    let dst: *mut u8 = interp_heap_alloc(st, 32);
+    if val == 0 {
+        dst[0] = 48;
+        dst[1] = 0;
+        return dst;
+    }
+    var neg: u32 = 0;
+    var uv: u64 = val as u64;
+    if val < 0 {
+        neg = 1;
+        uv = (0 - val) as u64;
+    }
+    var tmp: [u8; 32];
+    var n: u64 = 0;
+    while uv > 0 && n < 28 {
+        tmp[n] = (48 + (uv % 10)) as u8;
+        uv = uv / 10;
+        n = n + 1;
+    }
+    var out_len: u64 = 0;
+    if neg == 1 {
+        dst[0] = 45;
+        out_len = 1;
+    }
+    var i: u64 = 0;
+    while i < n {
+        dst[out_len + i] = tmp[n - 1 - i];
+        i = i + 1;
+    }
+    dst[out_len + n] = 0;
+    return dst;
+}
+
+fn interp_str_hash(s: *u8) -> u64 {
+    if s == (0 as *u8) { return 14695981039346656037; }
+    return hash_identifier(s, str_len(s));
+}
+
+fn interp_str_concat(st: *mut InterpState, l: i64, lk: u64, r: i64, rk: u64) -> *mut u8 {
+    var s1: *u8 = l as *u8;
+    if lk != 1 { s1 = interp_int_to_str(st, l); }
+    var s2: *u8 = r as *u8;
+    if rk != 1 { s2 = interp_int_to_str(st, r); }
+    var len1: u64 = 0;
+    if s1 != (0 as *u8) { len1 = str_len(s1); }
+    var len2: u64 = 0;
+    if s2 != (0 as *u8) { len2 = str_len(s2); }
+    let dst: *mut u8 = interp_heap_alloc(st, len1 + len2 + 8);
+    var i: u64 = 0;
+    while i < len1 { dst[i] = s1[i]; i = i + 1; }
+    var j: u64 = 0;
+    while j < len2 { dst[len1 + j] = s2[j]; j = j + 1; }
+    dst[len1 + len2] = 0;
+    return dst;
+}
+
+fn interp_match_pat(st: *mut InterpState, pat: *mut AstNode, mtgt: i64) -> u32 {
+    if pat == (0 as *mut AstNode) { return 0; }
+    if pat.kind == 106 && pat.val == 51 {
+        if interp_match_pat(st, pat.child1, mtgt) == 1 { return 1; }
+        return interp_match_pat(st, pat.child2, mtgt);
+    }
+    if pat.kind == 106 && (pat.val == 79 || pat.val == 146) {
+        var lk: u64 = 0;
+        var hk: u64 = 0;
+        let lo: i64 = interp_eval_expr(st, pat.child1, &mut lk);
+        let hi: i64 = interp_eval_expr(st, pat.child2, &mut hk);
+        if pat.val == 146 {
+            if mtgt >= lo && mtgt <= hi { return 1; }
+        } else {
+            if mtgt >= lo && mtgt < hi { return 1; }
+        }
+        return 0;
+    }
+    if pat.kind == 117 {
+        let ce: *mut ConstEntry = parser_find_const(st.p, pat.hash);
+        if ce == (0 as *mut ConstEntry) {
+            interp_bind_slot(st, pat.hash, mtgt, 0, 0);
+            return 1;
+        }
+    }
+    var pk0: u64 = 0;
+    if interp_eval_expr(st, pat, &mut pk0) == mtgt {
+        return 1;
+    }
+    return 0;
+}
+
+fn interp_match_arm(st: *mut InterpState, arm: *mut AstNode, mtgt: i64) -> u32 {
+    var matched: u32 = 0;
+    if arm.val == 1 {
+        matched = 1;
+    } else {
+        var pat: *mut AstNode = arm.child1;
+        while pat != (0 as *mut AstNode) {
+            if interp_match_pat(st, pat, mtgt) == 1 {
+                matched = 1;
+                break;
+            }
+            pat = pat.next;
+        }
+    }
+    if matched == 1 && arm.child3 != (0 as *mut AstNode) {
+        var gk: u64 = 0;
+        if interp_eval_expr(st, arm.child3, &mut gk) == 0 {
+            matched = 0;
+        }
+    }
+    return matched;
+}
+
 fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -> i64 {
     *out_kind = 0;
     if n == (0 as *mut AstNode) || st.had_runtime_err == 1 {
@@ -85,7 +197,7 @@ fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -
                 if n.child1.kind == 117 {
                     let asl: i64 = interp_find_slot(st, n.child1.hash);
                     if asl >= 0 {
-                        if interp_slot_cap(st, asl as u64) > 0 {
+                        if interp_slot_cap(st, asl as u64) > 0 || interp_slot_kind(st, asl as u64) > 100 {
                             *out_kind = interp_slot_kind(st, asl as u64);
                             return interp_slot_val(st, asl as u64);
                         }
@@ -123,6 +235,10 @@ fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -
         var ik: u64 = 0;
         let base: i64 = interp_eval_expr(st, n.child1, &mut bk);
         let idx: i64 = interp_eval_expr(st, n.child2, &mut ik);
+        if bk == 8913785957651686373 {
+            let vptr: *i64 = base as *i64;
+            return vptr[2 + (idx as u64)];
+        }
         let stride: i64 = interp_stride_for_kind(bk);
         if n.child1 != (0 as *mut AstNode) && n.child1.kind == 117 {
             let bslot: i64 = interp_find_slot(st, n.child1.hash);
@@ -184,6 +300,65 @@ fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -
         let fp2: *i64 = ((fbase as *u8) + fdisp) as *i64;
         return fp2[0];
     }
+    if n.kind == 108 {
+        interp_exec_stmt(st, n);
+        *out_kind = st.last_kind;
+        return st.last_val;
+    }
+    if n.kind == 121 {
+        if n.val == 50 || n.val == 51 {
+            let vbuf: *mut i64 = interp_heap_alloc(st, 536) as *mut i64;
+            var v_idx: u64 = 0;
+            var v_cur: *mut AstNode = n.child1;
+            while v_cur != (0 as *mut AstNode) && v_idx < 64 {
+                var ek: u64 = 0;
+                var ev: i64 = interp_eval_expr(st, v_cur, &mut ek);
+                if n.val == 51 && ek == 1 {
+                    ev = interp_str_hash(ev as *u8) as i64;
+                }
+                vbuf[2 + v_idx] = ev;
+                v_idx = v_idx + 1;
+                v_cur = v_cur.next;
+            }
+            vbuf[0] = v_idx as i64;
+            vbuf[1] = 64;
+            if n.val == 50 { *out_kind = 8913785957651686373; }
+            else { *out_kind = 6014062794857405207; }
+            return vbuf as i64;
+        }
+        if n.val == 52 {
+            let mbuf: *mut i64 = interp_heap_alloc(st, 536) as *mut i64;
+            var m_idx: u64 = 0;
+            var m_cur: *mut AstNode = n.child1;
+            while m_cur != (0 as *mut AstNode) && m_idx < 32 {
+                var k_node: *mut AstNode = m_cur;
+                var v_node: *mut AstNode = m_cur.child1;
+                if m_cur.kind == 101 {
+                    k_node = m_cur.child1;
+                    v_node = m_cur.child2;
+                }
+                var kk: u64 = 0;
+                var kv: i64 = interp_eval_expr(st, k_node, &mut kk);
+                if kk == 1 {
+                    kv = interp_str_hash(kv as *u8) as i64;
+                }
+                var vk0: u64 = 0;
+                var vv0: i64 = 0;
+                if v_node != (0 as *mut AstNode) {
+                    vv0 = interp_eval_expr(st, v_node, &mut vk0);
+                }
+                mbuf[2 + (m_idx * 2)] = kv;
+                mbuf[3 + (m_idx * 2)] = vv0;
+                m_idx = m_idx + 1;
+                m_cur = m_cur.next;
+            }
+            mbuf[0] = m_idx as i64;
+            mbuf[1] = 32;
+            *out_kind = 3738392585861989357;
+            return mbuf as i64;
+        }
+        return 0;
+    }
     if n.kind == 124 {
         var ck2: u64 = 0;
         if interp_eval_expr(st, n.child1, &mut ck2) != 0 {
@@ -196,16 +371,8 @@ fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -
         let mtgt: i64 = interp_eval_expr(st, n.child1, &mut mtk);
         var arm: *mut AstNode = n.child2;
         while arm != (0 as *mut AstNode) {
-            if arm.val == 1 {
+            if interp_match_arm(st, arm, mtgt) == 1 {
                 return interp_eval_expr(st, arm.child2, out_kind);
-            }
-            var pat: *mut AstNode = arm.child1;
-            while pat != (0 as *mut AstNode) {
-                var pk0: u64 = 0;
-                if interp_eval_expr(st, pat, &mut pk0) == mtgt {
-                    return interp_eval_expr(st, arm.child2, out_kind);
-                }
-                pat = pat.next;
             }
             arm = arm.next;
         }
@@ -241,7 +408,10 @@ fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -
         var rk: u64 = 0;
         let r: i64 = interp_eval_expr(st, n.child2, &mut rk);
         if op == 30 {
-            if lk == 1 { *out_kind = 1; }
+            if lk == 1 || rk == 1 {
+                *out_kind = 1;
+                return interp_str_concat(st, l, lk, r, rk) as i64;
+            }
             return l + r;
         }
         if op == 31 { return l - r; }
@@ -324,12 +494,128 @@ fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -
         var arg_kinds: [u64; 64];
         var acnt: u64 = 0;
         if n.child1 != (0 as *mut AstNode) && n.child1.kind == 114 {
-            var rcv_k: u64 = 0;
-            let rcv_v: i64 = interp_eval_expr(st, n.child1.child1, &mut rcv_k);
-            target_h = combine_ns_hash(rcv_k, n.child1.hash);
-            arg_vals[0] = rcv_v;
-            arg_kinds[0] = rcv_k;
-            acnt = 1;
+            let m_hash: u64 = n.child1.hash;
+            let rec_n: *mut AstNode = n.child1.child1;
+            if rec_n != (0 as *mut AstNode) && rec_n.kind == 117 && interp_find_slot(st, rec_n.hash) < 0 && find_comptime_fn(st.p, combine_ns_hash(rec_n.hash, m_hash)) != (0 as *mut AstNode) {
+                target_h = combine_ns_hash(rec_n.hash, m_hash);
+            } else {
+                var rcv_k: u64 = 0;
+                let rcv_v: i64 = interp_eval_expr(st, rec_n, &mut rcv_k);
+                let user_callee: *mut AstNode = find_comptime_fn(st.p, combine_ns_hash(rcv_k, m_hash));
+                if user_callee == (0 as *mut AstNode) {
+                    if m_hash == 18080069455335980988 {
+                        *out_kind = 1;
+                        if rcv_k == 1 { return rcv_v; }
+                        return interp_int_to_str(st, rcv_v) as i64;
+                    }
+                    if m_hash == 1329241496134363980 || m_hash == 6052333226747276115 {
+                        var r_len: i64 = 0;
+                        if rcv_k == 1 {
+                            if rcv_v != 0 { r_len = str_len(rcv_v as *u8) as i64; }
+                        } else if rec_n != (0 as *mut AstNode) && rec_n.kind == 117 && interp_find_slot(st, rec_n.hash) >= 0 && interp_slot_cap(st, interp_find_slot(st, rec_n.hash) as u64) > 0 {
+                            let sl_i: u64 = interp_find_slot(st, rec_n.hash) as u64;
+                            let sl_cap: u64 = interp_slot_cap(st, sl_i);
+                            let sl_str: u64 = interp_stride_for_kind(interp_slot_kind(st, sl_i)) as u64;
+                            if sl_str > 0 { r_len = (sl_cap / sl_str) as i64; }
+                        } else if rcv_v != 0 {
+                            r_len = (rcv_v as *i64)[0];
+                        }
+                        if m_hash == 6052333226747276115 {
+                            if r_len == 0 { return 1; }
+                            return 0;
+                        }
+                        return r_len;
+                    }
+                    if m_hash == 7818252312440358301 && n.child2 != (0 as *mut AstNode) {
+                        var pak0: u64 = 0;
+                        let pav0: i64 = interp_eval_expr(st, n.child2, &mut pak0);
+                        let vptr: *mut i64 = rcv_v as *mut i64;
+                        let vlen: u64 = vptr[0] as u64;
+                        if vlen < 64 {
+                            vptr[2 + vlen] = pav0;
+                            vptr[0] = (vlen + 1) as i64;
+                        }
+                        return 0;
+                    }
+                    if m_hash == 8618579177749032784 && n.child2 == (0 as *mut AstNode) {
+                        let vptr2: *mut i64 = rcv_v as *mut i64;
+                        let vlen2: u64 = vptr2[0] as u64;
+                        if vlen2 == 0 { return 0; }
+                        vptr2[0] = (vlen2 - 1) as i64;
+                        return vptr2[2 + vlen2 - 1];
+                    }
+                    if m_hash == 8246590677317673512 && n.child2 != (0 as *mut AstNode) {
+                        let mptr: *mut i64 = rcv_v as *mut i64;
+                        var ik0: u64 = 0;
+                        var iv0: i64 = interp_eval_expr(st, n.child2, &mut ik0);
+                        if ik0 == 1 { iv0 = interp_str_hash(iv0 as *u8) as i64; }
+                        if n.child2.next == (0 as *mut AstNode) {
+                            let slen: u64 = mptr[0] as u64;
+                            if slen < 64 {
+                                mptr[2 + slen] = iv0;
+                                mptr[0] = (slen + 1) as i64;
+                            }
+                            return 0;
+                        }
+                        var ivk: u64 = 0;
+                        let ivv: i64 = interp_eval_expr(st, n.child2.next, &mut ivk);
+                        let mlen: u64 = mptr[0] as u64;
+                        var mi: u64 = 0;
+                        while mi < mlen {
+                            if mptr[2 + (mi * 2)] == iv0 {
+                                mptr[3 + (mi * 2)] = ivv;
+                                return 0;
+                            }
+                            mi = mi + 1;
+                        }
+                        if mlen < 32 {
+                            mptr[2 + (mlen * 2)] = iv0;
+                            mptr[3 + (mlen * 2)] = ivv;
+                            mptr[0] = (mlen + 1) as i64;
+                        }
+                        return 0;
+                    }
+                    if m_hash == 15339932239713171959 && n.child2 != (0 as *mut AstNode) {
+                        let gptr: *i64 = rcv_v as *i64;
+                        var gk0: u64 = 0;
+                        var gv0: i64 = interp_eval_expr(st, n.child2, &mut gk0);
+                        if rcv_k == 8913785957651686373 {
+                            return gptr[2 + (gv0 as u64)];
+                        }
+                        if gk0 == 1 { gv0 = interp_str_hash(gv0 as *u8) as i64; }
+                        let glen: u64 = gptr[0] as u64;
+                        var gi: u64 = 0;
+                        while gi < glen {
+                            if gptr[2 + (gi * 2)] == gv0 {
+                                return gptr[3 + (gi * 2)];
+                            }
+                            gi = gi + 1;
+                        }
+                        return 0;
+                    }
+                    if m_hash == 5645366511944179768 && n.child2 != (0 as *mut AstNode) {
+                        let cptr: *i64 = rcv_v as *i64;
+                        var ck0: u64 = 0;
+                        var cv0: i64 = interp_eval_expr(st, n.child2, &mut ck0);
+                        if ck0 == 1 { cv0 = interp_str_hash(cv0 as *u8) as i64; }
+                        let clen: u64 = cptr[0] as u64;
+                        var ci: u64 = 0;
+                        while ci < clen {
+                            if rcv_k == 3738392585861989357 {
+                                if cptr[2 + (ci * 2)] == cv0 { return 1; }
+                            } else {
+                                if cptr[2 + ci] == cv0 { return 1; }
+                            }
+                            ci = ci + 1;
+                        }
+                        return 0;
+                    }
+                }
+                target_h = combine_ns_hash(rcv_k, m_hash);
+                arg_vals[0] = rcv_v;
+                arg_kinds[0] = rcv_k;
+                acnt = 1;
+            }
         } else if n.child1 != (0 as *mut AstNode) && n.child1.kind == 117 {
             let fsl: i64 = interp_find_slot(st, n.child1.hash);
             if fsl >= 0 {
@@ -371,7 +657,8 @@ fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -
         while p_cur != (0 as *mut AstNode) && pi < acnt {
             var pk2: u64 = arg_kinds[pi];
             if p_cur.is_mut == 11 { pk2 = 11; }
-            else if p_cur.is_mut > 0 && (p_cur.val == 23 || p_cur.val == 631772817358541784) { pk2 = 1; }
+            else if p_cur.val == 9398593617327382768 || (p_cur.is_mut > 0 && (p_cur.val == 23 || p_cur.val == 631772817358541784)) { pk2 = 1; }
+            else if p_cur.is_mut > 0 && p_cur.val > 100 { pk2 = p_cur.val; }
             else if p_cur.is_mut > 0 && pk2 == 0 { pk2 = 8; }
             interp_bind_slot(st, p_cur.hash, arg_vals[pi], pk2, 0);
             pi = pi + 1;
@@ -379,8 +666,12 @@ fn interp_eval_expr(st: *mut InterpState, n: *mut AstNode, out_kind: *mut u64) -
         }
 
         interp_exec_stmt_list(st, callee.child1);
-        let fn_ret: i64 = st.ret_val;
-        if callee.is_mut == 1 && (callee.val == 23 || callee.val == 631772817358541784) {
+        var fn_ret: i64 = st.ret_val;
+        if st.flow == 0 {
+            fn_ret = st.last_val;
+            *out_kind = st.last_kind;
+        }
+        if callee.val == 9398593617327382768 || (callee.is_mut == 1 && (callee.val == 23 || callee.val == 631772817358541784)) {
             *out_kind = 1;
         }
 
@@ -414,6 +705,21 @@ fn interp_exec_stmt(st: *mut InterpState, s: *mut AstNode) {
             if s.id == 10 { astr = 1; }
             else if s.id == 12 { astr = s.is_mut; }
             let abuf: *mut u8 = interp_heap_alloc(st, s.val);
+            if s.child1 != (0 as *mut AstNode) && s.child1.kind == 121 {
+                var a_el: *mut AstNode = s.child1.child1;
+                var a_i: u64 = 0;
+                while a_el != (0 as *mut AstNode) && (a_i * astr) < s.val {
+                    var aek: u64 = 0;
+                    let aev: i64 = interp_eval_expr(st, a_el, &mut aek);
+                    let wptr: u64 = (abuf as u64) + (a_i * astr);
+                    if astr == 1 { (wptr as *mut u8)[0] = (aev & 255) as u8; }
+                    else if astr == 2 { (wptr as *mut u16)[0] = (aev & 65535) as u16; }
+                    else if astr == 4 { (wptr as *mut u32)[0] = (aev & 4294967295) as u32; }
+                    else { (wptr as *mut i64)[0] = aev; }
+                    a_i = a_i + 1;
+                    a_el = a_el.next;
+                }
+            }
             interp_bind_slot(st, s.hash, abuf as i64, astr, s.val);
             return;
         }
@@ -438,8 +744,9 @@ fn interp_exec_stmt(st: *mut InterpState, s: *mut AstNode) {
         if s.child1 != (0 as *mut AstNode) {
             vv = interp_eval_expr(st, s.child1, &mut vk);
         }
-        if s.id == 11 { vk = 11; }
+        if s.id == 13 { vk = 11; }
         else if s.id == 2 && (s.val == 23 || s.val == 631772817358541784) { vk = 1; }
+        else if s.id == 2 && (s.val == 8913785957651686373 || s.val == 6014062794857405207 || s.val == 3738392585861989357) { vk = s.val; }
         else if s.id == 1 || s.id == 2 { if vk == 0 { vk = 8; } }
         interp_bind_slot(st, s.hash, vv, vk, 0);
         return;
@@ -468,6 +775,11 @@ fn interp_exec_stmt(st: *mut InterpState, s: *mut AstNode) {
             let base: i64 = interp_eval_expr(st, lhs.child1, &mut bk);
             let idx: i64 = interp_eval_expr(st, lhs.child2, &mut ik);
             let rv2: i64 = interp_eval_expr(st, s.child2, &mut rk);
+            if bk == 8913785957651686373 {
+                let vwptr: *mut i64 = base as *mut i64;
+                vwptr[2 + (idx as u64)] = rv2;
+                return;
+            }
             let stride: i64 = interp_stride_for_kind(bk);
             if lhs.child1 != (0 as *mut AstNode) && lhs.child1.kind == 117 {
                 let bsl: i64 = interp_find_slot(st, lhs.child1.hash);
@@ -551,8 +863,50 @@ fn interp_exec_stmt(st: *mut InterpState, s: *mut AstNode) {
         var fk2: u64 = 0;
         var cur_i: i64 = interp_eval_expr(st, s.child1, &mut fk1);
         let end_i: i64 = interp_eval_expr(st, s.child2, &mut fk2);
+        if s.val == 0 && s.child1 != (0 as *mut AstNode) && s.child1.kind == 116 && s.child1.val == 0 {
+            if fk2 == 8913785957651686373 && end_i != 0 {
+                let vptr: *i64 = end_i as *i64;
+                let vlen: u64 = vptr[0] as u64;
+                let vslot: u64 = interp_bind_slot(st, s.hash, 0, 0, 0);
+                var vi: u64 = 0;
+                while st.flow == 0 && st.had_runtime_err == 0 && vi < vlen {
+                    interp_set_slot(st, vslot, s.hash, vptr[2 + vi], 0, 0);
+                    interp_exec_stmt_list(st, s.child3);
+                    if st.flow == 2 { st.flow = 0; return; }
+                    if st.flow == 3 { st.flow = 0; }
+                    if st.flow == 1 { return; }
+                    vi = vi + 1;
+                }
+                return;
+            }
+            if s.child2 != (0 as *mut AstNode) && s.child2.kind == 117 {
+                let csl: i64 = interp_find_slot(st, s.child2.hash);
+                if csl >= 0 && interp_slot_cap(st, csl as u64) > 0 {
+                    let ccap: u64 = interp_slot_cap(st, csl as u64);
+                    let cstr: u64 = interp_stride_for_kind(interp_slot_kind(st, csl as u64)) as u64;
+                    let ccnt: u64 = ccap / cstr;
+                    let aslot: u64 = interp_bind_slot(st, s.hash, 0, 0, 0);
+                    var ai: u64 = 0;
+                    while st.flow == 0 && st.had_runtime_err == 0 && ai < ccnt {
+                        let eaddr: u64 = (end_i as u64) + (ai * cstr);
+                        var eval_i: i64 = 0;
+                        if cstr == 1 { eval_i = ((eaddr as *u8)[0]) as i64; }
+                        else if cstr == 2 { eval_i = ((eaddr as *u16)[0]) as i64; }
+                        else if cstr == 4 { eval_i = ((eaddr as *u32)[0]) as i64; }
+                        else { eval_i = (eaddr as *i64)[0]; }
+                        interp_set_slot(st, aslot, s.hash, eval_i, 0, 0);
+                        interp_exec_stmt_list(st, s.child3);
+                        if st.flow == 2 { st.flow = 0; return; }
+                        if st.flow == 3 { st.flow = 0; }
+                        if st.flow == 1 { return; }
+                        ai = ai + 1;
+                    }
+                    return;
+                }
+            }
+        }
         let fslot: u64 = interp_bind_slot(st, s.hash, cur_i, 0, 0);
-        while st.flow == 0 && st.had_runtime_err == 0 && cur_i < end_i {
+        while st.flow == 0 && st.had_runtime_err == 0 && ((s.val == 0 && cur_i < end_i) || (s.val == 1 && cur_i <= end_i)) {
             interp_set_slot(st, fslot, s.hash, cur_i, 0, 0);
             interp_exec_stmt_list(st, s.child3);
             if st.flow == 2 { st.flow = 0; return; }
@@ -568,18 +922,9 @@ fn interp_exec_stmt(st: *mut InterpState, s: *mut AstNode) {
         let mtgt: i64 = interp_eval_expr(st, s.child1, &mut mk);
         var marm: *mut AstNode = s.child2;
         while marm != (0 as *mut AstNode) {
-            if marm.val == 1 {
+            if interp_match_arm(st, marm, mtgt) == 1 {
                 interp_exec_stmt_list(st, marm.child2);
                 return;
-            }
-            var mpat: *mut AstNode = marm.child1;
-            while mpat != (0 as *mut AstNode) {
-                var pk0: u64 = 0;
-                if interp_eval_expr(st, mpat, &mut pk0) == mtgt {
-                    interp_exec_stmt_list(st, marm.child2);
-                    return;
-                }
-                mpat = mpat.next;
             }
             marm = marm.next;
         }
@@ -598,7 +943,13 @@ fn interp_exec_stmt(st: *mut InterpState, s: *mut AstNode) {
         return;
     }
 
-    if s.kind == 126 { st.flow = 2; return; }
+    if s.kind == 126 {
+        if s.child1 != (0 as *mut AstNode) {
+            st.last_val = interp_eval_expr(st, s.child1, &mut st.last_kind);
+        }
+        st.flow = 2;
+        return;
+    }
     if s.kind == 127 { st.flow = 3; return; }
     if s.kind == 132 { interp_exec_stmt_list(st, s.child1); return; }
 

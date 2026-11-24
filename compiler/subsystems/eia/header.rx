@@ -1,4 +1,12 @@
+include "lib/crypto/blake3_core.rx";
+
 const EIA_MAGIC: u32 = 0x4849457F;
+const EIA_VERSION: u32 = 0x00010001;
+const EIA_FLAG_SEALED: uint = 1;
+const EIA_FLAG_HAS_CODE_HASH: uint = 2;
+const EIA_FLAG_FREESTANDING: uint = 4;
+const EIA_FLAG_BRIDGE: uint = 8;
+const EIA_EPOCH_MAJOR_SHIFT: uint = 16;
 
 struct UniversalHologramHeader {
     magic: u32,
@@ -18,7 +26,7 @@ struct UniversalHologramHeader {
 
 fn eia_hologram_init(hdr: *mut UniversalHologramHeader, epoch: uint) {
     hdr.magic = EIA_MAGIC;
-    hdr.version = 0x00010001;
+    hdr.version = EIA_VERSION;
     hdr.abi_epoch = epoch;
     hdr.contracts_offset = 0;
     hdr.contracts_count = 0;
@@ -33,7 +41,31 @@ fn eia_hologram_init(hdr: *mut UniversalHologramHeader, epoch: uint) {
 }
 
 fn eia_hologram_validate(hdr: *const UniversalHologramHeader) -> bool {
+    if hdr == (0 as *const UniversalHologramHeader) {
+        return false;
+    }
     if hdr.magic != EIA_MAGIC {
+        return false;
+    }
+    if hdr.version == 0 || (hdr.version >> 16) != 1 {
+        return false;
+    }
+    if hdr.abi_epoch == 0 {
+        return false;
+    }
+    if (hdr.type_graph_size % 24) != 0 {
+        return false;
+    }
+    if hdr.contracts_count > 0 && hdr.contracts_offset == 0 {
+        return false;
+    }
+    if hdr.relocs_count > 0 && hdr.relocs_offset == 0 {
+        return false;
+    }
+    if hdr.type_graph_size > 0 && hdr.type_graph_offset == 0 {
+        return false;
+    }
+    if (hdr.flags & EIA_FLAG_SEALED) != 0 && hdr.blake3_root == 0 {
         return false;
     }
     let expected_sz: uint = 4 + 4 + (11 * 8);
@@ -41,4 +73,253 @@ fn eia_hologram_validate(hdr: *const UniversalHologramHeader) -> bool {
         return false;
     }
     return true;
+}
+
+fn eia_epoch_major(epoch: uint) -> uint {
+    return epoch >> EIA_EPOCH_MAJOR_SHIFT;
+}
+
+fn eia_epochs_compatible(client_epoch: uint, provider_epoch: uint) -> bool {
+    if client_epoch == 0 || provider_epoch == 0 {
+        return false;
+    }
+    return eia_epoch_major(client_epoch) == eia_epoch_major(provider_epoch);
+}
+
+fn eia_hologram_tables_len(hdr: *const UniversalHologramHeader) -> uint {
+    if hdr == (0 as *const UniversalHologramHeader) { return 0; }
+    let c_sz: uint = hdr.contracts_count * 48;
+    let r_sz: uint = hdr.relocs_count * 24;
+    let tg_sz: uint = hdr.type_graph_size;
+    return c_sz + r_sz + tg_sz;
+}
+
+fn eia_ranges_overlap(a_start: uint, a_len: uint, b_start: uint, b_len: uint) -> bool {
+    if a_len == 0 || b_len == 0 {
+        return false;
+    }
+    return a_start < (b_start + b_len) && b_start < (a_start + a_len);
+}
+
+fn eia_header_tables_in_bounds(hdr: *const UniversalHologramHeader, base_ptr: *const u8, file_len: uint) -> bool {
+    if hdr == (0 as *const UniversalHologramHeader) || base_ptr == (0 as *const u8) || file_len < 96 {
+        return false;
+    }
+    if hdr.contracts_count > (file_len / 48) {
+        return false;
+    }
+    if hdr.relocs_count > (file_len / 24) {
+        return false;
+    }
+    let c_sz: uint = hdr.contracts_count * 48;
+    let r_sz: uint = hdr.relocs_count * 24;
+    let tg_sz: uint = hdr.type_graph_size;
+    if tg_sz > file_len || (tg_sz % 24) != 0 {
+        return false;
+    }
+    if r_sz > (file_len - c_sz) {
+        return false;
+    }
+    let cr_sz: uint = c_sz + r_sz;
+    if tg_sz > (file_len - cr_sz) {
+        return false;
+    }
+    let total_len: uint = cr_sz + tg_sz;
+
+    if hdr.contracts_count > 0 {
+        if hdr.contracts_offset == 0 || hdr.contracts_offset > file_len || c_sz > (file_len - hdr.contracts_offset) {
+            return false;
+        }
+    }
+    if hdr.relocs_count > 0 {
+        if hdr.relocs_offset == 0 || hdr.relocs_offset > file_len || r_sz > (file_len - hdr.relocs_offset) {
+            return false;
+        }
+    }
+    if tg_sz > 0 {
+        if hdr.type_graph_offset == 0 || hdr.type_graph_offset > file_len || tg_sz > (file_len - hdr.type_graph_offset) {
+            return false;
+        }
+    }
+    if eia_ranges_overlap(hdr.contracts_offset, c_sz, hdr.relocs_offset, r_sz) {
+        return false;
+    }
+    if eia_ranges_overlap(hdr.contracts_offset, c_sz, hdr.type_graph_offset, tg_sz) {
+        return false;
+    }
+    if eia_ranges_overlap(hdr.relocs_offset, r_sz, hdr.type_graph_offset, tg_sz) {
+        return false;
+    }
+    let hdr_u: uint = hdr as uint;
+    let base_u: uint = base_ptr as uint;
+    if hdr_u >= base_u && (hdr_u - base_u) < file_len {
+        let holo_off: uint = hdr_u - base_u;
+        if (holo_off + 96) > file_len {
+            return false;
+        }
+        if eia_ranges_overlap(holo_off, 96, hdr.contracts_offset, c_sz) {
+            return false;
+        }
+        if eia_ranges_overlap(holo_off, 96, hdr.relocs_offset, r_sz) {
+            return false;
+        }
+        if eia_ranges_overlap(holo_off, 96, hdr.type_graph_offset, tg_sz) {
+            return false;
+        }
+    }
+    if total_len > file_len {
+        return false;
+    }
+    return true;
+}
+
+fn eia_put_u64_le(buf: *mut u8, off: uint, val: uint) {
+    var i: uint = 0;
+    while i < 8 {
+        buf[off + i] = ((val >> (i * 8)) & 255) as u8;
+        i = i + 1;
+    }
+}
+
+fn eia_mix_labeled_u64(acc: uint, tag: uint, a: uint, b: uint) -> uint {
+    var blk: [u8; 40];
+    let p: *mut u8 = &mut blk[0];
+    p[0] = 69; p[1] = 73; p[2] = 65; p[3] = 77;
+    p[4] = 86; p[5] = 50; p[6] = 0; p[7] = 0;
+    eia_put_u64_le(p, 8, acc);
+    eia_put_u64_le(p, 16, tag);
+    eia_put_u64_le(p, 24, a);
+    eia_put_u64_le(p, 32, b);
+    return blake3_hash64(p as *const u8, 40);
+}
+
+fn eia_header_tables_digest(hdr: *const UniversalHologramHeader, base_ptr: *const u8, total_len: uint) -> uint {
+    if hdr == (0 as *const UniversalHologramHeader) {
+        return 0;
+    }
+    let flags_clean: uint = hdr.flags & (0 - 2);
+    var acc: uint = eia_mix_labeled_u64(0, 0x48445231, (hdr.magic as uint) | ((hdr.version as uint) << 32), hdr.abi_epoch);
+    acc = eia_mix_labeled_u64(acc, 0x48445232, flags_clean, hdr.contracts_count);
+    acc = eia_mix_labeled_u64(acc, 0x48445233, hdr.relocs_count, hdr.type_graph_size);
+    acc = eia_mix_labeled_u64(acc, 0x48445234, hdr.reserved0, hdr.reserved1);
+    acc = eia_mix_labeled_u64(acc, 0x48445235, hdr.contracts_offset, hdr.relocs_offset);
+    acc = eia_mix_labeled_u64(acc, 0x48445236, hdr.type_graph_offset, hdr.version as uint);
+    if base_ptr != (0 as *const u8) {
+        if hdr.contracts_count > 0 {
+            let c_sz: uint = hdr.contracts_count * 48;
+            acc = eia_mix_labeled_u64(acc, 0x54424C43, blake3_hash64(base_ptr + hdr.contracts_offset, c_sz), c_sz);
+        }
+        if hdr.relocs_count > 0 {
+            let r_sz: uint = hdr.relocs_count * 24;
+            acc = eia_mix_labeled_u64(acc, 0x54424C52, blake3_hash64(base_ptr + hdr.relocs_offset, r_sz), r_sz);
+        }
+        if hdr.type_graph_size > 0 {
+            acc = eia_mix_labeled_u64(acc, 0x54424C54, blake3_hash64(base_ptr + hdr.type_graph_offset, hdr.type_graph_size), hdr.type_graph_size);
+        }
+    }
+    let _unused_len: uint = total_len;
+    return acc;
+}
+
+fn eia_header_combine_digests(tables_b3: uint, code_b3: uint) -> uint {
+    var pair_buf: [u8; 24];
+    let pair: *mut u8 = &mut pair_buf[0];
+    pair[0] = 69; pair[1] = 73; pair[2] = 65; pair[3] = 82;
+    pair[4] = 79; pair[5] = 79; pair[6] = 84; pair[7] = 49;
+    eia_put_u64_le(pair, 8, tables_b3);
+    eia_put_u64_le(pair, 16, code_b3);
+    return blake3_hash64(pair as *const u8, 24);
+}
+
+fn eia_hologram_seal_tables_with_digest(
+    hdr: *mut UniversalHologramHeader,
+    base_ptr: *const u8,
+    file_len: uint,
+    has_code_digest: bool,
+    code_b3: uint
+) -> bool {
+    if !eia_hologram_validate(hdr as *const UniversalHologramHeader) {
+        return false;
+    }
+    if !eia_header_tables_in_bounds(hdr as *const UniversalHologramHeader, base_ptr, file_len) {
+        return false;
+    }
+    let total_len: uint = eia_hologram_tables_len(hdr as *const UniversalHologramHeader);
+    let tables_b3: uint = eia_header_tables_digest(hdr as *const UniversalHologramHeader, base_ptr, total_len);
+    if has_code_digest {
+        hdr.blake3_root = eia_header_combine_digests(tables_b3, code_b3);
+        hdr.flags = hdr.flags | EIA_FLAG_SEALED | EIA_FLAG_HAS_CODE_HASH;
+    } else {
+        hdr.blake3_root = tables_b3;
+        if (hdr.flags & EIA_FLAG_HAS_CODE_HASH) != 0 {
+            hdr.flags = hdr.flags - EIA_FLAG_HAS_CODE_HASH;
+        }
+        hdr.flags = hdr.flags | EIA_FLAG_SEALED;
+    }
+    return true;
+}
+
+fn eia_hologram_seal_tables_and_code(
+    hdr: *mut UniversalHologramHeader,
+    base_ptr: *const u8,
+    file_len: uint,
+    code_ptr: *const u8,
+    code_len: uint
+) -> bool {
+    if code_ptr != (0 as *const u8) && code_len > 0 {
+        return eia_hologram_seal_tables_with_digest(hdr, base_ptr, file_len, true, blake3_hash64(code_ptr, code_len));
+    }
+    return eia_hologram_seal_tables_with_digest(hdr, base_ptr, file_len, false, 0);
+}
+
+fn eia_hologram_seal_tables(hdr: *mut UniversalHologramHeader, base_ptr: *const u8, file_len: uint) -> bool {
+    return eia_hologram_seal_tables_with_digest(hdr, base_ptr, file_len, false, 0);
+}
+
+fn eia_hologram_verify_blob_with_digest(
+    hdr: *const UniversalHologramHeader,
+    base_ptr: *const u8,
+    file_len: uint,
+    has_code_digest: bool,
+    code_b3: uint
+) -> int {
+    if !eia_hologram_validate(hdr) {
+        return -1;
+    }
+    if !eia_header_tables_in_bounds(hdr, base_ptr, file_len) {
+        return -2;
+    }
+    let total_len: uint = eia_hologram_tables_len(hdr);
+    let tables_b3: uint = eia_header_tables_digest(hdr, base_ptr, total_len);
+    var expected: uint = tables_b3;
+    if (hdr.flags & EIA_FLAG_HAS_CODE_HASH) != 0 {
+        if !has_code_digest {
+            return -2;
+        }
+        expected = eia_header_combine_digests(tables_b3, code_b3);
+    }
+    if (hdr.flags & EIA_FLAG_SEALED) == 0 || hdr.blake3_root == 0 || hdr.blake3_root != expected {
+        return -3;
+    }
+    return 0;
+}
+
+fn eia_hologram_verify_blob_with_code(
+    hdr: *const UniversalHologramHeader,
+    base_ptr: *const u8,
+    file_len: uint,
+    code_ptr: *const u8,
+    code_len: uint
+) -> int {
+    if (hdr.flags & EIA_FLAG_HAS_CODE_HASH) != 0 {
+        if code_ptr == (0 as *const u8) || code_len == 0 {
+            return -2;
+        }
+        return eia_hologram_verify_blob_with_digest(hdr, base_ptr, file_len, true, blake3_hash64(code_ptr, code_len));
+    }
+    return eia_hologram_verify_blob_with_digest(hdr, base_ptr, file_len, false, 0);
+}
+
+fn eia_hologram_verify_blob(hdr: *const UniversalHologramHeader, base_ptr: *const u8, file_len: uint) -> int {
+    return eia_hologram_verify_blob_with_digest(hdr, base_ptr, file_len, false, 0);
 }

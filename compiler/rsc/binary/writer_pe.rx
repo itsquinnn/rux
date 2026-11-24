@@ -30,12 +30,20 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
     let rodata_offset: u64 = text_offset + text_aligned;
     let idata_offset: u64 = rodata_offset + rodata_aligned;
 
-    var num_sections: u32 = 2;
-    var total_file_size: u64 = rodata_offset + rodata_aligned;
+    let pe_contracts_sz: u64 = (cg.contract_count as u64) * 48;
+    let pe_relocs_sz: u64 = (cg.reloc_count as u64) * 24;
+    let pe_tg_sz: u64 = (cg.tg_count as u64) * 24;
+    let eia_raw_size: u64 = 96 + pe_contracts_sz + pe_relocs_sz + pe_tg_sz;
+    var eia_aligned: u64 = (eia_raw_size + align - 1) & (0 - align);
+    if eia_aligned == 0 { eia_aligned = 4096; }
+
+    var num_sections: u32 = 3;
+    var eia_offset: u64 = rodata_offset + rodata_aligned;
     if is_uefi == 0 {
-        num_sections = 3;
-        total_file_size = idata_offset + idata_aligned;
+        num_sections = 4;
+        eia_offset = idata_offset + idata_aligned;
     }
+    let total_file_size: u64 = eia_offset + eia_aligned;
 
     let file_buf: *mut u8 = uses_alloc(total_file_size);
     if (file_buf as i64) <= 0 {
@@ -80,7 +88,7 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
     file_buf[opt_base + 6] = ((text_aligned >> 16) & 255) as u8;
     file_buf[opt_base + 7] = ((text_aligned >> 24) & 255) as u8;
 
-    var init_data_sz: u64 = rodata_aligned;
+    var init_data_sz: u64 = rodata_aligned + eia_aligned;
     if is_uefi == 0 { init_data_sz = init_data_sz + idata_aligned; }
     file_buf[opt_base + 8] = (init_data_sz & 255) as u8;
     file_buf[opt_base + 9] = ((init_data_sz >> 8) & 255) as u8;
@@ -120,7 +128,7 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
     file_buf[opt_base + 70] = 0; file_buf[opt_base + 71] = 129;
 
     file_buf[opt_base + 72] = 0; file_buf[opt_base + 73] = 0; file_buf[opt_base + 74] = 128; file_buf[opt_base + 75] = 0;
-    file_buf[opt_base + 80] = 0; file_buf[opt_base + 81] = 0; file_buf[opt_base + 82] = 32; file_buf[opt_base + 83] = 0;
+    file_buf[opt_base + 80] = 0; file_buf[opt_base + 81] = 0; file_buf[opt_base + 82] = 128; file_buf[opt_base + 83] = 0;
     file_buf[opt_base + 88] = 0; file_buf[opt_base + 89] = 0; file_buf[opt_base + 90] = 16; file_buf[opt_base + 91] = 0;
     file_buf[opt_base + 96] = 0; file_buf[opt_base + 97] = 0; file_buf[opt_base + 98] = 1; file_buf[opt_base + 99] = 0;
     file_buf[opt_base + 108] = 16;
@@ -131,12 +139,12 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         file_buf[opt_base + 122] = ((idata_offset >> 16) & 255) as u8;
         file_buf[opt_base + 123] = ((idata_offset >> 24) & 255) as u8;
         file_buf[opt_base + 124] = 40;
-        let iat_dir_rva: u64 = idata_offset + 128;
+        let iat_dir_rva: u64 = idata_offset + 136;
         file_buf[opt_base + 208] = (iat_dir_rva & 255) as u8;
         file_buf[opt_base + 209] = ((iat_dir_rva >> 8) & 255) as u8;
         file_buf[opt_base + 210] = ((iat_dir_rva >> 16) & 255) as u8;
         file_buf[opt_base + 211] = ((iat_dir_rva >> 24) & 255) as u8;
-        file_buf[opt_base + 212] = 88;
+        file_buf[opt_base + 212] = 96;
     }
 
     let sec_base: u64 = opt_base + 240;
@@ -204,18 +212,19 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         file_buf[idata_sec + 36] = 64; file_buf[idata_sec + 39] = 192;
 
         let ilt_rva: u64 = idata_offset + 40;
-        let iat_rva: u64 = idata_offset + 128;
-        let dll_rva: u64 = idata_offset + 220;
-        let hn_exit: u64 = idata_offset + 240;
-        let hn_gstd: u64 = idata_offset + 256;
-        let hn_wrfl: u64 = idata_offset + 272;
-        let hn_valc: u64 = idata_offset + 284;
-        let hn_crfl: u64 = idata_offset + 300;
-        let hn_rdfl: u64 = idata_offset + 314;
-        let hn_clsh: u64 = idata_offset + 326;
-        let hn_vfre: u64 = idata_offset + 340;
-        let hn_cmdl: u64 = idata_offset + 354;
-        let hn_slep: u64 = idata_offset + 372;
+        let iat_rva: u64 = idata_offset + 136;
+        let dll_rva: u64 = idata_offset + 232;
+        let hn_exit: u64 = idata_offset + 248;
+        let hn_gstd: u64 = idata_offset + 264;
+        let hn_wrfl: u64 = idata_offset + 280;
+        let hn_valc: u64 = idata_offset + 292;
+        let hn_crfl: u64 = idata_offset + 308;
+        let hn_rdfl: u64 = idata_offset + 322;
+        let hn_clsh: u64 = idata_offset + 334;
+        let hn_vfre: u64 = idata_offset + 348;
+        let hn_cmdl: u64 = idata_offset + 362;
+        let hn_slep: u64 = idata_offset + 380;
+        let hn_delf: u64 = idata_offset + 390;
 
         set_u32(file_buf + idata_offset, 0, ilt_rva as u32);
         set_u32(file_buf + idata_offset, 3, dll_rva as u32);
@@ -231,6 +240,7 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         set_u32(file_buf + ilt_rva, 14, hn_vfre as u32);
         set_u32(file_buf + ilt_rva, 16, hn_cmdl as u32);
         set_u32(file_buf + ilt_rva, 18, hn_slep as u32);
+        set_u32(file_buf + ilt_rva, 20, hn_delf as u32);
 
         set_u32(file_buf + iat_rva, 0, hn_exit as u32);
         set_u32(file_buf + iat_rva, 2, hn_gstd as u32);
@@ -242,6 +252,7 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         set_u32(file_buf + iat_rva, 14, hn_vfre as u32);
         set_u32(file_buf + iat_rva, 16, hn_cmdl as u32);
         set_u32(file_buf + iat_rva, 18, hn_slep as u32);
+        set_u32(file_buf + iat_rva, 20, hn_delf as u32);
 
         copy_cstr_to_buf(file_buf, dll_rva, "KERNEL32.dll", 12);
         copy_cstr_to_buf(file_buf, hn_exit + 2, "ExitProcess", 11);
@@ -254,6 +265,7 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         copy_cstr_to_buf(file_buf, hn_vfre + 2, "VirtualFree", 11);
         copy_cstr_to_buf(file_buf, hn_cmdl + 2, "GetCommandLineA", 15);
         copy_cstr_to_buf(file_buf, hn_slep + 2, "Sleep", 5);
+        copy_cstr_to_buf(file_buf, hn_delf + 2, "DeleteFileA", 11);
     }
 
     var i: u64 = 0;
@@ -278,50 +290,72 @@ fn write_pe32_binary(cg: *mut CodeGen, out_path: *u8, is_uefi: u32) -> i64 {
         rfi = rfi + 1;
     }
 
-    var pri: u32 = 0;
-    while pri < (cg.reloc_count as u32) {
-        let phole: *mut EiaRelocHole = ((cg.relocs as *mut u8) + ((pri as u64) * 24)) as *mut EiaRelocHole;
-        let ph_pk: u64 = phole.patch_kind & 255;
-        let ph_off: u64 = phole.insn_offset & 4294967295;
-        if ph_pk == 1 && (ph_off + 4) <= (cg.text_size as u64) {
-            var pti: u32 = 0;
-            var pfound: u32 = 0;
-            while pti < (cg.tg_count as u32) && pfound == 0 {
-                let ptge: *mut EiaTypeGraphEntry = ((cg.type_graph as *mut u8) + ((pti as u64) * 24)) as *mut EiaTypeGraphEntry;
-                if ptge.type_sig_hash == phole.type_sig_hash && ptge.field_hash == phole.field_or_sym_hash {
-                    let pdisp: u32 = (ptge.byte_offset & 4294967295) as u32;
-                    let pp: u64 = text_offset + ph_off;
-                    file_buf[pp + 0] = (pdisp & 255) as u8;
-                    file_buf[pp + 1] = ((pdisp >> 8) & 255) as u8;
-                    file_buf[pp + 2] = ((pdisp >> 16) & 255) as u8;
-                    file_buf[pp + 3] = ((pdisp >> 24) & 255) as u8;
-                    pfound = 1;
-                }
-                pti = pti + 1;
-            }
-        }
-        pri = pri + 1;
+    eia_patch_reloc_holes_arch(
+        file_buf + text_offset,
+        cg.target_arch,
+        cg.relocs as *const EiaRelocHole,
+        cg.reloc_count as uint,
+        cg.type_graph as *const EiaTypeGraphEntry,
+        cg.tg_count as uint
+    );
+
+    let eia_sec_idx: u64 = (num_sections as u64) - 1;
+    let eia_sec: u64 = sec_base + (eia_sec_idx * 40);
+    file_buf[eia_sec + 0] = 46; file_buf[eia_sec + 1] = 101; file_buf[eia_sec + 2] = 105; file_buf[eia_sec + 3] = 97;
+    set_u32(file_buf + eia_sec, 2, eia_raw_size as u32);
+    set_u32(file_buf + eia_sec, 3, eia_offset as u32);
+    set_u32(file_buf + eia_sec, 4, eia_aligned as u32);
+    set_u32(file_buf + eia_sec, 5, eia_offset as u32);
+    file_buf[eia_sec + 36] = 64; file_buf[eia_sec + 39] = 64;
+
+    var pe_img_base: u64 = 5368709120;
+    if is_uefi == 1 {
+        pe_img_base = 4194304;
     }
 
     if is_uefi == 0 {
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_exit_iat_hole, idata_offset + 128);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_exit_iat_hole2, idata_offset + 128);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_getstd_iat_hole, idata_offset + 136);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_getstd_iat_hole2, idata_offset + 136);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_writefile_iat_hole, idata_offset + 144);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_valloc_iat_hole, idata_offset + 152);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_createfile_iat_hole, idata_offset + 160);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_readfile_iat_hole, idata_offset + 168);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_closehandle_iat_hole, idata_offset + 176);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_vfree_iat_hole, idata_offset + 184);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_getcmdline_iat_hole, idata_offset + 192);
-        patch_pe_iat_hole(file_buf, text_offset, cg.pe_sleep_iat_hole, idata_offset + 200);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_exit_iat_hole, idata_offset + 136);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_getstd_iat_hole, idata_offset + 144);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_getstd_iat_hole2, idata_offset + 144);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_writefile_iat_hole, idata_offset + 152);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_valloc_iat_hole, idata_offset + 160);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_createfile_iat_hole, idata_offset + 168);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_readfile_iat_hole, idata_offset + 176);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_closehandle_iat_hole, idata_offset + 184);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_vfree_iat_hole, idata_offset + 192);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_getcmdline_iat_hole, idata_offset + 200);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_sleep_iat_hole, idata_offset + 208);
+        patch_pe_iat_hole(file_buf, text_offset, cg.pe_exit_iat_hole2, idata_offset + 216);
     }
 
     i = 0;
     while i < (cg.rodata_size as u64) {
         file_buf[rodata_offset + i] = cg.rodata_buf[i];
         i = i + 1;
+    }
+
+    let pe_contracts_off: u64 = eia_offset + 96;
+    let pe_relocs_off: u64 = pe_contracts_off + pe_contracts_sz;
+    let pe_tg_off: u64 = pe_relocs_off + pe_relocs_sz;
+    if !eia_populate_and_seal_hologram(
+        file_buf,
+        total_file_size as uint,
+        eia_offset as uint,
+        pe_contracts_off as uint,
+        cg.contracts as *const SymbolContract,
+        cg.contract_count as uint,
+        pe_relocs_off as uint,
+        cg.relocs as *const EiaRelocHole,
+        cg.reloc_count as uint,
+        pe_tg_off as uint,
+        cg.type_graph as *const EiaTypeGraphEntry,
+        cg.tg_count as uint,
+        1,
+        EIA_FLAG_HAS_CODE_HASH,
+        (pe_img_base + text_offset) as uint,
+        (pe_img_base + rodata_offset) as uint
+    ) {
+        return -3;
     }
 
     let wr: i64 = acrq_file_write_bytes(out_path, file_buf, total_file_size, 0);

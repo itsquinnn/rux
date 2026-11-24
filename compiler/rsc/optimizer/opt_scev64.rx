@@ -53,12 +53,10 @@ fn opt_match_sum_accum_stmt(s: *mut AstNode, i_hash: u64) -> u64 {
     return 0;
 }
 
-fn opt_emit_scev64_accum_loop(cg: *mut CodeGen, i_off: u32, sum_off: u32, is_sgn: u32) {
+fn opt_emit_scev64_accum_loop_vars(cg: *mut CodeGen, i_hash: u64, i_off: u32, sum_hash: u64, sum_off: u32, is_sgn: u32) {
     cg_emit8(cg, 73); cg_emit8(cg, 137); cg_emit8(cg, 192);
-    cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 141);
-    cg_emit32(cg, 0 - i_off);
-    cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 141);
-    cg_emit32(cg, 0 - sum_off);
+    cg_emit_load_local_reg(cg, i_hash, i_off, 1);
+    cg_emit_load_local_reg(cg, sum_hash, sum_off, 9);
 
     cg_emit8(cg, 76); cg_emit8(cg, 57); cg_emit8(cg, 193);
     cg_emit8(cg, 15);
@@ -102,10 +100,12 @@ fn opt_emit_scev64_accum_loop(cg: *mut CodeGen, i_off: u32, sum_off: u32, is_sgn
     let done_off: u32 = cg.text_size;
     cg_patch32(cg, done_hole1, done_off - (done_hole1 + 4));
     cg_patch32(cg, done_hole2, done_off - (done_hole2 + 4));
-    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 141);
-    cg_emit32(cg, 0 - i_off);
-    cg_emit8(cg, 76); cg_emit8(cg, 137); cg_emit8(cg, 141);
-    cg_emit32(cg, 0 - sum_off);
+    cg_emit_store_local_reg(cg, i_hash, i_off, 1);
+    cg_emit_store_local_reg(cg, sum_hash, sum_off, 9);
+}
+
+fn opt_emit_scev64_accum_loop(cg: *mut CodeGen, i_off: u32, sum_off: u32, is_sgn: u32) {
+    opt_emit_scev64_accum_loop_vars(cg, 0, i_off, 0, sum_off, is_sgn);
 }
 
 fn opt_try_compile_hot_while(cg: *mut CodeGen, stmt: *mut AstNode) -> u32 {
@@ -133,7 +133,7 @@ fn opt_try_compile_hot_while(cg: *mut CodeGen, stmt: *mut AstNode) -> u32 {
             if lv_sum != (0 as *mut LocalVar) && lv_sum.is_struct_val != 1 {
                 let is_sgn: u32 = cg_is_signed_expr(cg, cond);
                 compile_expr(cg, cond.child2);
-                opt_emit_scev64_accum_loop(cg, lv_i.rbp_offset as u32, lv_sum.rbp_offset as u32, is_sgn);
+                opt_emit_scev64_accum_loop_vars(cg, i_hash, lv_i.rbp_offset as u32, sum_h, lv_sum.rbp_offset as u32, is_sgn);
                 return 1;
             }
         }
@@ -144,8 +144,7 @@ fn opt_try_compile_hot_while(cg: *mut CodeGen, stmt: *mut AstNode) -> u32 {
         let i_off2: u32 = lv_i.rbp_offset as u32;
         compile_expr(cg, cond.child2);
         cg_emit8(cg, 73); cg_emit8(cg, 137); cg_emit8(cg, 192);
-        cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 141);
-        cg_emit32(cg, 0 - i_off2);
+        cg_emit_load_local_reg(cg, i_hash, i_off2, 1);
 
         let c_loop: u32 = cg.text_size;
         cg_emit8(cg, 76); cg_emit8(cg, 57); cg_emit8(cg, 193);
@@ -160,8 +159,7 @@ fn opt_try_compile_hot_while(cg: *mut CodeGen, stmt: *mut AstNode) -> u32 {
 
         let c_done: u32 = cg.text_size;
         cg_patch32(cg, c_done_hole, c_done - (c_done_hole + 4));
-        cg_emit8(cg, 76); cg_emit8(cg, 137); cg_emit8(cg, 133);
-        cg_emit32(cg, 0 - i_off2);
+        cg_emit_store_local_reg(cg, i_hash, i_off2, 8);
         return 1;
     }
 

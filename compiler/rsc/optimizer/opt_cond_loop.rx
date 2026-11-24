@@ -105,8 +105,8 @@ fn opt_try_compile_cond_accum_body(cg: *mut CodeGen, k_hash: u64, k_off: u32, is
     cg_emit8(cg, 73); cg_emit8(cg, 137); cg_emit8(cg, 194);
     cg_emit8(cg, 65); cg_emit8(cg, 89);
     cg_emit8(cg, 65); cg_emit8(cg, 88);
-    cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 141); cg_emit32(cg, 0 - k_off);
-    cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 157); cg_emit32(cg, 0 - tot_off);
+    cg_emit_load_local_reg(cg, k_hash, k_off, 1);
+    cg_emit_load_local_reg(cg, th_e, tot_off, 11);
 
     let pair_loop: u32 = cg.text_size;
     cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 65); cg_emit8(cg, 1);
@@ -166,8 +166,8 @@ fn opt_try_compile_cond_accum_body(cg: *mut CodeGen, k_hash: u64, k_off: u32, is
 
     let done_off: u32 = cg.text_size;
     cg_patch32(cg, done_h, done_off - (done_h + 4));
-    cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 141); cg_emit32(cg, 0 - k_off);
-    cg_emit8(cg, 76); cg_emit8(cg, 137); cg_emit8(cg, 157); cg_emit32(cg, 0 - tot_off);
+    cg_emit_store_local_reg(cg, k_hash, k_off, 1);
+    cg_emit_store_local_reg(cg, th_e, tot_off, 11);
     return 1;
 }
 

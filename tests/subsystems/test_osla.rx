@@ -2,6 +2,7 @@ include "lib/core/types.rx";
 include "lib/io/print.rx";
 include "compiler/subsystems/osla/codon.rx";
 include "compiler/subsystems/osla/cooper_fma.rx";
+include "compiler/subsystems/osla/evolution.rx";
 
 fn main() -> int {
     println("=== RUX COMPILER SUITE: OSLA (OMNI-SCIENTIFIC ARCHITECTURE) ===");
@@ -23,6 +24,40 @@ fn main() -> int {
         return 2;
     }
     println("[PASS] OSLA: Hardware Cooper-Pair FMA execution verified");
+
+    var hc: HebbianCircuit;
+    hc.transit_count = 0;
+    hc.reinforcement_level = 0;
+    var iter: uint = 0;
+    while iter < 150 {
+        let lvl: uint = osla_hebbian_record_transit(&mut hc);
+        if lvl == 0 || lvl > 1000 {
+            println("[FAIL] OSLA: Hebbian reinforcement out of bounds");
+            return 3;
+        }
+        iter = iter + 1;
+    }
+    if hc.transit_count != 150 || hc.reinforcement_level != 1000 {
+        println("[FAIL] OSLA: Hebbian saturation behavior mismatch");
+        return 4;
+    }
+    var pd_bad: PunctuatedDispatch;
+    pd_bad.kernel_id = 0;
+    pd_bad.stability_generation = 200;
+    pd_bad.is_crystallized = false;
+    if osla_punctuated_dispatch_resolve(&mut pd_bad) != 0 || pd_bad.is_crystallized {
+        println("[FAIL] OSLA: Invalid zero kernel_id resolved");
+        return 5;
+    }
+    var pd_ok: PunctuatedDispatch;
+    pd_ok.kernel_id = 9;
+    pd_ok.stability_generation = 105;
+    pd_ok.is_crystallized = false;
+    if osla_punctuated_dispatch_resolve(&mut pd_ok) != 9 || !pd_ok.is_crystallized {
+        println("[FAIL] OSLA: Valid punctuated dispatch failed to resolve/crystallize");
+        return 6;
+    }
+    println("[PASS] OSLA: Bounded Hebbian reinforcement and punctuated dispatch verified");
 
     println("ALL OSLA SCIENTIFIC NUMERICAL TESTS PASSED (100% OK)");
     return 0;

@@ -39,9 +39,7 @@ fn opt_emit_cond_branch_false(cg: *mut CodeGen, cond: *mut AstNode) -> u32 {
                         if cl.child1.kind == 117 && cl.child2.kind == 116 && cl.child2.val <= 2147483647 {
                             let tlv: *mut LocalVar = cg_find_local(cg, cl.child1.hash);
                             if tlv != (0 as *mut LocalVar) && tlv.is_struct_val != 1 {
-                                cg_emit8(cg, 247); cg_emit8(cg, 133);
-                                cg_emit32(cg, 0 - (tlv.rbp_offset as u32));
-                                cg_emit32(cg, cl.child2.val as u32);
+                                cg_emit_test32_local_imm32(cg, cl.child1.hash, tlv.rbp_offset as u32, cl.child2.val as u32);
                                 cg_emit8(cg, 15);
                                 if op == 41 { cg_emit8(cg, 133); } else { cg_emit8(cg, 132); }
                                 let thole: u32 = cg.text_size;
@@ -58,9 +56,7 @@ fn opt_emit_cond_branch_false(cg: *mut CodeGen, cond: *mut AstNode) -> u32 {
                     if cond.child1.kind == 117 && cond.child2.kind == 116 && cond.child2.val <= 2147483647 {
                         let clv: *mut LocalVar = cg_find_local(cg, cond.child1.hash);
                         if clv != (0 as *mut LocalVar) && clv.is_struct_val != 1 {
-                            cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 189);
-                            cg_emit32(cg, 0 - (clv.rbp_offset as u32));
-                            cg_emit32(cg, cond.child2.val as u32);
+                            cg_emit_cmp_local_imm32(cg, cond.child1.hash, clv.rbp_offset as u32, cond.child2.val as u32);
                             cg_emit8(cg, 15);
                             if op == 41 { cg_emit8(cg, 133); }
                             else if op == 42 { cg_emit8(cg, 132); }

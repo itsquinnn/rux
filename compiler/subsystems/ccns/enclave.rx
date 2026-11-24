@@ -18,6 +18,9 @@ struct HiddenSwordEnclave {
 }
 
 fn ccns_shield_init(shield: *mut ExposedShield, id: uint) {
+    if (shield as uint) == 0 {
+        return;
+    }
     shield.shield_id = id;
     shield.probes_absorbed = 0;
     shield.total_probe_bytes = 0;
@@ -25,14 +28,52 @@ fn ccns_shield_init(shield: *mut ExposedShield, id: uint) {
 }
 
 fn ccns_shield_absorb_probe(shield: *mut ExposedShield, probe_size: uint) {
+    if (shield as uint) == 0 {
+        return;
+    }
     shield.probes_absorbed = shield.probes_absorbed + 1;
     shield.total_probe_bytes = shield.total_probe_bytes + probe_size;
 }
 
 fn ccns_sword_init(sword: *mut HiddenSwordEnclave, id: uint, key: uint) {
+    if (sword as uint) == 0 {
+        return;
+    }
     sword.enclave_id = id;
     sword.master_key = key;
     sword.neutralizations_executed = 0;
+}
+
+fn ccns_compute_proof_digest(sword: *const HiddenSwordEnclave, nonce: uint, epoch: uint) -> uint {
+    var msg: [uint; 5];
+    msg[0] = sword.enclave_id;
+    msg[1] = sword.master_key;
+    msg[2] = nonce;
+    msg[3] = epoch;
+    msg[4] = 0x5A4B434D44505246;
+    let digest: uint = @crypto.blake3_64((&msg[0]) as uint, 40);
+    if digest == 0 {
+        return 1;
+    }
+    return digest;
+}
+
+fn ccns_sign_command_proof(
+    sword: *const HiddenSwordEnclave,
+    proof: *mut ZkCommandProof,
+    nonce: uint,
+    epoch: uint
+) {
+    if (sword as uint) == 0 || (proof as uint) == 0 {
+        return;
+    }
+    proof.nonce = nonce;
+    proof.epoch = epoch;
+    if sword.master_key == 0 || epoch == 0 {
+        proof.proof_hash = 0;
+        return;
+    }
+    proof.proof_hash = ccns_compute_proof_digest(sword, nonce, epoch);
 }
 
 fn ccns_execute_core_neutralization(
@@ -40,7 +81,18 @@ fn ccns_execute_core_neutralization(
     shield: *mut ExposedShield,
     proof: *const ZkCommandProof
 ) -> bool {
-    if proof.proof_hash == 0 {
+    if (sword as uint) == 0 || (shield as uint) == 0 || (proof as uint) == 0 {
+        return false;
+    }
+    if sword.master_key == 0 || proof.epoch == 0 || proof.proof_hash == 0 {
+        return false;
+    }
+    let expected: uint = ccns_compute_proof_digest(
+        sword as *const HiddenSwordEnclave,
+        proof.nonce,
+        proof.epoch
+    );
+    if proof.proof_hash != expected {
         return false;
     }
     shield.is_compromised = false;

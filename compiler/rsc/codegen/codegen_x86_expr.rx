@@ -47,8 +47,7 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
                         return;
                     }
                 }
-                cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 133);
-                cg_emit32(cg, 0 - (lv.rbp_offset as u32));
+                cg_emit_load_local_reg(cg, node.hash, lv.rbp_offset as u32, 0);
             }
             return;
         }
@@ -329,12 +328,8 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
                     fsh = fs0.type_sig_hash;
                 }
                 compile_expr(cg, fbase);
-                cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 198);
                 let fdisp2: u32 = cg_lookup_field_offset(cg, fsh, operand.hash);
-                cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 190);
-                let fhole2: u32 = cg.text_size;
-                cg_emit32(cg, fdisp2);
-                cg_add_reloc(cg, fhole2, fsh, operand.hash);
+                cg_emit_field_lea_rdi(cg, fsh, operand.hash, fdisp2, EIA_RELOC_LEA32);
                 cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 248);
                 return;
             }
@@ -369,13 +364,8 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
             opt_null_hole = cg.text_size;
             cg_emit32(cg, 0);
         }
-        cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 198);
-
         let disp: u32 = cg_lookup_field_offset(cg, s_hash, node.hash);
-        cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 190);
-        let hole_offset: u32 = cg.text_size;
-        cg_emit32(cg, disp);
-        cg_add_reloc(cg, hole_offset, s_hash, node.hash);
+        cg_emit_field_lea_rdi(cg, s_hash, node.hash, disp, EIA_RELOC_DISP32);
 
         let fm: *mut FieldMeta = cg_find_field_meta(cg, s_hash, node.hash);
         var is_sub_field: u32 = 0;
@@ -442,6 +432,17 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
     }
 
     if node.kind == 115 {
+        if node.child1.kind == 117 {
+            let lv_v: *mut LocalVar = cg_find_local(cg, node.child1.hash);
+            if lv_v != (0 as *mut LocalVar) && lv_v.struct_hash == 8913785957651686373 && lv_v.is_struct_ptr == 2 {
+                compile_expr(cg, node.child1);
+                cg_emit8(cg, 80);
+                compile_expr(cg, node.child2);
+                cg_emit8(cg, 91);
+                cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 68); cg_emit8(cg, 195); cg_emit8(cg, 16);
+                return;
+            }
+        }
         if node.child1.kind == 117 && node.child2.kind == 116 {
             let lv_chk: *mut LocalVar = cg_find_local(cg, node.child1.hash);
             if lv_chk != (0 as *mut LocalVar) && lv_chk.is_struct_val == 1 && (lv_chk.is_struct_ptr == 10 || lv_chk.is_struct_ptr == 11 || lv_chk.is_struct_ptr >= 100) {
@@ -497,6 +498,7 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
         cg_emit32(cg, 0);
 
         cg_emit_defers(cg);
+        cg_emit_callee_restores(cg);
         cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 236);
         cg_emit8(cg, 93);
         cg_emit8(cg, 195);
@@ -570,7 +572,216 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
                 let rec: *mut AstNode = node.child1.child1;
                 let m_hash: u64 = node.child1.hash;
                 if rec != (0 as *mut AstNode) {
-                    let rlv: *mut LocalVar = cg_find_local(cg, rec.hash);
+                    var rlv: *mut LocalVar = 0 as *mut LocalVar;
+                    if rec.kind == 117 {
+                        rlv = cg_find_local(cg, rec.hash);
+                    }
+                    var is_user_struct: u32 = 0;
+                    if rlv != (0 as *mut LocalVar) && rlv.struct_hash != 0 {
+                        if cg_find_struct(cg, rlv.struct_hash) != (0 as *mut StructInfo) || traits_find_method_index(cg.parser as *mut Parser, rlv.struct_hash, m_hash) >= 0 {
+                            is_user_struct = 1;
+                        }
+                    }
+                    if is_user_struct == 0 {
+                        if m_hash == 18080069455335980988 {
+                            compile_expr(cg, rec);
+                            if cg_is_string_expr(cg, rec) == 0 {
+                                cg_emit_int_to_str(cg);
+                            }
+                            return;
+                        }
+                        if m_hash == 1329241496134363980 || m_hash == 6052333226747276115 {
+                            if cg_is_string_expr(cg, rec) == 1 {
+                                compile_expr(cg, rec);
+                                cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 198);
+                                cg_emit8(cg, 72); cg_emit8(cg, 49); cg_emit8(cg, 192);
+                                cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 246);
+                                let jz_n: u32 = cg.text_size;
+                                cg_emit8(cg, 116); cg_emit8(cg, 0);
+                                let sl_loop: u32 = cg.text_size;
+                                cg_emit8(cg, 128); cg_emit8(cg, 60); cg_emit8(cg, 6); cg_emit8(cg, 0);
+                                let jz_e: u32 = cg.text_size;
+                                cg_emit8(cg, 116); cg_emit8(cg, 0);
+                                cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 192);
+                                cg_emit8(cg, 235);
+                                let sl_back: i32 = (sl_loop as i32) - ((cg.text_size + 1) as i32);
+                                cg_emit8(cg, (sl_back & 255) as u8);
+                                let sl_done: u32 = cg.text_size;
+                                cg.text_buf[(jz_n + 1) as u64] = (sl_done - (jz_n + 2)) as u8;
+                                cg.text_buf[(jz_e + 1) as u64] = (sl_done - (jz_e + 2)) as u8;
+                            } else if rlv != (0 as *mut LocalVar) && rlv.is_struct_val == 1 && (rlv.is_struct_ptr == 10 || rlv.is_struct_ptr == 11 || rlv.is_struct_ptr >= 100) {
+                                let stride_l: u64 = cg_get_expr_elem_stride(cg, rec);
+                                var arr_cnt: u64 = rlv.size;
+                                if stride_l > 0 { arr_cnt = rlv.size / stride_l; }
+                                cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 192); cg_emit32(cg, arr_cnt as u32);
+                            } else {
+                                compile_expr(cg, rec);
+                                cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 0);
+                            }
+                            if m_hash == 6052333226747276115 {
+                                cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 192);
+                                cg_emit8(cg, 15); cg_emit8(cg, 148); cg_emit8(cg, 192);
+                                cg_emit8(cg, 72); cg_emit8(cg, 15); cg_emit8(cg, 182); cg_emit8(cg, 192);
+                            }
+                            return;
+                        }
+                        if m_hash == 7818252312440358301 && node.child2 != (0 as *mut AstNode) {
+                            compile_expr(cg, rec);
+                            cg_emit8(cg, 80);
+                            compile_expr(cg, node.child2);
+                            cg_emit8(cg, 95);
+                            cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 15);
+                            cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 207); cg_emit8(cg, 16);
+                            cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 7);
+                            return;
+                        }
+                        if m_hash == 8618579177749032784 && node.child2 == (0 as *mut AstNode) {
+                            compile_expr(cg, rec);
+                            cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 199);
+                            cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 15);
+                            cg_emit8(cg, 72); cg_emit8(cg, 133); cg_emit8(cg, 201);
+                            let jz_pop: u32 = cg.text_size;
+                            cg_emit8(cg, 116); cg_emit8(cg, 0);
+                            cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 201);
+                            cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 15);
+                            cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 68); cg_emit8(cg, 207); cg_emit8(cg, 16);
+                            let pop_done: u32 = cg.text_size;
+                            cg.text_buf[(jz_pop + 1) as u64] = (pop_done - (jz_pop + 2)) as u8;
+                            return;
+                        }
+                        if m_hash == 8246590677317673512 && node.child2 != (0 as *mut AstNode) {
+                            if node.child2.next == (0 as *mut AstNode) {
+                                compile_expr(cg, rec);
+                                cg_emit8(cg, 80);
+                                compile_expr(cg, node.child2);
+                                if cg_is_string_expr(cg, node.child2) == 1 {
+                                    cg_emit_str_hash(cg);
+                                }
+                                cg_emit8(cg, 95);
+                                cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 15);
+                                cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 207); cg_emit8(cg, 16);
+                                cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 7);
+                                return;
+                            }
+                            compile_expr(cg, rec);
+                            cg_emit8(cg, 80);
+                            compile_expr(cg, node.child2);
+                            if cg_is_string_expr(cg, node.child2) == 1 {
+                                cg_emit_str_hash(cg);
+                            }
+                            cg_emit8(cg, 80);
+                            compile_expr(cg, node.child2.next);
+                            cg_emit8(cg, 90);
+                            cg_emit8(cg, 95);
+                            cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 15);
+                            cg_emit8(cg, 69); cg_emit8(cg, 49); cg_emit8(cg, 192);
+                            let ins_loop: u32 = cg.text_size;
+                            cg_emit8(cg, 73); cg_emit8(cg, 57); cg_emit8(cg, 200);
+                            let jge_new: u32 = cg.text_size;
+                            cg_emit8(cg, 125); cg_emit8(cg, 0);
+                            cg_emit8(cg, 77); cg_emit8(cg, 137); cg_emit8(cg, 193);
+                            cg_emit8(cg, 73); cg_emit8(cg, 193); cg_emit8(cg, 225); cg_emit8(cg, 4);
+                            cg_emit8(cg, 74); cg_emit8(cg, 57); cg_emit8(cg, 84); cg_emit8(cg, 15); cg_emit8(cg, 16);
+                            let je_found: u32 = cg.text_size;
+                            cg_emit8(cg, 116); cg_emit8(cg, 0);
+                            cg_emit8(cg, 73); cg_emit8(cg, 255); cg_emit8(cg, 192);
+                            cg_emit8(cg, 235);
+                            let ins_back: i32 = (ins_loop as i32) - ((cg.text_size + 1) as i32);
+                            cg_emit8(cg, (ins_back & 255) as u8);
+                            let new_off: u32 = cg.text_size;
+                            cg.text_buf[(jge_new + 1) as u64] = (new_off - (jge_new + 2)) as u8;
+                            cg_emit8(cg, 73); cg_emit8(cg, 137); cg_emit8(cg, 201);
+                            cg_emit8(cg, 73); cg_emit8(cg, 193); cg_emit8(cg, 225); cg_emit8(cg, 4);
+                            cg_emit8(cg, 72); cg_emit8(cg, 255); cg_emit8(cg, 7);
+                            let found_off: u32 = cg.text_size;
+                            cg.text_buf[(je_found + 1) as u64] = (found_off - (je_found + 2)) as u8;
+                            cg_emit8(cg, 74); cg_emit8(cg, 137); cg_emit8(cg, 84); cg_emit8(cg, 15); cg_emit8(cg, 16);
+                            cg_emit8(cg, 74); cg_emit8(cg, 137); cg_emit8(cg, 68); cg_emit8(cg, 15); cg_emit8(cg, 24);
+                            return;
+                        }
+                        if m_hash == 15339932239713171959 && node.child2 != (0 as *mut AstNode) {
+                            if rlv != (0 as *mut LocalVar) && rlv.struct_hash == 8913785957651686373 {
+                                compile_expr(cg, rec);
+                                cg_emit8(cg, 80);
+                                compile_expr(cg, node.child2);
+                                cg_emit8(cg, 91);
+                                cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 68); cg_emit8(cg, 195); cg_emit8(cg, 16);
+                                return;
+                            }
+                            compile_expr(cg, rec);
+                            cg_emit8(cg, 80);
+                            compile_expr(cg, node.child2);
+                            if cg_is_string_expr(cg, node.child2) == 1 {
+                                cg_emit_str_hash(cg);
+                            }
+                            cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 194);
+                            cg_emit8(cg, 95);
+                            cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 15);
+                            cg_emit8(cg, 69); cg_emit8(cg, 49); cg_emit8(cg, 192);
+                            cg_emit8(cg, 49); cg_emit8(cg, 192);
+                            let get_loop: u32 = cg.text_size;
+                            cg_emit8(cg, 73); cg_emit8(cg, 57); cg_emit8(cg, 200);
+                            let jge_done: u32 = cg.text_size;
+                            cg_emit8(cg, 125); cg_emit8(cg, 0);
+                            cg_emit8(cg, 77); cg_emit8(cg, 137); cg_emit8(cg, 193);
+                            cg_emit8(cg, 73); cg_emit8(cg, 193); cg_emit8(cg, 225); cg_emit8(cg, 4);
+                            cg_emit8(cg, 74); cg_emit8(cg, 57); cg_emit8(cg, 84); cg_emit8(cg, 15); cg_emit8(cg, 16);
+                            let jne_next: u32 = cg.text_size;
+                            cg_emit8(cg, 117); cg_emit8(cg, 0);
+                            cg_emit8(cg, 74); cg_emit8(cg, 139); cg_emit8(cg, 68); cg_emit8(cg, 15); cg_emit8(cg, 24);
+                            let jmp_done: u32 = cg.text_size;
+                            cg_emit8(cg, 235); cg_emit8(cg, 0);
+                            let next_off: u32 = cg.text_size;
+                            cg.text_buf[(jne_next + 1) as u64] = (next_off - (jne_next + 2)) as u8;
+                            cg_emit8(cg, 73); cg_emit8(cg, 255); cg_emit8(cg, 192);
+                            cg_emit8(cg, 235);
+                            let get_back: i32 = (get_loop as i32) - ((cg.text_size + 1) as i32);
+                            cg_emit8(cg, (get_back & 255) as u8);
+                            let get_done: u32 = cg.text_size;
+                            cg.text_buf[(jge_done + 1) as u64] = (get_done - (jge_done + 2)) as u8;
+                            cg.text_buf[(jmp_done + 1) as u64] = (get_done - (jmp_done + 2)) as u8;
+                            return;
+                        }
+                        if m_hash == 5645366511944179768 && node.child2 != (0 as *mut AstNode) {
+                            var sh_amt: u8 = 3;
+                            if (rlv != (0 as *mut LocalVar) && rlv.struct_hash == 3738392585861989357) || (rec.kind == 121 && rec.val == 52) {
+                                sh_amt = 4;
+                            }
+                            compile_expr(cg, rec);
+                            cg_emit8(cg, 80);
+                            compile_expr(cg, node.child2);
+                            if cg_is_string_expr(cg, node.child2) == 1 {
+                                cg_emit_str_hash(cg);
+                            }
+                            cg_emit8(cg, 72); cg_emit8(cg, 137); cg_emit8(cg, 194);
+                            cg_emit8(cg, 95);
+                            cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 15);
+                            cg_emit8(cg, 69); cg_emit8(cg, 49); cg_emit8(cg, 192);
+                            cg_emit8(cg, 49); cg_emit8(cg, 192);
+                            let cnt_loop: u32 = cg.text_size;
+                            cg_emit8(cg, 73); cg_emit8(cg, 57); cg_emit8(cg, 200);
+                            let cnt_jge: u32 = cg.text_size;
+                            cg_emit8(cg, 125); cg_emit8(cg, 0);
+                            cg_emit8(cg, 77); cg_emit8(cg, 137); cg_emit8(cg, 193);
+                            cg_emit8(cg, 73); cg_emit8(cg, 193); cg_emit8(cg, 225); cg_emit8(cg, sh_amt);
+                            cg_emit8(cg, 74); cg_emit8(cg, 57); cg_emit8(cg, 84); cg_emit8(cg, 15); cg_emit8(cg, 16);
+                            let cnt_jne: u32 = cg.text_size;
+                            cg_emit8(cg, 117); cg_emit8(cg, 0);
+                            cg_emit8(cg, 72); cg_emit8(cg, 199); cg_emit8(cg, 192); cg_emit32(cg, 1);
+                            let cnt_jmp: u32 = cg.text_size;
+                            cg_emit8(cg, 235); cg_emit8(cg, 0);
+                            let cnt_next: u32 = cg.text_size;
+                            cg.text_buf[(cnt_jne + 1) as u64] = (cnt_next - (cnt_jne + 2)) as u8;
+                            cg_emit8(cg, 73); cg_emit8(cg, 255); cg_emit8(cg, 192);
+                            cg_emit8(cg, 235);
+                            let cnt_back: i32 = (cnt_loop as i32) - ((cg.text_size + 1) as i32);
+                            cg_emit8(cg, (cnt_back & 255) as u8);
+                            let cnt_done: u32 = cg.text_size;
+                            cg.text_buf[(cnt_jge + 1) as u64] = (cnt_done - (cnt_jge + 2)) as u8;
+                            cg.text_buf[(cnt_jmp + 1) as u64] = (cnt_done - (cnt_jmp + 2)) as u8;
+                            return;
+                        }
+                    }
                     if rlv != (0 as *mut LocalVar) && rlv.struct_hash != 0 {
                         let d_idx: i32 = traits_find_method_index(cg.parser as *mut Parser, rlv.struct_hash, m_hash);
                         let disp: i32 = 0 - (rlv.rbp_offset as i32);
@@ -583,8 +794,7 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
                                 cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 133);
                                 cg_emit32(cg, disp as u32);
                             } else {
-                                cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 133);
-                                cg_emit32(cg, disp as u32);
+                                cg_emit_load_local_reg(cg, rlv.name_hash, rlv.rbp_offset as u32, 0);
                             }
                             cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 0);
                             cg_emit8(cg, 80);
@@ -595,11 +805,12 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
                                 cg_emit8(cg, 72); cg_emit8(cg, 141); cg_emit8(cg, 133);
                                 cg_emit32(cg, disp as u32);
                             } else {
-                                cg_emit8(cg, 72); cg_emit8(cg, 139); cg_emit8(cg, 133);
-                                cg_emit32(cg, disp as u32);
+                                cg_emit_load_local_reg(cg, rlv.name_hash, rlv.rbp_offset as u32, 0);
                             }
                             cg_emit8(cg, 80);
                         }
+                    } else if rec.kind == 117 && rlv == (0 as *mut LocalVar) {
+                        m_target_hash = combine_ns_hash(rec.hash, m_hash);
                     }
                 }
             }
@@ -665,8 +876,7 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
                 cg_emit8(cg, 76); cg_emit8(cg, 141); cg_emit8(cg, 157);
                 cg_emit32(cg, d_disp as u32);
             } else {
-                cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 157);
-                cg_emit32(cg, d_disp as u32);
+                cg_emit_load_local_reg(cg, dyn_rlv.name_hash, dyn_rlv.rbp_offset as u32, 11);
             }
             cg_emit8(cg, 77); cg_emit8(cg, 139); cg_emit8(cg, 91); cg_emit8(cg, 8);
             cg_emit8(cg, 77); cg_emit8(cg, 139); cg_emit8(cg, 155);
@@ -681,9 +891,7 @@ fn compile_expr(cg: *mut CodeGen, node: *mut AstNode) {
         if m_target_hash != 0 {
             let lv: *mut LocalVar = cg_find_local(cg, m_target_hash);
             if lv != (0 as *mut LocalVar) {
-                let disp: i32 = 0 - (lv.rbp_offset as i32);
-                cg_emit8(cg, 76); cg_emit8(cg, 139); cg_emit8(cg, 157);
-                cg_emit32(cg, disp as u32);
+                cg_emit_load_local_reg(cg, lv.name_hash, lv.rbp_offset as u32, 11);
                 cg_emit8(cg, 65); cg_emit8(cg, 255); cg_emit8(cg, 211);
                 if stack_cleanup > 0 {
                     cg_emit8(cg, 72); cg_emit8(cg, 129); cg_emit8(cg, 196); cg_emit32(cg, stack_cleanup);

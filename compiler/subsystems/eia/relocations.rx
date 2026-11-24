@@ -5,11 +5,29 @@ enum RelocPatchKind {
     WIDEN_STENCIL = 4,
 }
 
+const EIA_RELOC_DISP32: u32 = 1;
+const EIA_RELOC_CALL32: u32 = 2;
+const EIA_RELOC_LEA32: u32 = 3;
+const EIA_RELOC_WIDEN_STENCIL: u32 = 4;
+
 struct EiaRelocHole {
     insn_offset: u32,
     patch_kind: u32,
     type_sig_hash: uint,
     field_or_sym_hash: uint,
+}
+
+fn eia_reloc_init_raw(
+    hole: *mut EiaRelocHole,
+    offset: u32,
+    kind: u32,
+    type_sig: uint,
+    target: uint
+) {
+    hole.insn_offset = offset;
+    hole.patch_kind = kind;
+    hole.type_sig_hash = type_sig;
+    hole.field_or_sym_hash = target;
 }
 
 fn eia_reloc_init(
@@ -19,8 +37,5 @@ fn eia_reloc_init(
     type_sig: uint,
     target: uint
 ) {
-    hole.insn_offset = offset;
-    hole.patch_kind = kind as u32;
-    hole.type_sig_hash = type_sig;
-    hole.field_or_sym_hash = target;
+    eia_reloc_init_raw(hole, offset, kind as u32, type_sig, target);
 }

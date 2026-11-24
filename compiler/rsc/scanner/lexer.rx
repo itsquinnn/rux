@@ -193,6 +193,27 @@ fn lex_next_token(lex: *mut Lexer, tok: *mut Token) {
                 k = 1;
             }
         }
+        if k == 142 {
+            var pk_pos2: u64 = lex.pos;
+            while pk_pos2 < lex.len && (lex.src[pk_pos2] == 32 || lex.src[pk_pos2] == 9 || lex.src[pk_pos2] == 10 || lex.src[pk_pos2] == 13) {
+                pk_pos2 = pk_pos2 + 1;
+            }
+            var next_wlen: u32 = 0;
+            while (pk_pos2 + (next_wlen as u64)) < lex.len && is_alnum(lex.src[pk_pos2 + (next_wlen as u64)]) == 1 {
+                next_wlen = next_wlen + 1;
+            }
+            var is_gen_mod: u32 = 0;
+            if next_wlen > 0 {
+                let nh: u64 = hash_identifier(lex.src + pk_pos2, next_wlen);
+                let nk: u32 = classify_keyword(nh);
+                if nk == 11 || nk == 102 || nk == 92 || nk == 90 || nk == 124 {
+                    is_gen_mod = 1;
+                }
+            }
+            if is_gen_mod == 0 {
+                k = 1;
+            }
+        }
 
         tok.kind = k as u64;
         tok.start = start_ptr;

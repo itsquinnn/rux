@@ -16,11 +16,36 @@ fn infer_init_let_node(sn: *mut AstNode, init_expr: *mut AstNode) {
             sys_exit(1);
         }
         if init_expr.kind == 122 { sn.val = init_expr.hash; sn.id = 3; sn.is_mut = 0; }
-        else if init_expr.kind == 118 { sn.val = 23; sn.id = 2; sn.is_mut = 0; }
+        else if init_expr.kind == 118 { sn.val = 9398593617327382768; sn.id = 2; sn.is_mut = 0; }
+        else if init_expr.kind == 106 && init_expr.val == 30 {
+            var cur_se: *mut AstNode = init_expr;
+            var is_str_add: u64 = 0;
+            while cur_se != (0 as *mut AstNode) && cur_se.kind == 106 && cur_se.val == 30 && is_str_add == 0 {
+                if cur_se.child2 != (0 as *mut AstNode) && (cur_se.child2.kind == 118 || (cur_se.child2.kind == 113 && cur_se.child2.child1 != (0 as *mut AstNode) && cur_se.child2.child1.kind == 114 && cur_se.child2.child1.hash == 18080069455335980988)) { is_str_add = 1; }
+                if cur_se.child1 != (0 as *mut AstNode) && (cur_se.child1.kind == 118 || (cur_se.child1.kind == 113 && cur_se.child1.child1 != (0 as *mut AstNode) && cur_se.child1.child1.kind == 114 && cur_se.child1.child1.hash == 18080069455335980988)) { is_str_add = 1; }
+                cur_se = cur_se.child1;
+            }
+            if is_str_add == 1 { sn.val = 9398593617327382768; sn.id = 2; sn.is_mut = 0; }
+        }
+        else if init_expr.kind == 113 && init_expr.child1 != (0 as *mut AstNode) && init_expr.child1.kind == 114 && init_expr.child1.hash == 18080069455335980988 {
+            sn.val = 9398593617327382768; sn.id = 2; sn.is_mut = 0;
+        }
+        else if init_expr.kind == 121 && init_expr.val == 50 { sn.val = 8913785957651686373; sn.id = 2; sn.is_mut = 0; }
+        else if init_expr.kind == 121 && init_expr.val == 51 { sn.val = 6014062794857405207; sn.id = 2; sn.is_mut = 0; }
+        else if init_expr.kind == 121 && init_expr.val == 52 { sn.val = 3738392585861989357; sn.id = 2; sn.is_mut = 0; }
+        else if init_expr.kind == 121 && init_expr.val == 1 {
+            var e_cnt: u64 = 0;
+            var cur_ae: *mut AstNode = init_expr.child1;
+            while cur_ae != (0 as *mut AstNode) { e_cnt = e_cnt + 1; cur_ae = cur_ae.next; }
+            if e_cnt == 0 { e_cnt = 1; }
+            sn.val = e_cnt * 8;
+            sn.id = 11;
+            sn.is_mut = 1;
+        }
         else if init_expr.kind == 131 {
             if init_expr.is_mut > 0 {
                 sn.val = init_expr.hash;
-                if init_expr.is_mut == 11 { sn.id = 11; }
+                if init_expr.is_mut == 11 { sn.id = 13; }
                 else if init_expr.val == 1 { sn.id = 1; }
                 else { sn.id = 2; }
                 sn.is_mut = 0;
@@ -268,7 +293,7 @@ fn parse_let_var_stmt(p: *mut Parser) -> *mut AstNode {
             }
             if p_stars > 1 {
                 sn.val = pt_hash;
-                sn.id = 11;
+                sn.id = 13;
             } else if pt_kind == 1 {
                 sn.val = pt_hash;
                 sn.id = 1;
@@ -315,7 +340,7 @@ fn parse_let_var_stmt(p: *mut Parser) -> *mut AstNode {
                     sn.id = 2;
                 } else if tal.extra == 1011 {
                     sn.val = tal.val;
-                    sn.id = 11;
+                    sn.id = 13;
                 } else if tal.extra != 1 {
                     sn.val = tal.extra;
                     sn.id = 0;
@@ -325,11 +350,16 @@ fn parse_let_var_stmt(p: *mut Parser) -> *mut AstNode {
                     sn.id = 3;
                 }
             } else {
-                sn.val = t_hash;
-                sn.id = 3;
+                if (t_hash == 8913785957651686373 || t_hash == 6014062794857405207 || t_hash == 3738392585861989357) && is_generic_struct(p, t_hash) == 0 && parser_find_known_struct(p, t_hash) == (0 as *mut ConstEntry) {
+                    sn.val = t_hash;
+                    sn.id = 2;
+                } else {
+                    sn.val = t_hash;
+                    sn.id = 3;
+                }
             }
         } else if p.cur_tok.kind == 138 {
-            sn.val = 23;
+            sn.val = 9398593617327382768;
             sn.id = 2;
             lex_next_token(p.lex, &mut p.cur_tok);
         } else {

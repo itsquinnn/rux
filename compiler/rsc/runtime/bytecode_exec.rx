@@ -1,3 +1,51 @@
+fn rxbc_int_to_str(bc: *mut RxbcCompiler, val: i64) -> *mut u8 {
+    let dst: *mut u8 = rxbc_heap_alloc(bc, 32);
+    if val == 0 {
+        dst[0] = 48;
+        dst[1] = 0;
+        return dst;
+    }
+    var neg: u32 = 0;
+    var uv: u64 = val as u64;
+    if val < 0 {
+        neg = 1;
+        uv = (0 - val) as u64;
+    }
+    var tmp: [u8; 32];
+    var n: u64 = 0;
+    while uv > 0 && n < 28 {
+        tmp[n] = (48 + (uv % 10)) as u8;
+        uv = uv / 10;
+        n = n + 1;
+    }
+    var out_len: u64 = 0;
+    if neg == 1 {
+        dst[0] = 45;
+        out_len = 1;
+    }
+    var i: u64 = 0;
+    while i < n {
+        dst[out_len + i] = tmp[n - 1 - i];
+        i = i + 1;
+    }
+    dst[out_len + n] = 0;
+    return dst;
+}
+
+fn rxbc_str_concat(bc: *mut RxbcCompiler, s1_in: *u8, s2_in: *u8) -> *mut u8 {
+    var len1: u64 = 0;
+    if s1_in != (0 as *u8) { len1 = str_len(s1_in); }
+    var len2: u64 = 0;
+    if s2_in != (0 as *u8) { len2 = str_len(s2_in); }
+    let dst: *mut u8 = rxbc_heap_alloc(bc, len1 + len2 + 8);
+    var i: u64 = 0;
+    while i < len1 { dst[i] = s1_in[i]; i = i + 1; }
+    var j: u64 = 0;
+    while j < len2 { dst[len1 + j] = s2_in[j]; j = j + 1; }
+    dst[len1 + len2] = 0;
+    return dst;
+}
+
 fn rxbc_vm_err(cls: *u8, msg: *u8) {
     diag_write_cstr("Uncaught ");
     diag_write_cstr(cls);
@@ -43,7 +91,7 @@ fn continuum_vm_run(p: *mut Parser, cg: *mut CodeGen, entry_hash: u64, in_path: 
             while pc != (0 as *mut AstNode) { pcnt = pcnt + 1; pc = pc.next; }
             ((bc.fn_pcnts + (idx * 8)) as *mut u64)[0] = pcnt;
             var rstr: u64 = 0;
-            if fnode.is_mut == 1 && (fnode.val == 23 || fnode.val == 631772817358541784) { rstr = 1; }
+            if fnode.val == 9398593617327382768 || (fnode.is_mut == 1 && (fnode.val == 23 || fnode.val == 631772817358541784)) { rstr = 1; }
             ((bc.fn_ret_str + (idx * 8)) as *mut u64)[0] = rstr;
             bc.fn_cnt = idx + 1;
         }
@@ -63,7 +111,7 @@ fn continuum_vm_run(p: *mut Parser, cg: *mut CodeGen, entry_hash: u64, in_path: 
             while p_cur != (0 as *mut AstNode) {
                 var pk: u64 = 0;
                 if p_cur.is_mut == 11 { pk = 11; }
-                else if p_cur.is_mut > 0 && (p_cur.val == 23 || p_cur.val == 631772817358541784) { pk = 1; }
+                else if p_cur.val == 9398593617327382768 || (p_cur.is_mut > 0 && (p_cur.val == 23 || p_cur.val == 631772817358541784)) { pk = 1; }
                 else if p_cur.is_mut > 0 { pk = 8; }
                 rxbc_add_loc(&mut bc, p_cur.hash, pk, 0);
                 p_cur = p_cur.next;
@@ -324,6 +372,19 @@ fn continuum_vm_run(p: *mut Parser, cg: *mut CodeGen, entry_hash: u64, in_path: 
         } else if op == 39 {
             stack_mem[sp] = ((locals_mem as *u8) + ((fp + (arg as u64)) * 8)) as i64;
             sp = sp + 1;
+        } else if op == 41 {
+            let iv: i64 = stack_mem[sp - 1];
+            stack_mem[sp - 1] = rxbc_int_to_str(&mut bc, iv) as i64;
+        } else if op == 42 {
+            sp = sp - 1;
+            let s2: *u8 = stack_mem[sp] as *u8;
+            let s1: *u8 = stack_mem[sp - 1] as *u8;
+            stack_mem[sp - 1] = rxbc_str_concat(&mut bc, s1, s2) as i64;
+        } else if op == 43 {
+            let ps: *u8 = stack_mem[sp - 1] as *u8;
+            var plen: i64 = 0;
+            if ps != (0 as *u8) { plen = str_len(ps) as i64; }
+            stack_mem[sp - 1] = plen;
         }
     }
     return 0;
